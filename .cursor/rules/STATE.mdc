@@ -39,20 +39,31 @@ deferred).
 | Branch | Purpose | Status |
 |---|---|---|
 | `main` | trunk | rules layer + workspace scaffold; all gates green (macOS-verified only) |
+| `feat/chr-read-slice` | chr parser + read-only inventory GUI | code + tests complete; awaiting real-save validation before merge |
 
 ## Next up
 
-1. First vertical slice: parse a real TQ AE character save file in
-   core (hand-rolled reader + flate2, ported from TQVaultAE per
-   docs/format-references.md) and render its inventory read-only in
-   the GUI. Feature branch per METHODOLOGIES.
+1. Validate the chr parser against a real TQ AE `Player.chr` (none on
+   this machine — needs a save file from the user), then merge
+   `feat/chr-read-slice`.
 2. ARZ/ARC readers so parsed items resolve display names and icons
-   from game data.
+   from game data (this is where `flate2` enters).
 3. Platform module in core: per-OS discovery of the game install and
    save directories.
 
 ## Most recent meaningful progress
 
+- **2026-08-24 — chr read slice implemented
+  (`feat/chr-read-slice`).** `univault-core` gained `reader`
+  (typed LE reader, Windows-1252/UTF-16 strings, key scan) and `chr`
+  (sacks, stack folding, 12-slot equipment, header info), ported
+  from TQVaultAE's providers; GUI loads a chr via arg or drag-drop
+  and renders it read-only. 16 unit tests against a synthetic
+  fixture in TQVaultAE's exact layout. Why: first end-to-end proof
+  of the port-from-reference approach. Risk: validated only against
+  the synthetic fixture — a real save may expose key-order or
+  version quirks; eframe 0.36's `App::ui`/`DroppedFile` APIs differ
+  from published examples.
 - **2026-08-24 — Parser survey done; four decisions locked.** No
   Rust prior art exists for any TQ format; TQVaultAE (C#, MIT) is
   the port reference for all of them (map: docs/format-references.md).

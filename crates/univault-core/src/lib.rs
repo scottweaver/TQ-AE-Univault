@@ -2,3 +2,6 @@
 //! (saves, stash, ARC/ARZ, vault), the in-memory model, and platform
 //! discovery. Pure and sync — IO and async belong to the shell
 //! (see `.claude/rules/ARCHITECTURE.md`).
+
+pub mod chr;
+pub mod reader;
