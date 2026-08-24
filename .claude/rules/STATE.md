@@ -17,12 +17,16 @@ scaffold are on `main`: `crates/univault-core` (empty, doc-only) and
 `crates/univault-gui` (eframe 0.36 window rendering a heading), with
 fmt / clippy-pedantic / build gates green. No format parsing exists
 yet. Binding decisions from the 2026-08-24
-bootstrap dialog (see ARCHITECTURE.md): Cargo workspace with a
-GUI-agnostic core crate plus a thin egui crate; game-owned files are
-authoritative and every write to them is backup-first; own native
-vault format with one-way import of TQVaultAE vaults; scope is TQ
-Anniversary Edition + all expansions (original TQ 2006 out of scope
-for now). No issue tracker is bound yet (deliberately deferred).
+bootstrap and survey dialogs (see ARCHITECTURE.md): Cargo workspace
+with a GUI-agnostic core crate plus a thin egui crate; game-owned
+files are authoritative, every write to them backup-first and
+targeted-splice; native vault format is TQVaultAE's JSON schema
+(legacy binary `.vault` import-only); parsers hand-rolled + flate2,
+ported from MIT TQVaultAE (GPL references eyes-only — see
+docs/format-references.md); dual-licensed MIT OR Apache-2.0; scope
+is TQ Anniversary Edition + all expansions (original TQ 2006 out of
+scope for now). No issue tracker is bound yet (deliberately
+deferred).
 
 ## Branches in flight
 
@@ -33,9 +37,9 @@ for now). No issue tracker is bound yet (deliberately deferred).
 ## Next up
 
 1. First vertical slice: parse a real TQ AE character save file in
-   core and render its inventory read-only in the GUI. Start with a
-   buy-vs-build survey of existing TQ format parsers (METHODOLOGIES
-   "Buy versus build").
+   core (hand-rolled reader + flate2, ported from TQVaultAE per
+   docs/format-references.md) and render its inventory read-only in
+   the GUI. Feature branch per METHODOLOGIES.
 2. ARZ/ARC readers so parsed items resolve display names and icons
    from game data.
 3. Platform module in core: per-OS discovery of the game install and
@@ -43,6 +47,15 @@ for now). No issue tracker is bound yet (deliberately deferred).
 
 ## Most recent meaningful progress
 
+- **2026-08-24 — Parser survey done; four decisions locked.** No
+  Rust prior art exists for any TQ format; TQVaultAE (C#, MIT) is
+  the port reference for all of them (map: docs/format-references.md).
+  Dialog outcomes: TQVaultAE JSON as native vault schema (two-way
+  compat — renegotiated from import-only), targeted-splice writes,
+  flate2 + hand-rolled reader (binrw declined), MIT OR Apache-2.0.
+  Why: unblocks the vertical slice with license-clean references.
+  Risk: the vault schema is now an external contract tracked from a
+  live upstream project.
 - **2026-08-24 — Workspace scaffolded.** Cargo workspace with
   `univault-core` (lib, empty) and `univault-gui` (eframe 0.36
   window); pedantic clippy wired workspace-wide; fmt/clippy/build

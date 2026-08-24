@@ -62,6 +62,11 @@ bootstrap Q&A).
   original is touched. Mirrors TQVaultAE's `TQVaultData\Backup`
   behavior. This app mutates people's save files; this constraint is
   non-negotiable. (2026-08-24)
+- Writes to game-owned files are targeted splices: parsing locates
+  the blocks being edited and only those bytes change; every other
+  byte is copied through untouched. Full-file re-serialization of a
+  game-owned file is prohibited — TQVaultAE's proven approach, and
+  the safest posture for a guest editor. (2026-08-24)
 
 ## External boundaries
 
@@ -69,10 +74,12 @@ bootstrap Q&A).
   format, ARC/ARZ archives, and this app's vault format. Each format
   is guarded by its own module in core with typed read/write
   surfaces. (2026-08-24)
-- Vault interop: tq-univault defines its own native vault format and
-  provides one-way **import** of TQVaultAE vaults (including their
-  JSON export). Writing TQVaultAE's format is a non-goal.
-  (2026-08-24)
+- The native vault format is TQVaultAE's JSON vault schema — its
+  `VaultDto`/`SackDto`/`ItemDto` field names are the wire contract —
+  giving full two-way compatibility so both tools can open the same
+  vaults. Legacy binary `.vault` files are import-only. Renegotiated
+  2026-08-24 (from "own format + one-way import") after the parser
+  survey found modern TQVaultAE vaults are plain JSON. (2026-08-24)
 - No network services, no telemetry, no online features.
   (2026-08-24)
 
@@ -84,6 +91,19 @@ bootstrap Q&A).
   no `cfg(target_os)` sprawl elsewhere. (2026-08-24)
 - Pure-Rust dependencies preferred; a native/C dependency needs a
   reason recorded here. (2026-08-24)
+
+## Parser provenance and dependencies
+
+- Core's parsing foundation is a hand-rolled typed little-endian
+  reader plus `flate2` for zlib. No parser-derive proc-macros
+  (binrw evaluated and declined in the 2026-08-24 survey dialog).
+  (2026-08-24)
+- The porting reference for every format is TQVaultAE (MIT); ported
+  code preserves its MIT attribution. GPL-3.0 references (tqrespec,
+  tqdatabase) are eyes-only for edge cases — their code is never
+  transcribed. Full reference map: `docs/format-references.md`.
+  (2026-08-24)
+- The project is dual-licensed MIT OR Apache-2.0. (2026-08-24)
 
 ## Audit triggers
 
@@ -108,10 +128,11 @@ that scaffolds the workspace if the real layout differs.)
 Structural (this doc must change in the same PR): a GUI dependency
 appearing in core or any reversal of the crate DAG; a new external
 boundary (network access, a new file format, telemetry); a change to
-who holds authoritative state; writing to ARC/ARZ or to TQVaultAE's
-vault format; weakening or bypassing the backup-first write path;
-replacing egui/eframe; dropping a supported platform; adding original
-TQ 2006 support.
+who holds authoritative state; writing to ARC/ARZ; a change to the
+vault JSON schema contract; weakening or bypassing the backup-first
+or targeted-splice write rules; adopting a parser-derive dependency;
+a license change; replacing egui/eframe; dropping a supported
+platform; adding original TQ 2006 support.
 
 Not structural (no update needed): new UI panels or item operations
 behind unchanged file boundaries; parser internals behind an
