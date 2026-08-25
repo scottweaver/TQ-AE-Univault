@@ -11,7 +11,7 @@
 use crate::cache::GameCache;
 use crate::chr::{GridPos, Item, PlayerCharacter, sack_dimensions};
 use crate::gamedata::FALLBACK_FOOTPRINT;
-use crate::grid::{CellRect, find_open_cells};
+use crate::grid::{CellRect, find_open_cells, fits as grid_fits};
 use crate::stash::Stash;
 use crate::vault::{TAB_HEIGHT, TAB_WIDTH, Vault, VaultItem};
 
@@ -22,6 +22,8 @@ pub enum TransferError {
     NoRoom,
     #[error("no such container")]
     BadIndex,
+    #[error("that spot is occupied or out of bounds")]
+    Occupied,
 }
 
 /// A failed placement, handing the item back to the caller (boxed to
@@ -39,44 +41,17 @@ impl Rejected {
             reason: TransferError::NoRoom,
         }
     }
+
+    fn because(item: Item, reason: TransferError) -> Self {
+        Self {
+            item: Box::new(item),
+            reason,
+        }
+    }
 }
 
 fn footprint(db: Option<&GameCache>, item: &Item) -> (i32, i32) {
     db.map_or(FALLBACK_FOOTPRINT, |db| db.item_footprint(item))
-}
-
-fn occupied(items: &[Item], db: Option<&GameCache>) -> Vec<CellRect> {
-    items
-        .iter()
-        .map(|item| {
-            let (width, height) = footprint(db, item);
-            CellRect {
-                x: item.position.x,
-                y: item.position.y,
-                width,
-                height,
-            }
-        })
-        .collect()
-}
-
-fn vault_occupied(items: &[VaultItem], db: Option<&GameCache>) -> Vec<CellRect> {
-    items
-        .iter()
-        .map(|entry| {
-            let (width, height) = if entry.width > 0 && entry.height > 0 {
-                (entry.width, entry.height)
-            } else {
-                footprint(db, &entry.item)
-            };
-            CellRect {
-                x: entry.item.position.x,
-                y: entry.item.position.y,
-                width,
-                height,
-            }
-        })
-        .collect()
 }
 
 /// Removes an item from a character sack. `None` on a stale index.
@@ -116,7 +91,7 @@ pub fn place_in_vault(
     let tab_count = vault.sacks.len();
     let order = (0..tab_count).cycle().skip(preferred_tab).take(tab_count);
     for tab in order {
-        let taken = vault_occupied(&vault.sacks[tab].items, db);
+        let taken = vault_occupancy(&vault.sacks[tab].items, None, db);
         if let Some(position) = find_open_cells(&taken, width, height, TAB_WIDTH, TAB_HEIGHT) {
             let mut item = item;
             item.position = position;
@@ -149,7 +124,7 @@ pub fn place_in_character(
         .take(sack_count);
     for index in order {
         let (sack_width, sack_height) = sack_dimensions(index);
-        let taken = occupied(&character.sacks[index].items, db);
+        let taken = occupancy(&character.sacks[index].items, None, db);
         if let Some(position) = find_open_cells(&taken, width, height, sack_width, sack_height) {
             let mut item = item;
             item.position = position;
@@ -170,7 +145,7 @@ pub fn place_in_stash(
     db: Option<&GameCache>,
 ) -> Result<(), Rejected> {
     let (width, height) = footprint(db, &item);
-    let taken = occupied(&stash.items, db);
+    let taken = occupancy(&stash.items, None, db);
     match find_open_cells(&taken, width, height, stash.width, stash.height) {
         Some(position) => {
             let mut item = item;
@@ -187,6 +162,170 @@ pub fn place_in_stash(
 #[must_use]
 pub fn position_of(item: &Item) -> GridPos {
     item.position
+}
+
+/// Whether `item` could sit with its top-left at `position` in the
+/// given container without overlap — the drop-preview query. The
+/// occupancy list is the container's current items; the shell
+/// excludes the dragged item itself before asking.
+#[must_use]
+pub fn fits_at(
+    occupied: &[CellRect],
+    footprint: (i32, i32),
+    position: GridPos,
+    container: (i32, i32),
+) -> bool {
+    grid_fits(
+        occupied,
+        CellRect {
+            x: position.x,
+            y: position.y,
+            width: footprint.0,
+            height: footprint.1,
+        },
+        container.0,
+        container.1,
+    )
+}
+
+/// Occupancy rectangles of plain item lists (character sacks, the
+/// stash), optionally skipping one index (the item being dragged).
+#[must_use]
+pub fn occupancy(items: &[Item], skip: Option<usize>, db: Option<&GameCache>) -> Vec<CellRect> {
+    items
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| Some(*index) != skip)
+        .map(|(_, item)| {
+            let (width, height) = footprint(db, item);
+            CellRect {
+                x: item.position.x,
+                y: item.position.y,
+                width,
+                height,
+            }
+        })
+        .collect()
+}
+
+/// Occupancy rectangles of a vault tab, optionally skipping one index.
+#[must_use]
+pub fn vault_occupancy(
+    items: &[VaultItem],
+    skip: Option<usize>,
+    db: Option<&GameCache>,
+) -> Vec<CellRect> {
+    items
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| Some(*index) != skip)
+        .map(|(_, entry)| {
+            let (width, height) = if entry.width > 0 && entry.height > 0 {
+                (entry.width, entry.height)
+            } else {
+                footprint(db, &entry.item)
+            };
+            CellRect {
+                x: entry.item.position.x,
+                y: entry.item.position.y,
+                width,
+                height,
+            }
+        })
+        .collect()
+}
+
+/// Places an item at an exact cell in a character sack, or hands it
+/// back when the spot is occupied or out of bounds.
+///
+/// # Errors
+/// [`TransferError::BadIndex`] for an unknown sack;
+/// [`TransferError::Occupied`] when the footprint does not fit there.
+pub fn place_in_character_at(
+    character: &mut PlayerCharacter,
+    item: Item,
+    sack: usize,
+    position: GridPos,
+    db: Option<&GameCache>,
+) -> Result<(), Rejected> {
+    let Some(target) = character.sacks.get_mut(sack) else {
+        return Err(Rejected::because(item, TransferError::BadIndex));
+    };
+    let taken = occupancy(&target.items, None, db);
+    if !fits_at(
+        &taken,
+        footprint(db, &item),
+        position,
+        sack_dimensions(sack),
+    ) {
+        return Err(Rejected::because(item, TransferError::Occupied));
+    }
+    let mut item = item;
+    item.position = position;
+    target.items.push(item);
+    Ok(())
+}
+
+/// Places an item at an exact cell in the stash, or hands it back.
+///
+/// # Errors
+/// [`TransferError::Occupied`] when the footprint does not fit there.
+pub fn place_in_stash_at(
+    stash: &mut Stash,
+    item: Item,
+    position: GridPos,
+    db: Option<&GameCache>,
+) -> Result<(), Rejected> {
+    let taken = occupancy(&stash.items, None, db);
+    if !fits_at(
+        &taken,
+        footprint(db, &item),
+        position,
+        (stash.width, stash.height),
+    ) {
+        return Err(Rejected::because(item, TransferError::Occupied));
+    }
+    let mut item = item;
+    item.position = position;
+    stash.items.push(item);
+    Ok(())
+}
+
+/// Places an item at an exact cell in a vault tab, or hands it back.
+///
+/// # Errors
+/// [`TransferError::BadIndex`] for an unknown tab;
+/// [`TransferError::Occupied`] when the footprint does not fit there.
+pub fn place_in_vault_at(
+    vault: &mut Vault,
+    item: Item,
+    tab: usize,
+    position: GridPos,
+    db: Option<&GameCache>,
+) -> Result<(), Rejected> {
+    let Some(target) = vault.sacks.get_mut(tab) else {
+        return Err(Rejected::because(item, TransferError::BadIndex));
+    };
+    let taken = vault_occupancy(&target.items, None, db);
+    if !fits_at(
+        &taken,
+        footprint(db, &item),
+        position,
+        (TAB_WIDTH, TAB_HEIGHT),
+    ) {
+        return Err(Rejected::because(item, TransferError::Occupied));
+    }
+    let mut item = item;
+    item.position = position;
+    target.items.push(VaultItem::new(item, 0, 0));
+    Ok(())
+}
+
+/// The footprint used for placement decisions — exposed so the shell
+/// paints previews with the same numbers placements use.
+#[must_use]
+pub fn placement_footprint(db: Option<&GameCache>, item: &Item) -> (i32, i32) {
+    footprint(db, item)
 }
 
 #[cfg(test)]
@@ -320,6 +459,148 @@ mod tests {
         let rejected = place_in_stash(&mut stash, item("records\\b.dbr"), None).unwrap_err();
         assert_eq!(rejected.reason, TransferError::NoRoom);
         assert_eq!(rejected.item.base.file_stem(), "b");
+    }
+
+    #[test]
+    fn exact_placement_honors_position_and_rejects_overlap() {
+        let mut vault = Vault::new(1);
+        place_in_vault_at(
+            &mut vault,
+            item("records\\a.dbr"),
+            0,
+            GridPos { x: 3, y: 4 },
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            vault.sacks[0].items[0].item.position,
+            GridPos { x: 3, y: 4 }
+        );
+
+        // Fallback footprint is 2x5: overlapping cells are refused…
+        let rejected = place_in_vault_at(
+            &mut vault,
+            item("records\\b.dbr"),
+            0,
+            GridPos { x: 4, y: 8 },
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(rejected.reason, TransferError::Occupied);
+        // …and the item comes back intact.
+        assert_eq!(rejected.item.base.file_stem(), "b");
+
+        // Just clear of the first item is fine.
+        place_in_vault_at(&mut vault, *rejected.item, 0, GridPos { x: 5, y: 0 }, None).unwrap();
+        assert_eq!(vault.sacks[0].items.len(), 2);
+
+        let bad_tab = place_in_vault_at(
+            &mut vault,
+            item("records\\c.dbr"),
+            7,
+            GridPos { x: 0, y: 0 },
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(bad_tab.reason, TransferError::BadIndex);
+    }
+
+    #[test]
+    fn exact_placement_respects_container_bounds() {
+        let bytes = player_bytes();
+        let mut character = parse_player(&bytes).unwrap();
+        let (width, height) = sack_dimensions(1);
+        let out_of_bounds = place_in_character_at(
+            &mut character,
+            item("records\\a.dbr"),
+            1,
+            GridPos {
+                x: width - 1,
+                y: height - 1,
+            },
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(out_of_bounds.reason, TransferError::Occupied);
+
+        place_in_character_at(
+            &mut character,
+            item("records\\a.dbr"),
+            1,
+            GridPos { x: 0, y: 0 },
+            None,
+        )
+        .unwrap();
+        assert_eq!(character.sacks[1].items.len(), 1);
+
+        let mut stash = Stash {
+            version: 2,
+            width: 4,
+            height: 5,
+            items: Vec::new(),
+        };
+        place_in_stash_at(
+            &mut stash,
+            item("records\\s.dbr"),
+            GridPos { x: 2, y: 0 },
+            None,
+        )
+        .unwrap();
+        let clash = place_in_stash_at(
+            &mut stash,
+            item("records\\t.dbr"),
+            GridPos { x: 1, y: 4 },
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(clash.reason, TransferError::Occupied);
+    }
+
+    #[test]
+    fn moving_within_a_container_via_take_and_place_at() {
+        let bytes = player_bytes();
+        let mut character = parse_player(&bytes).unwrap();
+        let taken = take_from_character(&mut character, 0, 0).unwrap();
+        let original = taken.position;
+        assert_eq!(original, GridPos { x: 0, y: 0 });
+        // Sacks are 5 rows tall and the fallback footprint 2×5, so
+        // a move can only change the column.
+        place_in_character_at(&mut character, taken, 0, GridPos { x: 5, y: 0 }, None).unwrap();
+        let moved = &character.sacks[0].items[0];
+        assert_eq!(moved.position, GridPos { x: 5, y: 0 });
+    }
+
+    #[test]
+    fn occupancy_skip_frees_the_dragged_items_cells() {
+        let mut vault = Vault::new(1);
+        place_in_vault_at(
+            &mut vault,
+            item("records\\a.dbr"),
+            0,
+            GridPos { x: 0, y: 0 },
+            None,
+        )
+        .unwrap();
+        let items = &vault.sacks[0].items;
+        // With the item excluded, its own cells count as free — the
+        // preview a drag shows over the item's original spot.
+        let without = vault_occupancy(items, Some(0), None);
+        assert!(fits_at(&without, (2, 5), GridPos { x: 0, y: 0 }, (18, 20)));
+        let with = vault_occupancy(items, None, None);
+        assert!(!fits_at(&with, (2, 5), GridPos { x: 0, y: 0 }, (18, 20)));
+        // Out of bounds is never a fit.
+        assert!(!fits_at(
+            &without,
+            (2, 5),
+            GridPos { x: 17, y: 0 },
+            (18, 20)
+        ));
+        assert!(!fits_at(
+            &without,
+            (2, 5),
+            GridPos { x: -1, y: 0 },
+            (18, 20)
+        ));
     }
 
     #[test]

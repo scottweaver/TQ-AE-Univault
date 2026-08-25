@@ -283,6 +283,7 @@ struct App {
     right: Option<VaultPane>,
     status: Option<Result<String, String>>,
     pending_respec: Option<PendingRespec>,
+    drag: Option<DragState>,
     /// Zoom shown by the slider while dragging; applied on release.
     pending_zoom: f32,
 }
@@ -313,6 +314,7 @@ impl App {
             right: None,
             status: None,
             pending_respec: None,
+            drag: None,
             pending_zoom: 1.0,
         };
         if let Some(path) = args.vault {
@@ -692,7 +694,8 @@ impl eframe::App for App {
         }
         self.show_header(ui);
         ui.separator();
-        let action = self.show_panes(ui);
+        let (action, drag_frame) = self.show_panes(ui);
+        self.update_drag(ui.ctx(), drag_frame);
         match action {
             Some(PaneAction::MoveToVault) => self.status = Some(self.move_left_to_vault()),
             Some(PaneAction::MoveToFile) => self.status = Some(self.move_vault_to_left()),
@@ -891,6 +894,214 @@ impl App {
         });
     }
 
+    /// Advances the drag: adopts a newly started one, paints the item
+    /// at the pointer, and commits or cancels on release.
+    fn update_drag(&mut self, ctx: &egui::Context, frame: DragFrame) {
+        if self.drag.is_none() {
+            self.drag = frame.begin;
+        }
+        let Some(state) = self.drag.clone() else {
+            return;
+        };
+
+        let db = match &self.game {
+            GameStatus::Loaded(data) => Some(data),
+            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
+        };
+        let footprint = self.caches.footprint(db, &state.item);
+        if let Some(pointer) = ctx.pointer_latest_pos() {
+            let rect = egui::Rect::from_min_size(
+                pointer - state.grab,
+                egui::vec2(cells_to_points(footprint.0), cells_to_points(footprint.1)),
+            );
+            let painter = ctx.layer_painter(egui::LayerId::new(
+                egui::Order::Tooltip,
+                egui::Id::new("drag-cursor"),
+            ));
+            if let Some(texture) = self.caches.icon(ctx, db, &state.item) {
+                painter.image(
+                    texture.id(),
+                    rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200),
+                );
+            } else {
+                painter.rect_filled(rect, 2.0, egui::Color32::from_black_alpha(120));
+            }
+        }
+
+        if ctx.input(|input| input.pointer.any_released()) {
+            if let Some(candidate) = frame.candidate.filter(|candidate| candidate.fits) {
+                let same_spot =
+                    candidate.grid == state.source && candidate.cell == state.item.position;
+                if !same_spot {
+                    self.status = Some(self.perform_drop(&state, candidate));
+                }
+            }
+            self.drag = None;
+            ctx.request_repaint();
+        }
+    }
+
+    /// Moves the dragged item to the drop cell; on a failed placement
+    /// the item goes back where it came from.
+    fn perform_drop(&mut self, state: &DragState, target: DropCandidate) -> Result<String, String> {
+        let db = match &self.game {
+            GameStatus::Loaded(data) => Some(data),
+            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
+        };
+        let label = self.caches.names.item_label(db, &state.item);
+
+        let taken = match state.source {
+            GridId::Sack(sack) => {
+                let pane = self.left.as_mut().ok_or("no game file loaded")?;
+                let GameFile::Character(character) = &mut pane.file else {
+                    return Err("drag source changed — drop ignored".to_string());
+                };
+                transfer::take_from_character(character, sack, state.index)
+            }
+            GridId::Stash => {
+                let pane = self.left.as_mut().ok_or("no game file loaded")?;
+                let GameFile::Stash(stash) = &mut pane.file else {
+                    return Err("drag source changed — drop ignored".to_string());
+                };
+                transfer::take_from_stash(stash, state.index)
+            }
+            GridId::VaultTab(tab) => {
+                let pane = self.right.as_mut().ok_or("no vault loaded")?;
+                transfer::take_from_vault(&mut pane.vault, tab, state.index).map(|entry| entry.item)
+            }
+        }
+        .ok_or("item moved under the drag — drop ignored")?;
+
+        if taken.base != state.item.base {
+            let origin = state.item.position;
+            self.restore_dropped(state.source, taken, origin)?;
+            return Err("item moved under the drag — drop ignored".to_string());
+        }
+        let origin = taken.position;
+
+        let db = match &self.game {
+            GameStatus::Loaded(data) => Some(data),
+            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
+        };
+        let placed = match target.grid {
+            GridId::Sack(sack) => {
+                let Some(pane) = self.left.as_mut() else {
+                    return Err("no game file loaded".to_string());
+                };
+                let GameFile::Character(character) = &mut pane.file else {
+                    return Err("drop target changed".to_string());
+                };
+                transfer::place_in_character_at(character, taken, sack, target.cell, db)
+            }
+            GridId::Stash => {
+                let Some(pane) = self.left.as_mut() else {
+                    return Err("no game file loaded".to_string());
+                };
+                let GameFile::Stash(stash) = &mut pane.file else {
+                    return Err("drop target changed".to_string());
+                };
+                transfer::place_in_stash_at(stash, taken, target.cell, db)
+            }
+            GridId::VaultTab(tab) => {
+                let Some(pane) = self.right.as_mut() else {
+                    return Err("no vault loaded".to_string());
+                };
+                transfer::place_in_vault_at(&mut pane.vault, taken, tab, target.cell, db)
+            }
+        };
+
+        match placed {
+            Ok(()) => {
+                self.mark_dirty(state.source);
+                self.mark_dirty(target.grid);
+                if let Some(pane) = &mut self.left {
+                    pane.selected = None;
+                }
+                if let Some(pane) = &mut self.right {
+                    pane.selected = None;
+                }
+                let destination = match target.grid {
+                    GridId::Sack(sack) => format!("sack {}", sack + 1),
+                    GridId::Stash => "stash".to_string(),
+                    GridId::VaultTab(tab) => format!("vault tab {}", tab + 1),
+                };
+                Ok(format!(
+                    "{label} → {destination} ({}, {})",
+                    target.cell.x, target.cell.y
+                ))
+            }
+            Err(rejected) => {
+                let reason = rejected.reason;
+                self.restore_dropped(state.source, *rejected.item, origin)?;
+                Err(format!("{reason}; item returned"))
+            }
+        }
+    }
+
+    /// Puts a taken item back at its original cell (guaranteed free),
+    /// falling back to any open spot.
+    fn restore_dropped(
+        &mut self,
+        source: GridId,
+        item: Item,
+        position: univault_core::chr::GridPos,
+    ) -> Result<(), String> {
+        let db = match &self.game {
+            GameStatus::Loaded(data) => Some(data),
+            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
+        };
+        let lost = "item could not be returned — reload without saving".to_string();
+        match source {
+            GridId::Sack(sack) => {
+                let pane = self.left.as_mut().ok_or_else(|| lost.clone())?;
+                let GameFile::Character(character) = &mut pane.file else {
+                    return Err(lost);
+                };
+                transfer::place_in_character_at(character, item, sack, position, db)
+                    .or_else(|rejected| {
+                        transfer::place_in_character(character, *rejected.item, sack, db)
+                            .map(|_| ())
+                    })
+                    .map_err(|_| lost)
+            }
+            GridId::Stash => {
+                let pane = self.left.as_mut().ok_or_else(|| lost.clone())?;
+                let GameFile::Stash(stash) = &mut pane.file else {
+                    return Err(lost);
+                };
+                transfer::place_in_stash_at(stash, item, position, db)
+                    .or_else(|rejected| transfer::place_in_stash(stash, *rejected.item, db))
+                    .map_err(|_| lost)
+            }
+            GridId::VaultTab(tab) => {
+                let pane = self.right.as_mut().ok_or_else(|| lost.clone())?;
+                transfer::place_in_vault_at(&mut pane.vault, item, tab, position, db)
+                    .or_else(|rejected| {
+                        transfer::place_in_vault(&mut pane.vault, *rejected.item, tab, db)
+                            .map(|_| ())
+                    })
+                    .map_err(|_| lost)
+            }
+        }
+    }
+
+    fn mark_dirty(&mut self, grid: GridId) {
+        match grid {
+            GridId::Sack(_) | GridId::Stash => {
+                if let Some(pane) = &mut self.left {
+                    pane.dirty = true;
+                }
+            }
+            GridId::VaultTab(_) => {
+                if let Some(pane) = &mut self.right {
+                    pane.dirty = true;
+                }
+            }
+        }
+    }
+
     /// Computes a respec's refund from the pane's baseline bytes and
     /// opens the confirmation modal.
     fn preview_respec(&mut self, kind: RespecKind) {
@@ -995,31 +1206,49 @@ impl App {
             .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
     }
 
-    fn show_panes(&mut self, ui: &mut egui::Ui) -> Option<PaneAction> {
+    fn show_panes(&mut self, ui: &mut egui::Ui) -> (Option<PaneAction>, DragFrame) {
         let caches = &mut self.caches;
         let db = match &self.game {
             GameStatus::Loaded(data) => Some(data),
             GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
         };
+        let drag = self.drag.clone();
+        let mut frame = DragFrame::default();
         let mut action = None;
         let can_move = self.left.is_some() && self.right.is_some();
         ui.columns(2, |columns| {
             if let Some(pane) = &mut self.left {
-                if let Some(chosen) = show_file_pane(&mut columns[0], pane, db, caches, can_move) {
+                if let Some(chosen) = show_file_pane(
+                    &mut columns[0],
+                    pane,
+                    db,
+                    caches,
+                    can_move,
+                    drag.as_ref(),
+                    &mut frame,
+                ) {
                     action = Some(chosen);
                 }
             } else {
                 columns[0].weak("No game file loaded.");
             }
             if let Some(pane) = &mut self.right {
-                if let Some(chosen) = show_vault_pane(&mut columns[1], pane, db, caches, can_move) {
+                if let Some(chosen) = show_vault_pane(
+                    &mut columns[1],
+                    pane,
+                    db,
+                    caches,
+                    can_move,
+                    drag.as_ref(),
+                    &mut frame,
+                ) {
                     action = Some(chosen);
                 }
             } else {
                 columns[1].weak("No vault loaded.");
             }
         });
-        action
+        (action, frame)
     }
 }
 
@@ -1032,20 +1261,73 @@ fn cells_to_points(cells: i32) -> f32 {
     cells as f32 * CELL_SIZE
 }
 
+/// Which on-screen grid an item lives in — the address space of
+/// drag-and-drop.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GridId {
+    Sack(usize),
+    Stash,
+    VaultTab(usize),
+}
+
+impl GridId {
+    /// Selection containers reuse sack/tab indexes; the stash is 0.
+    fn container(self) -> usize {
+        match self {
+            Self::Sack(index) | Self::VaultTab(index) => index,
+            Self::Stash => 0,
+        }
+    }
+}
+
+/// An in-flight drag: where the item came from and how it was
+/// grabbed. The item stays in its container (painted dimmed) until
+/// the drop commits.
+#[derive(Clone)]
+struct DragState {
+    source: GridId,
+    index: usize,
+    item: Item,
+    /// Pointer offset from the item's top-left, in points, so the
+    /// item hangs where it was grabbed.
+    grab: egui::Vec2,
+}
+
+/// The cell a drop would land in, computed by whichever grid the
+/// pointer is over this frame.
+#[derive(Clone, Copy)]
+struct DropCandidate {
+    grid: GridId,
+    cell: univault_core::chr::GridPos,
+    fits: bool,
+}
+
+/// What the grids reported back this frame.
+#[derive(Default)]
+struct DragFrame {
+    begin: Option<DragState>,
+    candidate: Option<DropCandidate>,
+}
+
 /// Paints a container as its actual cell grid, with items at their
 /// positions (icon when decodable, initial letter otherwise), click
-/// selection, and a name tooltip on hover.
+/// selection, a name tooltip on hover, and drag-and-drop with a
+/// green/red footprint preview.
+#[allow(clippy::too_many_arguments)] // one call surface, shell-internal
 fn grid_view(
     ui: &mut egui::Ui,
     dims: (i32, i32),
     entries: &[(usize, &Item)],
-    container: usize,
+    grid: GridId,
     selected: &mut Option<(usize, usize)>,
     db: Option<&GameCache>,
     caches: &mut Caches,
+    drag: Option<&DragState>,
+    frame: &mut DragFrame,
 ) {
+    let container = grid.container();
     let size = egui::vec2(cells_to_points(dims.0), cells_to_points(dims.1));
-    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
     if !ui.is_rect_visible(rect) {
         return;
     }
@@ -1068,6 +1350,10 @@ fn grid_view(
         );
     }
 
+    // The grab position decides which item a starting drag lifts —
+    // the pointer may already have moved past egui's drag threshold.
+    let press_origin = ui.ctx().input(|input| input.pointer.press_origin());
+
     let mut hovered: Option<&Item> = None;
     for (index, item) in entries {
         let (width, height) = caches.footprint(db, item);
@@ -1081,51 +1367,37 @@ fn grid_view(
         )
         .shrink(1.0);
         let is_selected = *selected == Some((container, *index));
-        let fill = if is_selected {
-            visuals.selection.bg_fill
-        } else {
-            visuals.widgets.inactive.bg_fill
-        };
-        painter.rect_filled(item_rect, 2.0, fill);
-        if let Some(texture) = caches.icon(ui.ctx(), db, item) {
-            painter.image(
-                texture.id(),
-                item_rect,
-                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                egui::Color32::WHITE,
-            );
-        } else {
-            let initial = caches
-                .names
-                .record_name(db, &item.base)
-                .chars()
-                .next()
-                .unwrap_or('?');
-            painter.text(
-                item_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                initial,
-                egui::FontId::proportional(12.0),
-                visuals.strong_text_color(),
-            );
-        }
-        let outline = if is_selected {
-            egui::Stroke::new(2.0, visuals.selection.stroke.color)
-        } else {
-            egui::Stroke::new(1.0, visuals.widgets.inactive.fg_stroke.color)
-        };
-        painter.rect_stroke(item_rect, 2.0, outline, egui::StrokeKind::Inside);
-        if item.stack_size > 1 {
-            painter.text(
-                item_rect.right_bottom() - egui::vec2(2.0, 1.0),
-                egui::Align2::RIGHT_BOTTOM,
-                item.stack_size.to_string(),
-                egui::FontId::proportional(10.0),
-                visuals.strong_text_color(),
-            );
+        paint_item_tile(
+            ui,
+            &painter,
+            item_rect,
+            item,
+            is_selected,
+            &visuals,
+            db,
+            caches,
+        );
+
+        // The lifted item stays put but fades until the drop lands.
+        if drag.is_some_and(|state| state.source == grid && state.index == *index) {
+            painter.rect_filled(item_rect, 2.0, egui::Color32::from_black_alpha(140));
         }
 
-        if let Some(pointer) = response.hover_pos()
+        if response.drag_started()
+            && drag.is_none()
+            && frame.begin.is_none()
+            && press_origin.is_some_and(|origin| item_rect.contains(origin))
+        {
+            frame.begin = Some(DragState {
+                source: grid,
+                index: *index,
+                item: (*item).clone(),
+                grab: press_origin.map_or(egui::Vec2::ZERO, |origin| origin - item_rect.min),
+            });
+        }
+
+        if drag.is_none()
+            && let Some(pointer) = response.hover_pos()
             && item_rect.contains(pointer)
         {
             hovered = Some(item);
@@ -1137,6 +1409,142 @@ fn grid_view(
     if let Some(item) = hovered {
         response.on_hover_ui(|ui| item_tooltip(ui, item, db, caches));
     }
+
+    if let Some(state) = drag
+        && let Some(pointer) = ui.ctx().pointer_latest_pos()
+        && rect.contains(pointer)
+    {
+        frame.candidate = Some(paint_drop_preview(
+            &painter, rect, dims, entries, grid, state, pointer, db, caches,
+        ));
+    }
+}
+
+/// One item's tile: fill, icon (or initial letter), outline, and
+/// stack badge.
+#[allow(clippy::too_many_arguments)] // one call surface, shell-internal
+fn paint_item_tile(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    item_rect: egui::Rect,
+    item: &Item,
+    is_selected: bool,
+    visuals: &egui::Visuals,
+    db: Option<&GameCache>,
+    caches: &mut Caches,
+) {
+    let fill = if is_selected {
+        visuals.selection.bg_fill
+    } else {
+        visuals.widgets.inactive.bg_fill
+    };
+    painter.rect_filled(item_rect, 2.0, fill);
+    if let Some(texture) = caches.icon(ui.ctx(), db, item) {
+        painter.image(
+            texture.id(),
+            item_rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
+    } else {
+        let initial = caches
+            .names
+            .record_name(db, &item.base)
+            .chars()
+            .next()
+            .unwrap_or('?');
+        painter.text(
+            item_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            initial,
+            egui::FontId::proportional(12.0),
+            visuals.strong_text_color(),
+        );
+    }
+    let outline = if is_selected {
+        egui::Stroke::new(2.0, visuals.selection.stroke.color)
+    } else {
+        egui::Stroke::new(1.0, visuals.widgets.inactive.fg_stroke.color)
+    };
+    painter.rect_stroke(item_rect, 2.0, outline, egui::StrokeKind::Inside);
+    if item.stack_size > 1 {
+        painter.text(
+            item_rect.right_bottom() - egui::vec2(2.0, 1.0),
+            egui::Align2::RIGHT_BOTTOM,
+            item.stack_size.to_string(),
+            egui::FontId::proportional(10.0),
+            visuals.strong_text_color(),
+        );
+    }
+}
+
+/// Snaps the dragged footprint to the hovered cell, paints it green
+/// (fits) or red (blocked), and returns the drop candidate.
+#[allow(clippy::too_many_arguments)] // one call surface, shell-internal
+fn paint_drop_preview(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    dims: (i32, i32),
+    entries: &[(usize, &Item)],
+    grid: GridId,
+    state: &DragState,
+    cursor: egui::Pos2,
+    db: Option<&GameCache>,
+    caches: &mut Caches,
+) -> DropCandidate {
+    let footprint = caches.footprint(db, &state.item);
+    let relative = cursor - state.grab - rect.min.to_vec2();
+    let cell = univault_core::chr::GridPos {
+        x: point_to_cell(relative.x, dims.0, footprint.0),
+        y: point_to_cell(relative.y, dims.1, footprint.1),
+    };
+    let skip = (state.source == grid).then_some(state.index);
+    let occupied: Vec<univault_core::grid::CellRect> = entries
+        .iter()
+        .filter(|(index, _)| Some(*index) != skip)
+        .map(|(_, item)| {
+            let (width, height) = caches.footprint(db, item);
+            univault_core::grid::CellRect {
+                x: item.position.x,
+                y: item.position.y,
+                width,
+                height,
+            }
+        })
+        .collect();
+    let fits = transfer::fits_at(&occupied, footprint, cell, dims);
+    let preview = egui::Rect::from_min_size(
+        rect.min + egui::vec2(cells_to_points(cell.x), cells_to_points(cell.y)),
+        egui::vec2(cells_to_points(footprint.0), cells_to_points(footprint.1)),
+    )
+    .shrink(1.0);
+    let (fill, stroke) = if fits {
+        (
+            egui::Color32::from_rgba_unmultiplied(64, 255, 64, 50),
+            egui::Color32::from_rgb(64, 255, 64),
+        )
+    } else {
+        (
+            egui::Color32::from_rgba_unmultiplied(255, 64, 64, 50),
+            egui::Color32::from_rgb(255, 64, 64),
+        )
+    };
+    painter.rect_filled(preview, 2.0, fill);
+    painter.rect_stroke(
+        preview,
+        2.0,
+        egui::Stroke::new(2.0, stroke),
+        egui::StrokeKind::Inside,
+    );
+    DropCandidate { grid, cell, fits }
+}
+
+/// The grid cell a point lands in, clamped so the footprint stays
+/// inside the container.
+#[allow(clippy::cast_possible_truncation)] // grid coordinates are tiny
+fn point_to_cell(point: f32, grid_cells: i32, footprint_cells: i32) -> i32 {
+    let cell = (point / CELL_SIZE).round() as i32;
+    cell.clamp(0, (grid_cells - footprint_cells).max(0))
 }
 
 /// Item details on hover, name colored by rarity. The game's palette
@@ -1212,12 +1620,31 @@ fn game_color(rgb: style::Rgb) -> egui::Color32 {
     egui::Color32::from_rgb(rgb.r, rgb.g, rgb.b)
 }
 
+fn show_equipment(
+    ui: &mut egui::Ui,
+    character: &PlayerCharacter,
+    db: Option<&GameCache>,
+    caches: &mut Caches,
+) {
+    ui.collapsing("Equipment (read-only)", |ui| {
+        for (name, slot) in EQUIPMENT_SLOT_NAMES.iter().zip(&character.equipment.slots) {
+            match slot {
+                Some(item) => ui.label(format!("{name}: {}", caches.names.item_label(db, item))),
+                None => ui.weak(format!("{name}: —")),
+            };
+        }
+    });
+}
+
+#[allow(clippy::too_many_arguments)] // one call surface, shell-internal
 fn show_file_pane(
     ui: &mut egui::Ui,
     pane: &mut FilePane,
     db: Option<&GameCache>,
     caches: &mut Caches,
     can_move: bool,
+    drag: Option<&DragState>,
+    frame: &mut DragFrame,
 ) -> Option<PaneAction> {
     let mut action = None;
     ui.horizontal(|ui| {
@@ -1272,17 +1699,7 @@ fn show_file_pane(
         .id_salt("file-pane")
         .show(ui, |ui| match &pane.file {
             GameFile::Character(character) => {
-                ui.collapsing("Equipment (read-only)", |ui| {
-                    for (name, slot) in EQUIPMENT_SLOT_NAMES.iter().zip(&character.equipment.slots)
-                    {
-                        match slot {
-                            Some(item) => {
-                                ui.label(format!("{name}: {}", caches.names.item_label(db, item)))
-                            }
-                            None => ui.weak(format!("{name}: —")),
-                        };
-                    }
-                });
+                show_equipment(ui, character, db, caches);
                 for (index, sack) in character.sacks.iter().enumerate() {
                     let title = format!("Sack {} ({} items)", index + 1, sack.items.len());
                     egui::CollapsingHeader::new(title)
@@ -1294,10 +1711,12 @@ fn show_file_pane(
                                 ui,
                                 chr::sack_dimensions(index),
                                 &entries,
-                                index,
+                                GridId::Sack(index),
                                 &mut pane.selected,
                                 db,
                                 caches,
+                                drag,
+                                frame,
                             );
                         });
                 }
@@ -1308,22 +1727,27 @@ fn show_file_pane(
                     ui,
                     (stash.width, stash.height),
                     &entries,
-                    0,
+                    GridId::Stash,
                     &mut pane.selected,
                     db,
                     caches,
+                    drag,
+                    frame,
                 );
             }
         });
     action
 }
 
+#[allow(clippy::too_many_arguments)] // one call surface, shell-internal
 fn show_vault_pane(
     ui: &mut egui::Ui,
     pane: &mut VaultPane,
     db: Option<&GameCache>,
     caches: &mut Caches,
     can_move: bool,
+    drag: Option<&DragState>,
+    frame: &mut DragFrame,
 ) -> Option<PaneAction> {
     let mut action = None;
     ui.horizontal(|ui| {
@@ -1366,10 +1790,12 @@ fn show_vault_pane(
                                 univault_core::vault::TAB_HEIGHT,
                             ),
                             &entries,
-                            tab,
+                            GridId::VaultTab(tab),
                             &mut pane.selected,
                             db,
                             caches,
+                            drag,
+                            frame,
                         );
                     });
             }

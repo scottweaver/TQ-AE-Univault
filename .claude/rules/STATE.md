@@ -27,8 +27,8 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | read stack + transfers + grids + full item tooltips merged; pushed to the new GitHub origin |
-| `feat/mod-forge` | ARZ composer + mod patch compiler; first tuned mod installed | PR open |
+| `main` | trunk | tooltips + CI + respec + skill export + mod forge merged (PRs #1–#4); all gates green |
+| `feat/drag-and-drop` | drag-and-drop item movement with drop preview | PR opening |
 
 ## Next up
 
@@ -48,17 +48,9 @@ it works great!" — both respec buttons verified in-game. Residual
 check whenever convenient: confirm a transferred-back item in-game
 and open our vault JSON in TQVaultAE.
 
-User-inserted priorities (2026-08-25, before drag-and-drop):
-backup rotation (5 newest per file — in PR) and two respec buttons
-("Respec attributes", "Respec skills & masteries"), each behind a
-confirm dialog, refunds computed from deltas. Respec needs new chr
-parsing (attributes, skill list, hotbar) + targeted splices;
-provenance note: TQVaultAE has no respec — tqrespec (GPL) is
-eyes-only reference, implementation independent.
-
-1. Drag-and-drop item movement on the grids (click-select + buttons
-   today), including cross-pane drags and an occupied-cell drop
-   preview.
+1. Drag-and-drop item movement on the grids — **in flight on
+   `feat/drag-and-drop`** (cross-pane drags + occupied-cell drop
+   preview implemented; awaiting user feel-test and PR merge).
 2. Game-install auto-discovery (Steam library paths per OS in
    `platform`) to preseed the one-time Import dialog.
 3. DXT1/3 decode for the ~7 compressed item bitmaps (currently an
@@ -68,6 +60,20 @@ eyes-only reference, implementation independent.
 
 ## Most recent meaningful progress
 
+- **2026-08-25 — Drag-and-drop item movement.** The top "Next up"
+  item: items now drag between cells, sacks, panes, and vault tabs
+  with a live drop preview (green = fits, red = blocked), the
+  ghosted source dimmed and the item riding the cursor at true
+  footprint scale. Core gained exact-position placement
+  (`grid::fits`, `transfer::place_*_at` / `fits_at` / `occupancy`
+  with a skip index so the dragged item's own cells read as free);
+  the GUI's `grid_view` switched to `Sense::click_and_drag` (click
+  select and hover tooltips unchanged — egui only reports drag
+  after a movement threshold). Failed drops restore the item at its
+  origin, falling back to auto-place. 150 tests. Risk: drop-feel
+  (snapping, grab offset) unverified until the user drags for real;
+  footprint lookups during hover are cached per record, so the old
+  "uncached before drag-and-drop" worry is closed.
 - **2026-08-25 — Mod forge: from reader to mod maker.** User pivot
   into modding, design-dialogued: `arz::compose` (writer half of the
   format; layout from the MIT `TQArchive-Wrapper` reference — 24B
@@ -238,26 +244,6 @@ eyes-only reference, implementation independent.
   grid rendering. Risk: footprint lookups are uncached (record +
   tex decompress per query) — fine for click-driven moves, revisit
   before drag-and-drop hover previews.
-- **2026-08-24 — Transfer UI: the core feature loop is live.**
-  Two-pane GUI (game file ⇄ vault) with click-to-select item
-  movement, dirty tracking, and explicit saves through the new
-  backup-first shell writer (synced timestamped sibling backups;
-  stash saves rewrite the `.dxg` twin via the ported
-  `EncodeBackupFile`). Pure `transfer` module in core: take/place
-  operations using TQVaultAE's column-major grid search with
-  conservative per-class footprints (no overlap possible at true
-  sizes; real footprints need a TEX reader — next). Legacy `.vault`
-  opens import-only, saving as `.json`. Side request landed: gold is
-  editable on the character pane (`replace_money`, a 4-byte
-  in-place patch). 84 tests. Why: the product's reason to exist now
-  functions end to end. Risk: no real disk write has happened yet —
-  user acceptance on a save-tree copy is the next gate; placement
-  is sparse until real footprints land. First acceptance attempt
-  found and fixed a real-world snag: macOS `sync_all` (F_FULLFSYNC)
-  is rejected by SMB mounts ("os error 45") — the writer now
-  degrades to close-flush on "unsupported", validated by running the
-  safe-write tests with TMPDIR on the user's network volume.
-
 ## Blocked / waiting
 
 - *(nothing)*
