@@ -27,3 +27,16 @@ pub fn config_dir() -> Option<PathBuf> {
             .map(|base| base.join("tq-univault"))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_dir_ends_with_the_app_name() {
+        // Every supported platform derives from env vars that exist
+        // in any real session (HOME / APPDATA / XDG_CONFIG_HOME).
+        let dir = config_dir().expect("a config dir on a supported platform");
+        assert!(dir.ends_with("tq-univault"), "{dir:?}");
+    }
+}

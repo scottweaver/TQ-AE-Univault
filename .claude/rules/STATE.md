@@ -27,8 +27,8 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | read stack + transfers + grid rendering merged; all gates green |
-| `feat/item-hover-details` | full item tooltips: rarity colors + ported stats engine | implemented + real-data validated; awaiting user visual check + merge |
+| `main` | trunk | read stack + transfers + grids + full item tooltips merged; pushed to the new GitHub origin |
+| `feat/ci-and-test-coverage` | GitHub Actions CI + coverage push (70%→80% lines) | PR open; first CI run validates the 3-OS matrix |
 
 ## Next up
 
@@ -58,6 +58,23 @@ transferred-back item in-game and open our vault JSON in TQVaultAE.
 
 ## Most recent meaningful progress
 
+- **2026-08-25 — GitHub repo + CI + test-coverage push.** The user
+  created the GitHub remote and `main` is pushed. New CI workflow:
+  rustfmt, clippy `-D warnings` + tests across
+  ubuntu/macos/windows (platform independence is now checked, not
+  assumed), and a cargo-llvm-cov job publishing an lcov artifact.
+  Coverage rose 70%→80% of lines: fixture tests now cover the stats
+  engine's dark corners (granted skills incl. triggered levels, pet
+  summons, augments, racial bonuses, global XOR chance groups,
+  damage qualifiers, duration-scaled slow damage, socketed-relic and
+  artifact bonus assembly, expansion origin), cache corrupt-file
+  errors, dictionary/style branches, and the GUI's pure helpers.
+  The origin test caught a real bug: DBR paths start with
+  `records\`, so the XPACK check never matched and expansion lines
+  never rendered. `Item::bare` joined core's public API. Risk:
+  `stats/render.rs` sits at ~71% lines (formula reagents, buff
+  redirects, scroll effects untested); GUI shell logic beyond the
+  helpers is uncovered; CI is unproven until the first Actions run.
 - **2026-08-25 — Full item statistics in tooltips: the attribute
   engine lands.** User-directed follow-up to the rarity tooltip: a
   full-fidelity port of TQVaultAE's display engine (~5,900 reference
@@ -198,17 +215,6 @@ transferred-back item in-game and open our vault JSON in TQVaultAE.
   the item-DB feature the user asked for is live end-to-end. Risk:
   quality/style tags ("Ancient", "Fine") not yet part of names;
   formula items show the generic formula name.
-- **2026-08-24 — ARC + text readers; real-install validation
-  passed.** `arc` module (part-table/directory/names parse, stored +
-  multi-part zlib extraction) and `text` module (BOM-sniffed
-  `tag=label` table with `TQVaultAE`'s gendered-label cleanup). The
-  user mounted a real TQ AE install; `examples/smoke.rs` decompressed
-  **all 74,013 records of database.arz with 0 errors**, extracted 57
-  files from Text_EN.arc, loaded 17,540 tags, and resolved item
-  names end-to-end ("Bow of Upis"). Why: the whole read stack is now
-  proven against reality. Risk: `description` on quest items is
-  flavor text, not a name — the naming layer needs per-type variable
-  selection.
 
 ## Blocked / waiting
 

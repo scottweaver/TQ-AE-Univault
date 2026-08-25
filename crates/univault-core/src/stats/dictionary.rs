@@ -728,5 +728,52 @@ mod tests {
         assert_eq!(tag("skillManaCost"), "ManaCost");
         assert_eq!(tag("projectileExplosionRadius"), "ExplosionRadius");
         assert_eq!(tag("skillChargeLevel"), "SkillChargeDuration");
+        assert_eq!(
+            tag("characterDeflectProjectile"),
+            "CharacterDeflectProjectiles"
+        );
+        assert_eq!(tag("skillChargeDuration"), "SkillChargeDurationMod");
+        assert_eq!(tag("piercingProjectile"), "ProjectilePiercingChance");
+        assert_eq!(tag("refreshTime"), "tagSkillRefreshTime");
+        assert_eq!(tag("headVelocity"), "headVelocity");
+        assert_eq!(tag("offensiveManaBurnMin"), "DamageManaDrain");
+        assert_eq!(tag("offensiveSleepMin"), "xtagDamageSleep");
+        assert_eq!(tag("offensiveFumbleMin"), "DamageDurationFumble");
+        assert_eq!(
+            tag("offensiveProjectileFumbleMin"),
+            "DamageDurationProjectileFumble"
+        );
+        assert_eq!(tag("offensiveManaBurnRatioAdder"), "DamageModifierManaBurn");
+        assert_eq!(tag("offensiveSleepModifier"), "xtagDamageModifierSleep");
+        assert_eq!(
+            tag("offensiveTotalDamageModifier"),
+            "xtagDamageModifierTotalDamage"
+        );
+        assert_eq!(tag("sparkMaxNumber"), "xtagSparkMaxNumber");
+        assert_eq!(
+            tag("skillProjectileSpeedModifier"),
+            "skillProjectileSpeedModifier"
+        );
+        assert_eq!(tag("defensiveSleep"), "xtagDefenseSleep");
+        assert_eq!(
+            tag("defensiveTotalSpeedResistance"),
+            "xtagTotalSpeedResistance"
+        );
+        assert_eq!(
+            tag("defensiveTotalSpeedChance"),
+            "defensiveTotalSpeedChance"
+        );
+        assert_eq!(tag("damageAbsorption"), "SkillDamageAbsorption");
+        assert_eq!(
+            tag("damageAbsorptionPercent"),
+            "SkillDamageAbsorptionPercent"
+        );
+        assert_eq!(
+            tag("retaliationSlowColdModifier"),
+            "RetaliationDurationModifierCold"
+        );
+        assert_eq!(tag("physicalDamageQualifier"), "physicalDamageQualifier");
+        assert_eq!(tag("reagent1BaseName"), "reagent1BaseName");
+        assert_eq!(tag("levelRequirement"), "levelRequirement");
     }
 }
