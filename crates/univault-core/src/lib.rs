@@ -5,3 +5,4 @@
 
 pub mod chr;
 pub mod reader;
+pub mod vault;

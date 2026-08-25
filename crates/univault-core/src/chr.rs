@@ -18,14 +18,18 @@ use crate::reader::{ByteReader, Offset, ReadError, find_key};
 pub struct RecordId(String);
 
 impl RecordId {
-    /// `None` when `raw` is empty, which is how the save format spells
-    /// "no record here".
+    /// `None` when `raw` is empty or whitespace-only, which is how the
+    /// save formats spell "no record here". Surrounding whitespace is
+    /// trimmed, matching `TQVaultAE`'s `RecordId` constructor.
     #[must_use]
     pub fn parse(raw: String) -> Option<Self> {
-        if raw.is_empty() {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
             None
-        } else {
+        } else if trimmed.len() == raw.len() {
             Some(Self(raw))
+        } else {
+            Some(Self(trimmed.to_string()))
         }
     }
 
@@ -185,7 +189,19 @@ fn parse_inventory(data: &[u8]) -> Result<Vec<Sack>, ParseError> {
     let value_at = find_key(data, landmark, 0).ok_or(ParseError::MissingSection(landmark))?;
     let mut reader = ByteReader::at(data, value_at);
     reader.read_i32()?;
+    Ok(parse_sacks_block(&mut reader)?.sacks)
+}
 
+/// The inventory item block: `numberOfSacks` header plus the sacks.
+/// Shared by `Player.chr` (after the grid-coords landmark) and legacy
+/// binary vault files, which are exactly this block and nothing else.
+pub(crate) struct SacksBlock {
+    pub(crate) sacks: Vec<Sack>,
+    pub(crate) focused_sack: i32,
+    pub(crate) selected_sack: i32,
+}
+
+pub(crate) fn parse_sacks_block(reader: &mut ByteReader<'_>) -> Result<SacksBlock, ParseError> {
     reader.expect_key("numberOfSacks")?;
     let count = reader.read_i32()?;
     let count = usize::try_from(count).map_err(|_| ParseError::InvalidCount {
@@ -193,11 +209,18 @@ fn parse_inventory(data: &[u8]) -> Result<Vec<Sack>, ParseError> {
         count,
     })?;
     reader.expect_key("currentlyFocusedSackNumber")?;
-    reader.read_i32()?;
+    let focused_sack = reader.read_i32()?;
     reader.expect_key("currentlySelectedSackNumber")?;
-    reader.read_i32()?;
+    let selected_sack = reader.read_i32()?;
 
-    (0..count).map(|_| parse_sack(&mut reader)).collect()
+    let sacks = (0..count)
+        .map(|_| parse_sack(reader))
+        .collect::<Result<_, _>>()?;
+    Ok(SacksBlock {
+        sacks,
+        focused_sack,
+        selected_sack,
+    })
 }
 
 fn parse_sack(reader: &mut ByteReader<'_>) -> Result<Sack, ParseError> {
@@ -377,39 +400,37 @@ fn parse_raw_item(
     })
 }
 
+/// Builds save-format byte images in the exact shape `TQVaultAE`
+/// writes them, so parsers meet the same layout as in real files.
+/// Shared with the vault module's legacy-import tests.
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Builds `Player.chr` byte images in the exact shape `TQVaultAE`
-    /// writes them, so the parser is exercised against the same layout
-    /// it will meet in real files.
+pub(crate) mod fixture {
     #[derive(Default)]
-    struct Fixture {
-        bytes: Vec<u8>,
+    pub(crate) struct Fixture {
+        pub(crate) bytes: Vec<u8>,
     }
 
-    const BEGIN_BLOCK: i32 = -1_340_212_530;
-    const END_BLOCK: i32 = -559_038_242;
+    pub(crate) const BEGIN_BLOCK: i32 = -1_340_212_530;
+    pub(crate) const END_BLOCK: i32 = -559_038_242;
 
     impl Fixture {
-        fn key(mut self, key: &str) -> Self {
+        pub(crate) fn key(mut self, key: &str) -> Self {
             self.bytes
                 .extend_from_slice(&i32::try_from(key.len()).unwrap().to_le_bytes());
             self.bytes.extend_from_slice(key.as_bytes());
             self
         }
 
-        fn int(mut self, value: i32) -> Self {
+        pub(crate) fn int(mut self, value: i32) -> Self {
             self.bytes.extend_from_slice(&value.to_le_bytes());
             self
         }
 
-        fn cstr(self, key: &str, value: &str) -> Self {
+        pub(crate) fn cstr(self, key: &str, value: &str) -> Self {
             self.key(key).key(value)
         }
 
-        fn utf16(mut self, key: &str, value: &str) -> Self {
+        pub(crate) fn utf16(mut self, key: &str, value: &str) -> Self {
             self = self.key(key);
             let units: Vec<u16> = value.encode_utf16().collect();
             self.bytes
@@ -420,19 +441,19 @@ mod tests {
             self
         }
 
-        fn keyed_int(self, key: &str, value: i32) -> Self {
+        pub(crate) fn keyed_int(self, key: &str, value: i32) -> Self {
             self.key(key).int(value)
         }
 
-        fn begin_block(self) -> Self {
+        pub(crate) fn begin_block(self) -> Self {
             self.keyed_int("begin_block", BEGIN_BLOCK)
         }
 
-        fn end_block(self) -> Self {
+        pub(crate) fn end_block(self) -> Self {
             self.keyed_int("end_block", END_BLOCK)
         }
 
-        fn item_body(self, base: &str, seed: i32) -> Self {
+        pub(crate) fn item_body(self, base: &str, seed: i32) -> Self {
             self.begin_block()
                 .cstr("baseName", base)
                 .cstr("prefixName", "")
@@ -444,7 +465,7 @@ mod tests {
                 .end_block()
         }
 
-        fn sack_item(self, base: &str, seed: i32, x: i32, y: i32) -> Self {
+        pub(crate) fn sack_item(self, base: &str, seed: i32, x: i32, y: i32) -> Self {
             self.begin_block()
                 .item_body(base, seed)
                 .keyed_int("pointX", x)
@@ -452,11 +473,17 @@ mod tests {
                 .end_block()
         }
 
-        fn equipment_slot(self, base: &str) -> Self {
+        pub(crate) fn equipment_slot(self, base: &str) -> Self {
             self.item_body(base, 1)
                 .keyed_int("itemAttached", i32::from(!base.is_empty()))
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixture::Fixture;
+    use super::*;
 
     fn player_file() -> Vec<u8> {
         let mut fixture = Fixture::default()

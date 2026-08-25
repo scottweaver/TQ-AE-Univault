@@ -34,28 +34,41 @@ deferred).
 |---|---|---|
 | `main` | trunk | chr read slice merged; all gates green |
 | `feat/chr-read-slice` | chr parser + read-only inventory GUI | merged into `main`; local deletion pending user confirmation |
+| `feat/vault-files` | vault JSON read/write + legacy import + GUI viewing | done; ready to merge |
 
 ## Next up
 
 Product priority set by the user (2026-08-24): the core feature is
 saving items out of a character inventory or transfer stash into
 external vault storage, and transferring/copying them back later.
-Sequence toward that:
+Vault-format decision reconfirmed 2026-08-24: TQVaultAE-style vault
+files; a local SQLite DB is a recorded **stretch idea** only, not a
+constraint change. Sequence:
 
-1. Vault model + JSON read/write in core — TQVaultAE `VaultDto`
-   schema per ARCHITECTURE.md (plan: adopt `serde`/`serde_json` for
-   this boundary; flag at implementation time).
-2. Transfer stash (`winsys.dxb`) parsing — the other item source.
-3. The write path: targeted-splice item-block re-encode for chr and
+1. Transfer stash (`winsys.dxb`) parsing — the other item source.
+2. The write path: targeted-splice item-block re-encode for chr and
    stash plus the backup-first infrastructure, enabling actual
-   vault ↔ character transfers.
-4. ARZ/ARC readers for display names and icons (demoted below the
-   transfer loop; this is where `flate2` enters).
-5. Platform module in core: per-OS discovery of the game install and
+   vault ↔ character transfers (vault JSON writing already exists).
+3. ARZ/ARC readers for display names, icons, and item grid sizes
+   (needed to fill vault `width`/`height` when vaulting from a
+   character; this is where `flate2` enters).
+4. Platform module in core: per-OS discovery of the game install and
    save directories.
+5. Stretch (unscheduled): local SQLite index across vaults for
+   search — would be additive, vault files stay the source of truth.
 
 ## Most recent meaningful progress
 
+- **2026-08-24 — Vault files land (`feat/vault-files`).** Core
+  `vault` module: TQVaultAE JSON schema read/write (verbatim member
+  names, `""` for empty ids, `var2Default` 2035248, unknown-field
+  preservation for forward compat), legacy binary `.vault` import
+  reusing the chr sacks-block parser, `serde`/`serde_json` adopted
+  for the JSON boundary. GUI opens vaults by extension. 23 tests
+  green. Why: first half of the core save-to-vault feature; wire
+  schema verified against TQVaultAE sources (DTOs +
+  `JsonSerializerOptions`). Risk: not yet validated against a vault
+  file written by real TQVaultAE — ask the user for one.
 - **2026-08-24 — Real-save validation passed; slice merged.** The
   user ran the GUI against their actual TQ AE save and it read the
   inventory correctly — the synthetic-fixture-only risk is retired.
