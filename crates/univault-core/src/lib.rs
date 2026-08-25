@@ -3,6 +3,7 @@
 //! discovery. Pure and sync — IO and async belong to the shell
 //! (see `.claude/rules/ARCHITECTURE.md`).
 
+pub mod arz;
 pub mod chr;
 pub mod reader;
 pub mod vault;

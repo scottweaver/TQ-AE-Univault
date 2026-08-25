@@ -35,6 +35,7 @@ deferred).
 | `main` | trunk | chr read slice merged; all gates green |
 | `feat/chr-read-slice` | chr parser + read-only inventory GUI | merged into `main`; local deletion pending user confirmation |
 | `feat/vault-files` | vault JSON read/write + legacy import + GUI viewing | done; ready to merge |
+| `feat/arz-reader` | game database (ARZ) reader | stacked on vault branch; core module done, GUI wiring pending |
 
 ## Next up
 
@@ -45,13 +46,19 @@ Vault-format decision reconfirmed 2026-08-24: TQVaultAE-style vault
 files; a local SQLite DB is a recorded **stretch idea** only, not a
 constraint change. Sequence:
 
-1. Transfer stash (`winsys.dxb`) parsing — the other item source.
-2. The write path: targeted-splice item-block re-encode for chr and
+User re-prioritized 2026-08-24: the game item database comes before
+stash/write work, both for proper item names/descriptions and because
+vault `width`/`height` needs it.
+
+1. ARC archive reader (`Text_EN.arc` for localized tag strings; item
+   bitmaps later) + a name-resolution layer (item base/affix record →
+   name tag → localized text) wired into the GUI. Needs a
+   game-directory path (CLI arg or setting; per-OS discovery is the
+   platform-module task).
+2. Transfer stash (`winsys.dxb`) parsing — the other item source.
+3. The write path: targeted-splice item-block re-encode for chr and
    stash plus the backup-first infrastructure, enabling actual
    vault ↔ character transfers (vault JSON writing already exists).
-3. ARZ/ARC readers for display names, icons, and item grid sizes
-   (needed to fill vault `width`/`height` when vaulting from a
-   character; this is where `flate2` enters).
 4. Platform module in core: per-OS discovery of the game install and
    save directories.
 5. Stretch (unscheduled): local SQLite index across vaults for
@@ -59,6 +66,16 @@ constraint change. Sequence:
 
 ## Most recent meaningful progress
 
+- **2026-08-24 — ARZ database reader (`feat/arz-reader`).** Core
+  `arz` module: header/string-table/record-index parse, lazy per-
+  record zlib decompression (`flate2` enters as planned), typed
+  variables (int/float/string/bool incl. arrays), record lookup via
+  TQVaultAE's normalization (uppercase, `/`→`\`). Port fixed a
+  survey error: record-table entries are variable-length; 24 is the
+  payload base offset. 31 tests green. Why: unblocks proper item
+  names/descriptions and vault grid sizes. Risk: not yet run against
+  a real `database.arz` — needs a game install; ARC text reader
+  still missing before names show in the GUI.
 - **2026-08-24 — Vault files land (`feat/vault-files`).** Core
   `vault` module: TQVaultAE JSON schema read/write (verbatim member
   names, `""` for empty ids, `var2Default` 2035248, unknown-field

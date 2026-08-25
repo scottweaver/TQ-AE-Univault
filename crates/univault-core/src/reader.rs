@@ -85,6 +85,13 @@ impl<'a> ByteReader<'a> {
     }
 
     /// # Errors
+    /// [`ReadError::UnexpectedEof`] if fewer than 2 bytes remain.
+    pub fn read_i16(&mut self) -> Result<i16, ReadError> {
+        let bytes = self.take(2)?;
+        Ok(i16::from_le_bytes([bytes[0], bytes[1]]))
+    }
+
+    /// # Errors
     /// [`ReadError::UnexpectedEof`] if fewer than 4 bytes remain.
     pub fn read_f32(&mut self) -> Result<f32, ReadError> {
         let bytes = self.take(4)?;
