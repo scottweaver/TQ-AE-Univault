@@ -121,9 +121,57 @@ impl NameCache {
     }
 }
 
+/// Per-record caches for what must never run per frame: record
+/// decompression, footprint lookups, texture decodes.
+#[derive(Default)]
+struct Caches {
+    names: NameCache,
+    footprints: HashMap<String, (i32, i32)>,
+    icons: HashMap<String, Option<egui::TextureHandle>>,
+}
+
+impl Caches {
+    fn footprint(&mut self, db: Option<&GameData>, item: &Item) -> (i32, i32) {
+        if let Some(cached) = self.footprints.get(item.base.as_str()) {
+            return *cached;
+        }
+        let footprint = db.map_or(univault_core::gamedata::FALLBACK_FOOTPRINT, |db| {
+            db.item_footprint(item)
+        });
+        self.footprints
+            .insert(item.base.as_str().to_string(), footprint);
+        footprint
+    }
+
+    fn icon(
+        &mut self,
+        ctx: &egui::Context,
+        db: Option<&GameData>,
+        item: &Item,
+    ) -> Option<egui::TextureHandle> {
+        if let Some(cached) = self.icons.get(item.base.as_str()) {
+            return cached.clone();
+        }
+        let handle = db.and_then(|db| db.item_icon(item)).map(|image| {
+            let pixels = egui::ColorImage::from_rgba_unmultiplied(
+                [image.width, image.height],
+                &image.pixels,
+            );
+            ctx.load_texture(
+                item.base.as_str().to_string(),
+                pixels,
+                egui::TextureOptions::LINEAR,
+            )
+        });
+        self.icons
+            .insert(item.base.as_str().to_string(), handle.clone());
+        handle
+    }
+}
+
 struct App {
     game: GameStatus,
-    names: NameCache,
+    caches: Caches,
     left: Option<FilePane>,
     right: Option<VaultPane>,
     status: Option<Result<String, String>>,
@@ -140,7 +188,7 @@ impl App {
             });
         let mut app = Self {
             game,
-            names: NameCache::default(),
+            caches: Caches::default(),
             left: None,
             right: None,
             status: None,
@@ -244,7 +292,7 @@ impl App {
             GameFile::Stash(stash) => transfer::take_from_stash(stash, index),
         }
         .ok_or("selection is stale — pick the item again")?;
-        let label = self.names.item_label(db, &item);
+        let label = self.caches.names.item_label(db, &item);
         let preferred = vault_pane.selected.map_or(0, |(tab, _)| tab);
         match transfer::place_in_vault(&mut vault_pane.vault, item, preferred, db) {
             Ok(tab) => {
@@ -282,7 +330,7 @@ impl App {
         };
         let vault_item = transfer::take_from_vault(&mut vault_pane.vault, tab, index)
             .ok_or("selection is stale — pick the item again")?;
-        let label = self.names.item_label(db, &vault_item.item);
+        let label = self.caches.names.item_label(db, &vault_item.item);
         let preferred = pane.selected.map_or(0, |(container, _)| container);
         let placed = match &mut pane.file {
             GameFile::Character(character) => {
@@ -457,7 +505,7 @@ impl App {
     }
 
     fn show_panes(&mut self, ui: &mut egui::Ui) -> Option<PaneAction> {
-        let db_names = &mut self.names;
+        let caches = &mut self.caches;
         let db = match &self.game {
             GameStatus::Loaded(data) => Some(data),
             GameStatus::Absent | GameStatus::Failed(_) => None,
@@ -466,16 +514,14 @@ impl App {
         let can_move = self.left.is_some() && self.right.is_some();
         ui.columns(2, |columns| {
             if let Some(pane) = &mut self.left {
-                if let Some(chosen) = show_file_pane(&mut columns[0], pane, db, db_names, can_move)
-                {
+                if let Some(chosen) = show_file_pane(&mut columns[0], pane, db, caches, can_move) {
                     action = Some(chosen);
                 }
             } else {
                 columns[0].weak("No game file loaded.");
             }
             if let Some(pane) = &mut self.right {
-                if let Some(chosen) = show_vault_pane(&mut columns[1], pane, db, db_names, can_move)
-                {
+                if let Some(chosen) = show_vault_pane(&mut columns[1], pane, db, caches, can_move) {
                     action = Some(chosen);
                 }
             } else {
@@ -486,11 +532,127 @@ impl App {
     }
 }
 
+/// On-screen size of one grid cell.
+const CELL_SIZE: f32 = 24.0;
+
+// Grid coordinates are small integers; f32 represents them exactly.
+#[allow(clippy::cast_precision_loss)]
+fn cells_to_points(cells: i32) -> f32 {
+    cells as f32 * CELL_SIZE
+}
+
+/// Paints a container as its actual cell grid, with items at their
+/// positions (icon when decodable, initial letter otherwise), click
+/// selection, and a name tooltip on hover.
+fn grid_view(
+    ui: &mut egui::Ui,
+    dims: (i32, i32),
+    entries: &[(usize, &Item)],
+    container: usize,
+    selected: &mut Option<(usize, usize)>,
+    db: Option<&GameData>,
+    caches: &mut Caches,
+) {
+    let size = egui::vec2(cells_to_points(dims.0), cells_to_points(dims.1));
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let painter = ui.painter_at(rect);
+    let visuals = ui.visuals().clone();
+    painter.rect_filled(rect, 2.0, visuals.extreme_bg_color);
+    let grid_stroke = egui::Stroke::new(0.5, visuals.widgets.noninteractive.bg_stroke.color);
+    for column in 0..=dims.0 {
+        let x = rect.min.x + cells_to_points(column);
+        painter.line_segment(
+            [egui::pos2(x, rect.min.y), egui::pos2(x, rect.max.y)],
+            grid_stroke,
+        );
+    }
+    for row in 0..=dims.1 {
+        let y = rect.min.y + cells_to_points(row);
+        painter.line_segment(
+            [egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)],
+            grid_stroke,
+        );
+    }
+
+    let mut hovered: Option<String> = None;
+    for (index, item) in entries {
+        let (width, height) = caches.footprint(db, item);
+        let item_rect = egui::Rect::from_min_size(
+            rect.min
+                + egui::vec2(
+                    cells_to_points(item.position.x),
+                    cells_to_points(item.position.y),
+                ),
+            egui::vec2(cells_to_points(width), cells_to_points(height)),
+        )
+        .shrink(1.0);
+        let is_selected = *selected == Some((container, *index));
+        let fill = if is_selected {
+            visuals.selection.bg_fill
+        } else {
+            visuals.widgets.inactive.bg_fill
+        };
+        painter.rect_filled(item_rect, 2.0, fill);
+        if let Some(texture) = caches.icon(ui.ctx(), db, item) {
+            painter.image(
+                texture.id(),
+                item_rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+        } else {
+            let initial = caches
+                .names
+                .record_name(db, &item.base)
+                .chars()
+                .next()
+                .unwrap_or('?');
+            painter.text(
+                item_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                initial,
+                egui::FontId::proportional(12.0),
+                visuals.strong_text_color(),
+            );
+        }
+        let outline = if is_selected {
+            egui::Stroke::new(2.0, visuals.selection.stroke.color)
+        } else {
+            egui::Stroke::new(1.0, visuals.widgets.inactive.fg_stroke.color)
+        };
+        painter.rect_stroke(item_rect, 2.0, outline, egui::StrokeKind::Inside);
+        if item.stack_size > 1 {
+            painter.text(
+                item_rect.right_bottom() - egui::vec2(2.0, 1.0),
+                egui::Align2::RIGHT_BOTTOM,
+                item.stack_size.to_string(),
+                egui::FontId::proportional(10.0),
+                visuals.strong_text_color(),
+            );
+        }
+
+        if let Some(pointer) = response.hover_pos()
+            && item_rect.contains(pointer)
+        {
+            hovered = Some(caches.names.item_label(db, item));
+            if response.clicked() {
+                *selected = Some((container, *index));
+            }
+        }
+    }
+    if let Some(label) = hovered {
+        response.on_hover_text(label);
+    }
+}
+
 fn show_file_pane(
     ui: &mut egui::Ui,
     pane: &mut FilePane,
     db: Option<&GameData>,
-    names: &mut NameCache,
+    caches: &mut Caches,
     can_move: bool,
 ) -> Option<PaneAction> {
     let mut action = None;
@@ -543,7 +705,7 @@ fn show_file_pane(
                     {
                         match slot {
                             Some(item) => {
-                                ui.label(format!("{name}: {}", names.item_label(db, item)))
+                                ui.label(format!("{name}: {}", caches.names.item_label(db, item)))
                             }
                             None => ui.weak(format!("{name}: —")),
                         };
@@ -551,13 +713,34 @@ fn show_file_pane(
                 });
                 for (index, sack) in character.sacks.iter().enumerate() {
                     let title = format!("Sack {} ({} items)", index + 1, sack.items.len());
-                    ui.collapsing(title, |ui| {
-                        item_rows(ui, &sack.items, index, &mut pane.selected, db, names);
-                    });
+                    egui::CollapsingHeader::new(title)
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            let entries: Vec<(usize, &Item)> =
+                                sack.items.iter().enumerate().collect();
+                            grid_view(
+                                ui,
+                                chr::sack_dimensions(index),
+                                &entries,
+                                index,
+                                &mut pane.selected,
+                                db,
+                                caches,
+                            );
+                        });
                 }
             }
             GameFile::Stash(stash) => {
-                item_rows(ui, &stash.items, 0, &mut pane.selected, db, names);
+                let entries: Vec<(usize, &Item)> = stash.items.iter().enumerate().collect();
+                grid_view(
+                    ui,
+                    (stash.width, stash.height),
+                    &entries,
+                    0,
+                    &mut pane.selected,
+                    db,
+                    caches,
+                );
             }
         });
     action
@@ -567,7 +750,7 @@ fn show_vault_pane(
     ui: &mut egui::Ui,
     pane: &mut VaultPane,
     db: Option<&GameData>,
-    names: &mut NameCache,
+    caches: &mut Caches,
     can_move: bool,
 ) -> Option<PaneAction> {
     let mut action = None;
@@ -595,51 +778,31 @@ fn show_vault_pane(
         .show(ui, |ui| {
             for (tab, sack) in pane.vault.sacks.iter().enumerate() {
                 let title = format!("Tab {} ({} items)", tab + 1, sack.items.len());
-                ui.collapsing(title, |ui| {
-                    if sack.items.is_empty() {
-                        ui.weak("empty");
-                    }
-                    for (index, entry) in sack.items.iter().enumerate() {
-                        let selected = pane.selected == Some((tab, index));
-                        let label = format!(
-                            "({}, {})  {}",
-                            entry.item.position.x,
-                            entry.item.position.y,
-                            names.item_label(db, &entry.item)
+                egui::CollapsingHeader::new(title)
+                    .default_open(tab == 0 || !sack.items.is_empty())
+                    .show(ui, |ui| {
+                        let entries: Vec<(usize, &Item)> = sack
+                            .items
+                            .iter()
+                            .enumerate()
+                            .map(|(index, entry)| (index, &entry.item))
+                            .collect();
+                        grid_view(
+                            ui,
+                            (
+                                univault_core::vault::TAB_WIDTH,
+                                univault_core::vault::TAB_HEIGHT,
+                            ),
+                            &entries,
+                            tab,
+                            &mut pane.selected,
+                            db,
+                            caches,
                         );
-                        if ui.selectable_label(selected, label).clicked() {
-                            pane.selected = Some((tab, index));
-                        }
-                    }
-                });
+                    });
             }
         });
     action
-}
-
-fn item_rows(
-    ui: &mut egui::Ui,
-    items: &[Item],
-    container: usize,
-    selected: &mut Option<(usize, usize)>,
-    db: Option<&GameData>,
-    names: &mut NameCache,
-) {
-    if items.is_empty() {
-        ui.weak("empty");
-    }
-    for (index, item) in items.iter().enumerate() {
-        let is_selected = *selected == Some((container, index));
-        let label = format!(
-            "({}, {})  {}",
-            item.position.x,
-            item.position.y,
-            names.item_label(db, item)
-        );
-        if ui.selectable_label(is_selected, label).clicked() {
-            *selected = Some((container, index));
-        }
-    }
 }
 
 fn first_dropped_path(ctx: &egui::Context) -> Option<PathBuf> {

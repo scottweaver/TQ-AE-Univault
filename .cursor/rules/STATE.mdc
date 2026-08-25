@@ -15,30 +15,25 @@ Last updated: 2026-08-24
 
 ## Active workstream
 
-Greenfield start of tq-univault: a platform-independent
-(Windows/macOS/Linux) reimplementation of TQVaultAE — the item-vault /
-inventory-manager companion app for Titan Quest — in Rust with an
-egui/eframe front-end. The rules layer and the Cargo workspace
-scaffold are on `main`: `crates/univault-core` (empty, doc-only) and
-`crates/univault-gui` (eframe 0.36 window rendering a heading), with
-fmt / clippy-pedantic / build gates green. No format parsing exists
-yet. Binding decisions from the 2026-08-24
-bootstrap and survey dialogs (see ARCHITECTURE.md): Cargo workspace
-with a GUI-agnostic core crate plus a thin egui crate; game-owned
-files are authoritative, every write to them backup-first and
-targeted-splice; native vault format is TQVaultAE's JSON schema
-(legacy binary `.vault` import-only); parsers hand-rolled + flate2,
-ported from MIT TQVaultAE (GPL references eyes-only — see
-docs/format-references.md); dual-licensed MIT OR Apache-2.0; scope
-is TQ Anniversary Edition + all expansions (original TQ 2006 out of
-scope for now). No issue tracker is bound yet (deliberately
-deferred).
+tq-univault: a platform-independent (Windows/macOS/Linux)
+reimplementation of TQVaultAE — the item-vault / inventory-manager
+companion app for Titan Quest — in Rust (workspace: `univault-core`
+pure logic, `univault-gui` egui/eframe shell). Working today: full
+read stack (chr, stash, vault JSON + legacy import, ARZ/ARC/text/
+textures) with localized names, real footprints, and icons; grid
+rendering; two-pane vault ⇄ character/stash transfers; gold editing;
+backup-first splice saves — user-accepted against a real
+network-mounted save tree. Binding decisions in ARCHITECTURE.md
+(backup-first + targeted-splice writes, TQVaultAE JSON vault schema,
+hand-rolled parsers ported from MIT TQVaultAE — GPL refs eyes-only,
+docs/format-references.md; MIT OR Apache-2.0; TQ AE + expansions
+only). No issue tracker is bound yet (deliberately deferred).
 
 ## Branches in flight
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | transfer UI merged — the core feature loop is live; all gates green |
+| `main` | trunk | read stack + transfers + grid rendering merged; all gates green |
 
 ## Next up
 
@@ -56,17 +51,31 @@ edits through the app on their network-mounted save tree ("It
 worked!"). Residual check whenever convenient: confirm a
 transferred-back item in-game and open our vault JSON in TQVaultAE.
 
-1. Grid rendering: draw sacks/tabs as actual grids with items at
-   their cells (list view today), then drag-and-drop movement. Item
-   icons are within reach now — `GameData::resource` can extract the
-   `.tex` bitmaps and the DDS payload is standard.
+1. Drag-and-drop item movement on the grids (click-select + buttons
+   today), including cross-pane drags and an occupied-cell drop
+   preview.
 2. Platform module in core: per-OS discovery of the game install and
    save directories (removes the need for `--game`).
-3. Stretch (unscheduled): local SQLite index across vaults for
+3. DXT1/3 decode for the ~7 compressed item bitmaps (currently an
+   initial-letter fallback tile).
+4. Stretch (unscheduled): local SQLite index across vaults for
    search — would be additive, vault files stay the source of truth.
 
 ## Most recent meaningful progress
 
+- **2026-08-24 — Grid rendering with item icons.** `tex::decode`
+  turns the game's uncompressed 32-bit BGRA / 24-bit BGR textures
+  into RGBA (a probe of the real install put those at 99.9% of item
+  bitmaps; DXT stragglers fall back to an initial-letter tile);
+  `GameData::item_icon` serves decoded images. The GUI paints
+  sacks/stash/vault tabs as real cell grids — items at their
+  positions with true footprints, icon textures, stack badges,
+  selection highlight, hover-name tooltips — via per-record caches
+  (names/footprints/icons) so nothing expensive runs per frame.
+  96 tests. Why: it finally looks like a vault, not a debugger.
+  Risk: rendering is visually unverified until the user runs it;
+  egui texture memory grows unbounded with the icon cache (fine at
+  item-bitmap sizes).
 - **2026-08-24 — Real item footprints from game textures.** `tex`
   module reads TEX/DDS headers (magic variants incl. the
   Atlantis-era pad byte; cells = px ÷ 32 per TQVaultAE);
@@ -167,14 +176,6 @@ transferred-back item in-game and open our vault JSON in TQVaultAE.
   schema verified against TQVaultAE sources (DTOs +
   `JsonSerializerOptions`). Risk: not yet validated against a vault
   file written by real TQVaultAE — ask the user for one.
-- **2026-08-24 — Real-save validation passed; slice merged.** The
-  user ran the GUI against their actual TQ AE save and it read the
-  inventory correctly — the synthetic-fixture-only risk is retired.
-  `feat/chr-read-slice` fast-forwarded into `main`. Product
-  priority recorded: external vault storage with transfer-back is
-  the core feature (see "Next up"). Risk: vault work adds the first
-  serde dependency and the first write path — both flagged for
-  design attention.
 - **2026-08-24 — chr read slice implemented
   (`feat/chr-read-slice`).** `univault-core` gained `reader`
   (typed LE reader, Windows-1252/UTF-16 strings, key scan) and `chr`

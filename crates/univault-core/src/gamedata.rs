@@ -129,6 +129,18 @@ impl GameData {
             .unwrap_or_else(|| class_upper_bound(record.as_ref()))
     }
 
+    /// Decoded icon bitmap for an item, when its texture exists and
+    /// uses one of the game's uncompressed formats (see
+    /// [`tex::decode`]).
+    #[must_use]
+    pub fn item_icon(&self, item: &Item) -> Option<tex::RgbaImage> {
+        let record = self.arz.record(&item.base)?.ok()?;
+        let bitmap = record
+            .string(bitmap_variable(&record.record_type))
+            .filter(|path| !path.is_empty())?;
+        tex::decode(&self.resource(bitmap)?).ok()
+    }
+
     fn texture_footprint(&self, record: &DbRecord) -> Option<(i32, i32)> {
         let bitmap = record
             .string(bitmap_variable(&record.record_type))
