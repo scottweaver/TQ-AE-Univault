@@ -194,7 +194,7 @@ pub fn find_key(data: &[u8], key: &str, from: usize) -> Option<usize> {
 
 /// Windows-1252 mappings for 0x80–0x9F; every other byte matches its
 /// Unicode code point.
-const WINDOWS_1252_C1: [char; 32] = [
+pub(crate) const WINDOWS_1252_C1: [char; 32] = [
     '\u{20AC}', '\u{0081}', '\u{201A}', '\u{0192}', '\u{201E}', '\u{2026}', '\u{2020}', '\u{2021}',
     '\u{02C6}', '\u{2030}', '\u{0160}', '\u{2039}', '\u{0152}', '\u{008D}', '\u{017D}', '\u{008F}',
     '\u{0090}', '\u{2018}', '\u{2019}', '\u{201C}', '\u{201D}', '\u{2022}', '\u{2013}', '\u{2014}',

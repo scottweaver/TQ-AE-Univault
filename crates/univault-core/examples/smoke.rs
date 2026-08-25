@@ -124,6 +124,9 @@ fn report_character(path: &Path, db: &GameData) {
     let bytes = std::fs::read(path).expect("read Player.chr");
     let character = univault_core::chr::parse_player(&bytes)
         .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    let respliced = univault_core::chr::replace_inventory(&bytes, &character.sacks)
+        .unwrap_or_else(|error| panic!("{}: resplice: {error}", path.display()));
+    assert_identical(path, &bytes, &respliced);
     let info = &character.info;
     let equipped = character
         .equipment
@@ -142,10 +145,50 @@ fn report_character(path: &Path, db: &GameData) {
     );
 }
 
+/// Byte-identity gate with a diagnostic dump of the first difference.
+fn assert_identical(path: &Path, original: &[u8], respliced: &[u8]) {
+    if original == respliced {
+        return;
+    }
+    let diff_at = original
+        .iter()
+        .zip(respliced)
+        .position(|(a, b)| a != b)
+        .unwrap_or_else(|| original.len().min(respliced.len()));
+    let window = |data: &[u8]| {
+        let start = diff_at.saturating_sub(24);
+        let end = (diff_at + 24).min(data.len());
+        (
+            data[start..end]
+                .iter()
+                .map(|byte| format!("{byte:02X}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+            String::from_utf8_lossy(&data[start..end])
+                .chars()
+                .map(|c| if c.is_ascii_graphic() { c } else { '.' })
+                .collect::<String>(),
+        )
+    };
+    let (original_hex, original_ascii) = window(original);
+    let (respliced_hex, respliced_ascii) = window(respliced);
+    panic!(
+        "{}: resplice differs at offset {diff_at} ({} -> {} bytes)\n\
+         original:  {original_hex}\n           {original_ascii}\n\
+         respliced: {respliced_hex}\n           {respliced_ascii}",
+        path.display(),
+        original.len(),
+        respliced.len()
+    );
+}
+
 fn report_stash(path: &Path, db: &GameData) {
     let bytes = std::fs::read(path).expect("read stash");
     let stash = univault_core::stash::parse_stash(&bytes)
         .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    let respliced = univault_core::stash::replace_items(&bytes, &stash.items)
+        .unwrap_or_else(|error| panic!("{}: resplice: {error}", path.display()));
+    assert_identical(path, &bytes, &respliced);
     let names = stash
         .items
         .iter()

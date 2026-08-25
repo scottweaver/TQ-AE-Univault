@@ -11,3 +11,4 @@ pub mod reader;
 pub mod stash;
 pub mod text;
 pub mod vault;
+mod writer;

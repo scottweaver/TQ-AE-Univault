@@ -32,7 +32,7 @@ deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | all readers merged (chr, vault, ARZ/ARC/text, naming, stash); all gates green |
+| `main` | trunk | full read stack + splice write path merged; all gates green |
 
 ## Next up
 
@@ -45,19 +45,31 @@ constraint change. The entire read stack is done and validated
 against the user's real install + save tree (mounted; path in agent
 memory). Sequence:
 
-1. The write path: targeted-splice item-block re-encode for chr and
-   stash plus the backup-first infrastructure, enabling actual
-   vault ↔ character transfers (vault JSON writing already exists).
-   This is the first game-file-mutating code — ARCHITECTURE.md's
-   backup-first and targeted-splice constraints govern it.
-2. Transfer UI: two-pane vault ↔ character/stash item movement.
-3. Platform module in core: per-OS discovery of the game install and
+1. Transfer UI: two-pane vault ↔ character/stash item movement in
+   the GUI, plus the shell-side backup-first write function (backup
+   on disk before the original is touched, `.dxg` twin for stashes)
+   that the splice encoders were built for — it lands with the UI
+   that calls it, keeping the core IO-free.
+2. Platform module in core: per-OS discovery of the game install and
    save directories (removes the need for `--game`).
-4. Stretch (unscheduled): local SQLite index across vaults for
+3. Stretch (unscheduled): local SQLite index across vaults for
    search — would be additive, vault files stay the source of truth.
 
 ## Most recent meaningful progress
 
+- **2026-08-24 — Splice write path lands, byte-identity proven on
+  real files.** `writer` module (1252 encoding), `chr::
+  replace_inventory` and `stash::replace_items` rebuild only the
+  item regions and copy every other byte through; stash CRC ported
+  (zero-init, no final complement, verified against real files).
+  The model now preserves `tempBool` and per-stack-member
+  `seed`/`var2` — the latter found by the byte-identity gate on the
+  user's real save (Atlantis-era folded members carry their own
+  `var2`; first attempt repeated the head's). Sweep: 4 real
+  characters + 3 stashes (one with an item) resplice
+  byte-identically. 68 tests. Why: transfers are now a data edit
+  plus a file write away. Risk: no writes hit disk yet — the
+  backup-first shell function lands with the transfer UI.
 - **2026-08-24 — Read stack complete: stash reader + full real-data
   sweep.** All feature branches merged to `main` and deleted. New
   `stash` module (`winsys.dxb`/`.dxg`: CRC header skipped on read,
@@ -148,14 +160,6 @@ memory). Sequence:
   green. Why: locks the core/gui layering from the first line of
   code. Risk: cross-platform claim unverified — only macOS has
   actually built it so far.
-- **2026-08-24 — Rules layer bootstrapped.** git init on `main`;
-  installed RUST_BEST_PRACTICES.md + METHODOLOGIES.md; held the
-  architecture dialog and wrote ARCHITECTURE.md, CLAUDE.md, and this
-  file. Why: agents get durable memory and binding constraints from
-  the first commit, before any code exists. Risk: constraints were
-  set pre-code from TQVaultAE's observed behavior — revisit once the
-  first parsers meet real save files.
-
 ## Blocked / waiting
 
 - *(nothing)*

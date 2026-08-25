@@ -202,6 +202,7 @@ fn item_from_dto(dto: ItemDto, sack: usize, index: usize) -> Result<VaultItem, V
                 y: dto.point_y,
             },
             stack_size,
+            folded_members: Vec::new(),
         },
         width: dto.width,
         height: dto.height,

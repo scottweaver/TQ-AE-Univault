@@ -11,8 +11,11 @@
 //! carrying an explicit `stackCount` (stored as stack size − 1) and
 //! float `xOffset`/`yOffset` grid positions, closed by `end_block`.
 
-use crate::chr::{Item, ItemContext, ParseError, parse_raw_item};
+use crate::chr::{
+    END_BLOCK_VALUE, Item, ItemContext, ParseError, encode_item_body, parse_raw_item,
+};
 use crate::reader::{ByteReader, Offset};
+use crate::writer::{write_cstring, write_f32, write_keyed_i32};
 
 /// A parsed stash: its grid dimensions and items.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +87,101 @@ pub fn parse_stash(data: &[u8]) -> Result<Stash, StashError> {
     })
 }
 
+/// Rebuilds the stash's item region from `items`, copying the header
+/// bytes of `original` through untouched and recomputing the leading
+/// CRC — the targeted-splice rule in ARCHITECTURE.md. Never writes to
+/// disk; the shell owns file IO, the backup-first step, and the
+/// `.dxg` twin.
+///
+/// # Errors
+/// The parse errors of locating the original item region, or
+/// [`StashError::InvalidItemCount`] on absurd item counts.
+pub fn replace_items(original: &[u8], items: &[Item]) -> Result<Vec<u8>, StashError> {
+    let mut reader = ByteReader::new(original);
+    reader.read_i32().map_err(ParseError::from)?;
+    for key in ["begin_block", "stashVersion"] {
+        reader.expect_key(key).map_err(ParseError::from)?;
+        reader.read_i32().map_err(ParseError::from)?;
+    }
+    reader.expect_key("fName").map_err(ParseError::from)?;
+    reader.read_cstring().map_err(ParseError::from)?;
+    for key in ["sackWidth", "sackHeight"] {
+        reader.expect_key(key).map_err(ParseError::from)?;
+        reader.read_i32().map_err(ParseError::from)?;
+    }
+    let items_start = reader.pos();
+
+    let count =
+        i32::try_from(items.len()).map_err(|_| StashError::InvalidItemCount { count: i32::MAX })?;
+    let mut out = Vec::with_capacity(original.len());
+    out.extend_from_slice(&original[..items_start]);
+    write_keyed_i32(&mut out, "numItems", count);
+    for item in items {
+        encode_stash_item(&mut out, item);
+    }
+    write_keyed_i32(&mut out, "end_block", END_BLOCK_VALUE);
+
+    out[..4].fill(0);
+    let crc = stash_crc(&out);
+    out[..4].copy_from_slice(&crc.to_le_bytes());
+    Ok(out)
+}
+
+/// Stash items carry an explicit `stackCount` (stack size − 1) and
+/// float grid offsets instead of the player-sack repetition.
+fn encode_stash_item(buf: &mut Vec<u8>, item: &Item) {
+    let stack_count = i32::try_from(item.stack_size.max(1) - 1).unwrap_or(i32::MAX);
+    write_keyed_i32(buf, "stackCount", stack_count);
+    encode_item_body(buf, item, item.seed.value());
+    write_cstring(buf, "xOffset");
+    write_f32(buf, cell_to_offset(item.position.x));
+    write_cstring(buf, "yOffset");
+    write_f32(buf, cell_to_offset(item.position.y));
+}
+
+// Grid cells are small integers; f32 represents them exactly.
+#[allow(clippy::cast_precision_loss)]
+fn cell_to_offset(cell: i32) -> f32 {
+    cell as f32
+}
+
+/// `TQVaultAE`'s `CalculateCRC`: the standard reflected CRC-32 table
+/// (polynomial 0xEDB88320) but with a zero initial value and no final
+/// complement. Computed over the whole file with the checksum field
+/// zeroed.
+pub(crate) fn stash_crc(data: &[u8]) -> u32 {
+    let mut crc: u32 = 0;
+    for &byte in data {
+        let low = u8::try_from(crc & 0xFF).expect("masked to one byte");
+        crc = (crc >> 8) ^ CRC_TABLE[usize::from(low ^ byte)];
+    }
+    crc
+}
+
+const CRC_TABLE: [u32; 256] = build_crc_table();
+
+// Index fits u32 by construction (i < 256).
+#[allow(clippy::cast_possible_truncation)]
+const fn build_crc_table() -> [u32; 256] {
+    let mut table = [0_u32; 256];
+    let mut index = 0_usize;
+    while index < 256 {
+        let mut value = index as u32;
+        let mut bit = 0;
+        while bit < 8 {
+            value = if value & 1 == 1 {
+                0xEDB8_8320 ^ (value >> 1)
+            } else {
+                value >> 1
+            };
+            bit += 1;
+        }
+        table[index] = value;
+        index += 1;
+    }
+    table
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,6 +229,41 @@ mod tests {
         assert_eq!(
             (stash.items[0].position.x, stash.items[0].position.y),
             (3, 4)
+        );
+    }
+
+    #[test]
+    fn unchanged_stash_resplices_byte_identically_including_crc() {
+        let built = stash_file();
+        let mut original = built.clone();
+        let crc = stash_crc(&built);
+        original[..4].copy_from_slice(&crc.to_le_bytes());
+
+        let stash = parse_stash(&original).unwrap();
+        let respliced = replace_items(&original, &stash.items).unwrap();
+        assert!(
+            respliced == original,
+            "splice of unchanged stash altered bytes"
+        );
+    }
+
+    #[test]
+    fn adding_an_item_keeps_the_header_and_recomputes_the_crc() {
+        let original = stash_file();
+        let mut stash = parse_stash(&original).unwrap();
+        stash.items.push(stash.items[0].clone());
+
+        let modified = replace_items(&original, &stash.items).unwrap();
+        let reparsed = parse_stash(&modified).unwrap();
+        assert_eq!(reparsed.items.len(), 3);
+        assert_eq!((reparsed.width, reparsed.height), (15, 10));
+
+        let mut zeroed = modified.clone();
+        zeroed[..4].fill(0);
+        assert_eq!(
+            modified[..4],
+            stash_crc(&zeroed).to_le_bytes(),
+            "stored CRC must match the recomputed one"
         );
     }
 

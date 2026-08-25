@@ -10,6 +10,12 @@
 //! folded into the preceding item's stack count on parse.
 
 use crate::reader::{ByteReader, Offset, ReadError, find_key};
+use crate::writer::{write_cstring, write_keyed_i32};
+
+/// The `i32` value stored after every `begin_block` key.
+pub(crate) const BEGIN_BLOCK_VALUE: i32 = -1_340_212_530;
+/// The `i32` value stored after every `end_block` key.
+pub(crate) const END_BLOCK_VALUE: i32 = -559_038_242;
 
 /// Path of a game database record (`records\...\something.dbr`), the
 /// game's identifier for an item base, affix, or relic. Never empty —
@@ -92,12 +98,30 @@ pub struct Item {
     pub atlantis: Option<AtlantisRelic>,
     pub position: GridPos,
     pub stack_size: u32,
+    /// Per-member data of the folded stack members after the first
+    /// (player-sack stacks store each member as a full item entry with
+    /// its own `seed` and, on Atlantis-era files, its own `var2`).
+    /// Preserved so an unchanged sack re-encodes byte-identically;
+    /// items born outside a chr parse leave it empty and encode by
+    /// repeating the first member's values.
+    pub(crate) folded_members: Vec<FoldedMember>,
+}
+
+/// The varying fields of one folded stack member.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FoldedMember {
+    pub(crate) seed: i32,
+    /// `None` when the member entry had no Atlantis fields.
+    pub(crate) var2: Option<i32>,
 }
 
 /// One inventory bag.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sack {
     pub items: Vec<Item>,
+    /// The `tempBool` header value, preserved verbatim for
+    /// byte-identical re-encoding.
+    pub(crate) temp_bool: i32,
 }
 
 /// Fixed equipment slot count for Anniversary Edition (Immortal Throne
@@ -138,6 +162,8 @@ pub enum ParseError {
     InvalidCount { what: &'static str, count: i32 },
     #[error("sack item at {at} has an empty baseName")]
     EmptyBaseName { at: Offset },
+    #[error("too many {what} to encode: {count}")]
+    Overflow { what: &'static str, count: usize },
     #[error(transparent)]
     Read(#[from] ReadError),
 }
@@ -227,7 +253,7 @@ fn parse_sack(reader: &mut ByteReader<'_>) -> Result<Sack, ParseError> {
     reader.expect_key("begin_block")?;
     reader.read_i32()?;
     reader.expect_key("tempBool")?;
-    reader.read_i32()?;
+    let temp_bool = reader.read_i32()?;
     reader.expect_key("size")?;
     let count = reader.read_i32()?;
     let count = usize::try_from(count).map_err(|_| ParseError::InvalidCount {
@@ -240,14 +266,20 @@ fn parse_sack(reader: &mut ByteReader<'_>) -> Result<Sack, ParseError> {
         let at = Offset(reader.pos());
         let raw = parse_raw_item(reader, ItemContext::PlayerSack)?;
         match items.last_mut() {
-            Some(last) if raw.is_stack_continuation() => last.stack_size += 1,
+            Some(last) if raw.is_stack_continuation() => {
+                last.stack_size += 1;
+                last.folded_members.push(FoldedMember {
+                    seed: raw.seed,
+                    var2: raw.atlantis.as_ref().map(|(_, _, var2)| *var2),
+                });
+            }
             _ => items.push(raw.into_item().ok_or(ParseError::EmptyBaseName { at })?),
         }
     }
 
     reader.expect_key("end_block")?;
     reader.read_i32()?;
-    Ok(Sack { items })
+    Ok(Sack { items, temp_bool })
 }
 
 fn parse_equipment(data: &[u8]) -> Result<Equipment, ParseError> {
@@ -331,6 +363,7 @@ impl RawItem {
             }),
             position: self.position,
             stack_size: 1,
+            folded_members: Vec::new(),
         })
     }
 }
@@ -422,6 +455,132 @@ fn offset_to_cell(offset: f32) -> i32 {
     offset.round() as i32
 }
 
+/// Rebuilds the inventory item block from `sacks` and copies every
+/// other byte of `original` through untouched — the targeted-splice
+/// rule in ARCHITECTURE.md. The focused/selected sack numbers are
+/// carried over from `original` verbatim. Never writes to disk; the
+/// shell owns file IO and the backup-first step.
+///
+/// # Errors
+/// The parse errors of locating the original block, or
+/// [`ParseError::Overflow`] on absurd sack counts.
+pub fn replace_inventory(original: &[u8], sacks: &[Sack]) -> Result<Vec<u8>, ParseError> {
+    let landmark = "itemPositionsSavedAsGridCoords";
+    let value_at = find_key(original, landmark, 0).ok_or(ParseError::MissingSection(landmark))?;
+    let mut reader = ByteReader::at(original, value_at);
+    reader.read_i32()?;
+    let block_start = reader.pos();
+    let block = parse_sacks_block(&mut reader)?;
+    let block_end = reader.pos();
+
+    let mut encoded = Vec::new();
+    write_keyed_i32(
+        &mut encoded,
+        "numberOfSacks",
+        encodable_count(sacks.len(), "sacks")?,
+    );
+    write_keyed_i32(
+        &mut encoded,
+        "currentlyFocusedSackNumber",
+        block.focused_sack,
+    );
+    write_keyed_i32(
+        &mut encoded,
+        "currentlySelectedSackNumber",
+        block.selected_sack,
+    );
+    for sack in sacks {
+        encode_sack(&mut encoded, sack)?;
+    }
+
+    let mut out = Vec::with_capacity(original.len() - (block_end - block_start) + encoded.len());
+    out.extend_from_slice(&original[..block_start]);
+    out.extend_from_slice(&encoded);
+    out.extend_from_slice(&original[block_end..]);
+    Ok(out)
+}
+
+fn encodable_count(count: usize, what: &'static str) -> Result<i32, ParseError> {
+    i32::try_from(count).map_err(|_| ParseError::Overflow { what, count })
+}
+
+fn encode_sack(buf: &mut Vec<u8>, sack: &Sack) -> Result<(), ParseError> {
+    write_keyed_i32(buf, "begin_block", BEGIN_BLOCK_VALUE);
+    write_keyed_i32(buf, "tempBool", sack.temp_bool);
+    // "size" counts item entries including the folded stack members.
+    let entries: usize = sack
+        .items
+        .iter()
+        .map(|item| item.stack_size.max(1) as usize)
+        .sum();
+    write_keyed_i32(buf, "size", encodable_count(entries, "sack item entries")?);
+    for item in &sack.items {
+        encode_sack_item(buf, item);
+    }
+    write_keyed_i32(buf, "end_block", END_BLOCK_VALUE);
+    Ok(())
+}
+
+/// Encodes one inventory item as its full stack: members after the
+/// first repeat the item at position (-1,-1), with their preserved
+/// per-member `seed`/`var2` where the item came from a chr parse, or
+/// the first member's values otherwise (`TQVaultAE` rolls random
+/// seeds here; potions are the only stackables and carry no rolls).
+pub(crate) fn encode_sack_item(buf: &mut Vec<u8>, item: &Item) {
+    let members = item.stack_size.max(1);
+    for index in 0..members {
+        let (seed, var2, position) = if index == 0 {
+            (item.seed.value(), None, item.position)
+        } else {
+            let folded = usize::try_from(index - 1)
+                .ok()
+                .and_then(|member| item.folded_members.get(member).copied());
+            (
+                folded.map_or_else(|| item.seed.value(), |member| member.seed),
+                folded.and_then(|member| member.var2),
+                GridPos { x: -1, y: -1 },
+            )
+        };
+        write_keyed_i32(buf, "begin_block", BEGIN_BLOCK_VALUE);
+        encode_item_body_with(buf, item, seed, var2);
+        write_keyed_i32(buf, "pointX", position.x);
+        write_keyed_i32(buf, "pointY", position.y);
+        write_keyed_i32(buf, "end_block", END_BLOCK_VALUE);
+    }
+}
+
+/// The inner item block shared by every container format.
+pub(crate) fn encode_item_body(buf: &mut Vec<u8>, item: &Item, seed: i32) {
+    encode_item_body_with(buf, item, seed, None);
+}
+
+fn encode_item_body_with(buf: &mut Vec<u8>, item: &Item, seed: i32, var2_override: Option<i32>) {
+    fn raw(id: Option<&RecordId>) -> &str {
+        id.map_or("", RecordId::as_str)
+    }
+    write_keyed_i32(buf, "begin_block", BEGIN_BLOCK_VALUE);
+    write_cstring(buf, "baseName");
+    write_cstring(buf, item.base.as_str());
+    write_cstring(buf, "prefixName");
+    write_cstring(buf, raw(item.prefix.as_ref()));
+    write_cstring(buf, "suffixName");
+    write_cstring(buf, raw(item.suffix.as_ref()));
+    write_cstring(buf, "relicName");
+    write_cstring(buf, raw(item.relic.as_ref()));
+    write_cstring(buf, "relicBonus");
+    write_cstring(buf, raw(item.relic_bonus.as_ref()));
+    write_keyed_i32(buf, "seed", seed);
+    write_keyed_i32(buf, "var1", item.var1);
+    if let Some(second) = &item.atlantis {
+        write_cstring(buf, "relicName2");
+        write_cstring(buf, second.relic.as_ref().map_or("", RecordId::as_str));
+        write_cstring(buf, "relicBonus2");
+        write_cstring(buf, second.bonus.as_ref().map_or("", RecordId::as_str));
+        write_keyed_i32(buf, "var2", var2_override.unwrap_or(second.var2));
+    }
+    write_keyed_i32(buf, "end_block", END_BLOCK_VALUE);
+}
+
 /// Builds save-format byte images in the exact shape `TQVaultAE`
 /// writes them, so parsers meet the same layout as in real files.
 /// Shared with the vault module's legacy-import tests.
@@ -504,6 +663,32 @@ pub(crate) mod fixture {
         pub(crate) fn equipment_slot(self, base: &str) -> Self {
             self.item_body(base, 1)
                 .keyed_int("itemAttached", i32::from(!base.is_empty()))
+        }
+
+        pub(crate) fn atlantis_sack_item(
+            self,
+            base: &str,
+            seed: i32,
+            var2: i32,
+            x: i32,
+            y: i32,
+        ) -> Self {
+            self.begin_block()
+                .begin_block()
+                .cstr("baseName", base)
+                .cstr("prefixName", "")
+                .cstr("suffixName", "")
+                .cstr("relicName", "")
+                .cstr("relicBonus", "")
+                .keyed_int("seed", seed)
+                .keyed_int("var1", 0)
+                .cstr("relicName2", "")
+                .cstr("relicBonus2", "")
+                .keyed_int("var2", var2)
+                .end_block()
+                .keyed_int("pointX", x)
+                .keyed_int("pointY", y)
+                .end_block()
         }
 
         pub(crate) fn stash_item(
@@ -656,6 +841,108 @@ mod tests {
         assert_eq!(
             parse_player(b"not a save file"),
             Err(ParseError::MissingSection("playerLevel")),
+        );
+    }
+
+    #[test]
+    fn unchanged_inventory_resplices_byte_identically() {
+        let original = player_file();
+        let character = parse_player(&original).unwrap();
+        let respliced = replace_inventory(&original, &character.sacks).unwrap();
+        assert!(
+            respliced == original,
+            "splice of unchanged sacks altered bytes (len {} -> {})",
+            original.len(),
+            respliced.len()
+        );
+    }
+
+    #[test]
+    fn removing_an_item_leaves_the_rest_of_the_file_untouched() {
+        let original = player_file();
+        let mut character = parse_player(&original).unwrap();
+        let removed = character.sacks[0].items.remove(0);
+        assert_eq!(removed.base.file_stem(), "sword_01");
+
+        let modified = replace_inventory(&original, &character.sacks).unwrap();
+        let reparsed = parse_player(&modified).unwrap();
+        assert_eq!(reparsed.sacks[0].items.len(), 1);
+        assert_eq!(reparsed.sacks[0].items[0].stack_size, 3);
+        assert_eq!(reparsed.equipment, character.equipment);
+        assert_eq!(reparsed.info, character.info);
+
+        // Everything after the inventory block (equipment onward) must
+        // be the original bytes: both files end with the same tail.
+        let equipment_key = crate::reader::find_key(&original, "useAlternate", 0).unwrap();
+        let modified_key = crate::reader::find_key(&modified, "useAlternate", 0).unwrap();
+        assert_eq!(original[equipment_key..], modified[modified_key..]);
+    }
+
+    #[test]
+    fn stack_grown_outside_a_parse_encodes_with_repeated_seed() {
+        let original = player_file();
+        let mut character = parse_player(&original).unwrap();
+        character.sacks[1].items.push(Item {
+            base: RecordId::parse("records\\item\\potion\\manapotion.dbr".to_string()).unwrap(),
+            prefix: None,
+            suffix: None,
+            relic: None,
+            relic_bonus: None,
+            seed: ItemSeed::new(99),
+            var1: 0,
+            atlantis: None,
+            position: GridPos { x: 1, y: 1 },
+            stack_size: 3,
+            folded_members: Vec::new(),
+        });
+        let modified = replace_inventory(&original, &character.sacks).unwrap();
+        let reparsed = parse_player(&modified).unwrap();
+        let potion = &reparsed.sacks[1].items[0];
+        assert_eq!(potion.stack_size, 3);
+        assert_eq!(
+            potion.folded_members,
+            vec![
+                FoldedMember {
+                    seed: 99,
+                    var2: None
+                };
+                2
+            ]
+        );
+    }
+
+    #[test]
+    fn atlantis_stack_members_keep_their_own_var2() {
+        let original = Fixture::default()
+            .utf16("myPlayerName", "Ajax")
+            .cstr("playerClassTag", "tagCClass01")
+            .keyed_int("playerLevel", 1)
+            .keyed_int("money", 0)
+            .begin_block()
+            .keyed_int("itemPositionsSavedAsGridCoords", 1)
+            .keyed_int("numberOfSacks", 1)
+            .keyed_int("currentlyFocusedSackNumber", 0)
+            .keyed_int("currentlySelectedSackNumber", 0)
+            .begin_block()
+            .keyed_int("tempBool", 0)
+            .keyed_int("size", 2)
+            .atlantis_sack_item("records\\item\\potion\\scroll.dbr", 5, 111, 2, 0)
+            .atlantis_sack_item("records\\item\\potion\\scroll.dbr", 6, 222, -1, -1)
+            .end_block()
+            .begin_block()
+            .keyed_int("useAlternate", 0)
+            .keyed_int("equipmentCtrlIOStreamVersion", 0)
+            .bytes;
+        // Equipment block is truncated, so splice only the inventory.
+        let landmark_at = crate::reader::find_key(&original, "numberOfSacks", 0).unwrap();
+        let mut reader = ByteReader::at(&original, landmark_at - 4 - "numberOfSacks".len());
+        let block = parse_sacks_block(&mut reader).unwrap();
+        assert_eq!(block.sacks[0].items[0].stack_size, 2);
+
+        let respliced = replace_inventory(&original, &block.sacks).unwrap();
+        assert!(
+            respliced == original,
+            "atlantis stack resplice altered bytes"
         );
     }
 

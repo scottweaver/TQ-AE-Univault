@@ -256,6 +256,7 @@ mod tests {
             atlantis: None,
             position: GridPos { x: 0, y: 0 },
             stack_size: 1,
+            folded_members: Vec::new(),
         };
         assert_eq!(db.item_name(&item), "Sharp Bronze Sword unknownaffix");
     }
