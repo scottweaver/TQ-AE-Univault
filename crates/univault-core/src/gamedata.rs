@@ -4,15 +4,21 @@
 //! `Info.AssignVariableNames` (MIT).
 
 use crate::arc::{ArcError, ArcFile};
-use crate::arz::{ArzError, ArzFile, DbRecord};
+use crate::arz::{ArzError, ArzFile, DbRecord, normalize};
 use crate::chr::{Item, RecordId};
+use crate::tex;
 use crate::text::TextDb;
 
-/// Parsed game reference data: `database.arz` plus the localization
-/// table from a `Text_XX.arc`.
+/// Parsed game reference data: `database.arz`, the localization table
+/// from a `Text_XX.arc`, and any number of `Items.arc` bitmap
+/// archives (base game + expansions) for real item footprints.
 pub struct GameData {
     arz: ArzFile,
     text: TextDb,
+    /// `(expansion label, archive)` — label `""` for the base game,
+    /// `"XPACK"`…`"XPACK4"` for expansions, matching resource-id
+    /// prefixes.
+    item_archives: Vec<(String, ArcFile)>,
 }
 
 /// Errors from assembling the game database.
@@ -39,7 +45,54 @@ impl GameData {
 
     #[must_use]
     pub fn from_parts(arz: ArzFile, text: TextDb) -> Self {
-        Self { arz, text }
+        Self {
+            arz,
+            text,
+            item_archives: Vec::new(),
+        }
+    }
+
+    /// Registers an `Items.arc` bitmap archive. `expansion` is the
+    /// resource-id prefix it serves: `""` for the base game,
+    /// `"XPACK"`…`"XPACK4"` for expansions.
+    pub fn add_items_archive(&mut self, expansion: &str, archive: ArcFile) {
+        self.item_archives.push((expansion.to_uppercase(), archive));
+    }
+
+    /// Extracts a resource by its record path (e.g.
+    /// `XPack2\Items\...\foo.tex`) from the registered item archives.
+    /// The archive named by the id is tried first, then all others —
+    /// `TQVaultAE` does the same because records sometimes name the
+    /// wrong home.
+    #[must_use]
+    pub fn resource(&self, id: &str) -> Option<Vec<u8>> {
+        let normalized = normalize(id);
+        let mut segments = normalized.splitn(2, '\\');
+        let first = segments.next()?;
+        let (label, rest) = if first.starts_with("XPACK") {
+            (first, segments.next()?)
+        } else {
+            ("", normalized.as_str())
+        };
+        let (archive_name, entry) = rest.split_once('\\')?;
+        if archive_name != "ITEMS" {
+            return None;
+        }
+        let preferred = self
+            .item_archives
+            .iter()
+            .filter(|(archive_label, _)| archive_label == label)
+            .chain(
+                self.item_archives
+                    .iter()
+                    .filter(|(archive_label, _)| archive_label != label),
+            );
+        for (_, archive) in preferred {
+            if let Some(Ok(bytes)) = archive.file(entry) {
+                return Some(bytes);
+            }
+        }
+        None
     }
 
     /// See [`ArzFile::record`].
@@ -62,24 +115,27 @@ impl GameData {
         self.text.get(&tag).map(str::to_string)
     }
 
-    /// Conservative grid footprint (width, height) for an item, by its
-    /// base record's class. Real footprints come from bitmap textures
-    /// (not read yet) and `TQVaultAE` recomputes them on load, so these
-    /// upper bounds only have to guarantee that placements made with
-    /// them never overlap at true sizes.
+    /// Grid footprint (width, height) for an item: the real size from
+    /// its bitmap texture when the item archives are loaded (pixels ÷
+    /// 32-pixel cells, `TQVaultAE`'s definition), otherwise a
+    /// conservative per-class upper bound that guarantees placements
+    /// never overlap at true sizes.
     #[must_use]
     pub fn item_footprint(&self, item: &Item) -> (i32, i32) {
-        let record_type = self
-            .arz
-            .record(&item.base)
-            .and_then(Result::ok)
-            .map(|record| record.record_type);
-        match record_type.as_deref() {
-            Some(class) if class.starts_with("Weapon") => (2, 5),
-            Some(class) if class.starts_with("ArmorProtective") => (2, 3),
-            Some(_) => (2, 2),
-            None => FALLBACK_FOOTPRINT,
-        }
+        let record = self.arz.record(&item.base).and_then(Result::ok);
+        record
+            .as_ref()
+            .and_then(|record| self.texture_footprint(record))
+            .unwrap_or_else(|| class_upper_bound(record.as_ref()))
+    }
+
+    fn texture_footprint(&self, record: &DbRecord) -> Option<(i32, i32)> {
+        let bitmap = record
+            .string(bitmap_variable(&record.record_type))
+            .filter(|path| !path.is_empty())?;
+        let bytes = self.resource(bitmap)?;
+        let (width_px, height_px) = tex::dimensions(&bytes).ok()?;
+        Some(tex::cells(width_px, height_px))
     }
 
     /// Display name for an item: localized prefix + base + suffix.
@@ -103,6 +159,36 @@ impl GameData {
 /// Footprint used when the base record is unknown (or no game data is
 /// loaded): the largest footprint any TQ item has.
 pub const FALLBACK_FOOTPRINT: (i32, i32) = (2, 5);
+
+/// The conservative per-class upper bounds used when no texture is
+/// available.
+fn class_upper_bound(record: Option<&DbRecord>) -> (i32, i32) {
+    match record.map(|record| record.record_type.as_str()) {
+        Some(class) if class.starts_with("Weapon") => (2, 5),
+        Some(class) if class.starts_with("ArmorProtective") => (2, 3),
+        Some(_) => (2, 2),
+        None => FALLBACK_FOOTPRINT,
+    }
+}
+
+/// Which variable holds a record's bitmap path — the bitmap column of
+/// `TQVaultAE`'s `Info.AssignVariableNames` dispatch.
+fn bitmap_variable(record_type: &str) -> &'static str {
+    let starts = |prefix: &str| {
+        record_type
+            .get(..prefix.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+    };
+    if starts("ItemRelic") || starts("ItemCharm") {
+        "relicBitmap"
+    } else if starts("ItemArtifactFormula") {
+        "artifactFormulaBitmapName"
+    } else if starts("ItemArtifact") {
+        "artifactBitmap"
+    } else {
+        "bitmap"
+    }
+}
 
 /// Which variable holds a record's name tag — `TQVaultAE`'s
 /// `Info.AssignVariableNames` dispatch, collapsed to the naming
@@ -283,6 +369,73 @@ mod tests {
             folded_members: Vec::new(),
         };
         assert_eq!(db.item_name(&item), "Sharp Bronze Sword unknownaffix");
+    }
+
+    fn bare_item(base: &str) -> Item {
+        Item {
+            base: record_id(base),
+            prefix: None,
+            suffix: None,
+            relic: None,
+            relic_bonus: None,
+            seed: ItemSeed::new(1),
+            var1: 0,
+            atlantis: None,
+            position: GridPos { x: 0, y: 0 },
+            stack_size: 1,
+            folded_members: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn footprint_comes_from_the_bitmap_texture() {
+        let mut builder = ArzBuilder::default();
+        builder.record(
+            "records\\item\\axe.dbr",
+            "WeaponMelee_Axe",
+            &[("bitmap", Values::Strings(&["Items\\gear\\axe.tex"]))],
+        );
+        let mut db = GameData::from_parts(ArzFile::parse(builder.build()).unwrap(), TextDb::new());
+        let archive = crate::arc::fixture::build_arc(&[(
+            "gear\\axe.tex",
+            crate::tex::fixture::tex(64, 128).as_slice(),
+        )]);
+        db.add_items_archive("", crate::arc::ArcFile::parse(archive).unwrap());
+        assert_eq!(
+            db.item_footprint(&bare_item("records\\item\\axe.dbr")),
+            (2, 4)
+        );
+    }
+
+    #[test]
+    fn footprint_falls_back_to_class_bounds_without_texture() {
+        let db = sample_db();
+        assert_eq!(
+            db.item_footprint(&bare_item("records\\item\\sword.dbr")),
+            (2, 5)
+        );
+        assert_eq!(
+            db.item_footprint(&bare_item("records\\item\\unknown.dbr")),
+            FALLBACK_FOOTPRINT
+        );
+    }
+
+    #[test]
+    fn xpack_resources_fall_back_across_archives() {
+        let mut db = GameData::from_parts(
+            ArzFile::parse(ArzBuilder::default().build()).unwrap(),
+            TextDb::new(),
+        );
+        let archive = crate::arc::fixture::build_arc(&[(
+            "gear\\spear.tex",
+            crate::tex::fixture::tex(32, 160).as_slice(),
+        )]);
+        db.add_items_archive("", crate::arc::ArcFile::parse(archive).unwrap());
+        // The id claims XPack2, but only the base archive has it.
+        let bytes = db.resource("XPack2\\Items\\gear\\spear.tex").unwrap();
+        assert_eq!(crate::tex::dimensions(&bytes), Ok((32, 160)));
+        assert!(db.resource("Items\\gear\\missing.tex").is_none());
+        assert!(db.resource("Creatures\\gear\\spear.tex").is_none());
     }
 
     #[test]

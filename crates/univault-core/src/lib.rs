@@ -10,6 +10,7 @@ pub mod gamedata;
 pub mod grid;
 pub mod reader;
 pub mod stash;
+pub mod tex;
 pub mod text;
 pub mod transfer;
 pub mod vault;

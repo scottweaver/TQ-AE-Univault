@@ -56,19 +56,29 @@ edits through the app on their network-mounted save tree ("It
 worked!"). Residual check whenever convenient: confirm a
 transferred-back item in-game and open our vault JSON in TQVaultAE.
 
-1. Real item footprints: a TEX-header reader for `Resources/*.arc`
-   bitmaps so placement stops using conservative upper bounds
-   (denser packing); TQVaultAE derives sizes from texture pixels ÷
-   cell size.
-2. Grid rendering: draw sacks/tabs as actual grids with items at
-   their cells (list view today), then drag-and-drop movement.
-3. Platform module in core: per-OS discovery of the game install and
+1. Grid rendering: draw sacks/tabs as actual grids with items at
+   their cells (list view today), then drag-and-drop movement. Item
+   icons are within reach now — `GameData::resource` can extract the
+   `.tex` bitmaps and the DDS payload is standard.
+2. Platform module in core: per-OS discovery of the game install and
    save directories (removes the need for `--game`).
-4. Stretch (unscheduled): local SQLite index across vaults for
+3. Stretch (unscheduled): local SQLite index across vaults for
    search — would be additive, vault files stay the source of truth.
 
 ## Most recent meaningful progress
 
+- **2026-08-24 — Real item footprints from game textures.** `tex`
+  module reads TEX/DDS headers (magic variants incl. the
+  Atlantis-era pad byte; cells = px ÷ 32 per TQVaultAE);
+  `GameData::resource` resolves bitmap ids across all `Items.arc`
+  archives (XPACK prefix mapping + the records-lie cross-archive
+  fallback); `item_footprint` now returns true grid sizes with the
+  conservative class bounds as fallback. Real-install proof: bow
+  1×4, torso 2×3, rings 1×1 across 4 loaded archives. 90+ tests.
+  Why: dense, game-accurate placement; also unlocks item icons for
+  grid rendering. Risk: footprint lookups are uncached (record +
+  tex decompress per query) — fine for click-driven moves, revisit
+  before drag-and-drop hover previews.
 - **2026-08-24 — Transfer UI: the core feature loop is live.**
   Two-pane GUI (game file ⇄ vault) with click-to-select item
   movement, dirty tracking, and explicit saves through the new
@@ -176,15 +186,6 @@ transferred-back item in-game and open our vault JSON in TQVaultAE.
   the synthetic fixture — a real save may expose key-order or
   version quirks; eframe 0.36's `App::ui`/`DroppedFile` APIs differ
   from published examples.
-- **2026-08-24 — Parser survey done; four decisions locked.** No
-  Rust prior art exists for any TQ format; TQVaultAE (C#, MIT) is
-  the port reference for all of them (map: docs/format-references.md).
-  Dialog outcomes: TQVaultAE JSON as native vault schema (two-way
-  compat — renegotiated from import-only), targeted-splice writes,
-  flate2 + hand-rolled reader (binrw declined), MIT OR Apache-2.0.
-  Why: unblocks the vertical slice with license-clean references.
-  Risk: the vault schema is now an external contract tracked from a
-  live upstream project.
 ## Blocked / waiting
 
 - *(nothing)*

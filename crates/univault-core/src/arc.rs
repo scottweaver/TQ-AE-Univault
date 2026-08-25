@@ -273,6 +273,57 @@ fn count_field(value: i32, what: &'static str) -> Result<usize, ArcError> {
     usize::try_from(value).map_err(|_| ArcError::InvalidCount { what, count: value })
 }
 
+/// Builds ARC images whose entries are all stored raw — enough for
+/// cross-module tests (`gamedata` texture lookups).
+#[cfg(test)]
+pub(crate) mod fixture {
+    fn push_i32(buf: &mut Vec<u8>, value: i32) {
+        buf.extend_from_slice(&value.to_le_bytes());
+    }
+
+    pub(crate) fn build_arc(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let header_size = 0x21_usize;
+        let mut blobs = Vec::new();
+        let mut offsets = Vec::new();
+        for (_, bytes) in entries {
+            offsets.push(header_size + blobs.len());
+            blobs.extend_from_slice(bytes);
+        }
+        let toc_offset = header_size + blobs.len();
+        let mut names = Vec::new();
+        for (name, _) in entries {
+            names.extend_from_slice(name.as_bytes());
+            names.push(0);
+        }
+        let mut records = Vec::new();
+        for ((name, bytes), offset) in entries.iter().zip(&offsets) {
+            push_i32(&mut records, 1);
+            push_i32(&mut records, i32::try_from(*offset).unwrap());
+            push_i32(&mut records, i32::try_from(bytes.len()).unwrap());
+            push_i32(&mut records, i32::try_from(bytes.len()).unwrap());
+            records.extend_from_slice(&[0; 12]);
+            push_i32(&mut records, 0);
+            push_i32(&mut records, 0);
+            push_i32(&mut records, i32::try_from(name.len()).unwrap());
+            push_i32(&mut records, 0);
+        }
+
+        let mut file = Vec::new();
+        file.extend_from_slice(b"ARC");
+        file.extend_from_slice(&[0; 5]);
+        push_i32(&mut file, i32::try_from(entries.len()).unwrap());
+        push_i32(&mut file, 0);
+        file.extend_from_slice(&[0; 8]);
+        push_i32(&mut file, i32::try_from(toc_offset).unwrap());
+        file.extend_from_slice(&[0; 5]);
+        assert_eq!(file.len(), header_size);
+        file.extend_from_slice(&blobs);
+        file.extend_from_slice(&names);
+        file.extend_from_slice(&records);
+        file
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Write;

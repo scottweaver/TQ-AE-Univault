@@ -28,7 +28,24 @@ fn main() {
         database_bytes.len(),
         archive_bytes.len()
     );
-    let db = GameData::from_bytes(database_bytes, archive_bytes).expect("assemble game data");
+    let mut db = GameData::from_bytes(database_bytes, archive_bytes).expect("assemble game data");
+    let mut archives = 0_usize;
+    for (label, relative) in [
+        ("", "Resources/Items.arc"),
+        ("XPACK", "Resources/XPack/Items.arc"),
+        ("XPACK2", "Resources/XPack2/Items.arc"),
+        ("XPACK3", "Resources/XPack3/Items.arc"),
+        ("XPACK4", "Resources/XPack4/Items.arc"),
+    ] {
+        if let Ok(bytes) = std::fs::read(game.join(relative)) {
+            let archive = univault_core::arc::ArcFile::parse(bytes)
+                .unwrap_or_else(|error| panic!("{relative}: {error}"));
+            db.add_items_archive(label, archive);
+            archives += 1;
+        }
+    }
+    println!("item archives loaded: {archives}");
+    let db = db;
 
     let ids: Vec<_> = db.record_ids().cloned().collect();
     println!("{} records indexed", ids.len());
@@ -133,7 +150,10 @@ fn report_character(path: &Path, db: &GameData) {
         .slots
         .iter()
         .flatten()
-        .map(|item| db.item_name(item))
+        .map(|item| {
+            let (width, height) = db.item_footprint(item);
+            format!("{} [{width}x{height}]", db.item_name(item))
+        })
         .collect::<Vec<_>>()
         .join(", ");
     let sack_items: usize = character.sacks.iter().map(|sack| sack.items.len()).sum();

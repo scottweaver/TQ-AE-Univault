@@ -359,7 +359,29 @@ fn load_game_data(dir: &Path) -> Result<GameData, String> {
         .map_err(|error| format!("Database/database.arz: {error}"))?;
     let text = std::fs::read(dir.join("Text/Text_EN.arc"))
         .map_err(|error| format!("Text/Text_EN.arc: {error}"))?;
-    GameData::from_bytes(database, text).map_err(|error| error.to_string())
+    let mut data = GameData::from_bytes(database, text).map_err(|error| error.to_string())?;
+    load_item_archives(dir, &mut data);
+    Ok(data)
+}
+
+/// Registers every present `Items.arc` (base + expansions) for real
+/// item footprints; missing ones just leave the conservative
+/// fallback in place.
+fn load_item_archives(dir: &Path, data: &mut GameData) {
+    let candidates = [
+        ("", "Resources/Items.arc"),
+        ("XPACK", "Resources/XPack/Items.arc"),
+        ("XPACK2", "Resources/XPack2/Items.arc"),
+        ("XPACK3", "Resources/XPack3/Items.arc"),
+        ("XPACK4", "Resources/XPack4/Items.arc"),
+    ];
+    for (label, relative) in candidates {
+        if let Ok(bytes) = std::fs::read(dir.join(relative))
+            && let Ok(archive) = univault_core::arc::ArcFile::parse(bytes)
+        {
+            data.add_items_archive(label, archive);
+        }
+    }
 }
 
 const EQUIPMENT_SLOT_NAMES: [&str; chr::EQUIPMENT_SLOTS] = [
