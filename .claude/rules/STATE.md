@@ -81,7 +81,14 @@ transferred-back item in-game and open our vault JSON in TQVaultAE.
   forces a re-import): imports now run on a background thread with
   a startup progress bar (phase labels + record fraction via
   `build_cache_with_progress`); verified live against the real
-  install — window responsive from launch, cache rewritten.
+  install — window responsive from launch, cache rewritten. Also
+  fixed after the user spotted "shieldbucklerwood03a_01": TQ's
+  `default\` template records store literal text where others store
+  tags — name resolution now accepts literal descriptions (space =
+  not a tag) and quality/style fall back to the raw word per
+  TQVaultAE, giving "Light Pine Buckler Ornate of Strength"; magic
+  bumped to `UVC4` (content bumps use the magic too) so caches
+  rebuild themselves.
 - **2026-08-25 — Rarity-colored item tooltips.** New core `style`
   module ports TQVaultAE's `Item.ItemStyle` decision order and the
   game's exact text-palette RGB values (MIT refs fetched from the

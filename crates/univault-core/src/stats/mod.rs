@@ -570,6 +570,15 @@ mod tests {
             ],
         );
         builder.record(
+            "records\\item\\equipmentshield\\default\\pinebuckler.dbr",
+            "WeaponArmor_Shield",
+            &[
+                ("description", Values::Strings(&["Buckler Ornate"])),
+                ("itemQualityTag", Values::Strings(&["Pine"])),
+                ("defensiveBlock", Values::Floats(&[36.0])),
+            ],
+        );
+        builder.record(
             "records\\item\\animalrelics\\monkeypaw.dbr",
             "ItemCharm",
             &[
@@ -643,6 +652,18 @@ mod tests {
                 "Required Strength: 141",
             ]
         );
+    }
+
+    #[test]
+    fn default_records_use_literal_name_and_quality_text() {
+        let db = sample_cache();
+        let buckler = item("records\\item\\equipmentshield\\default\\pinebuckler.dbr");
+        assert_eq!(
+            db.record_name(&buckler.base),
+            Some("Buckler Ornate".to_string())
+        );
+        let details = item_details(&db, &buckler);
+        assert_eq!(details.quality.as_deref(), Some("Pine"));
     }
 
     #[test]

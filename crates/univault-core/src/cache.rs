@@ -8,7 +8,7 @@
 //!
 //! Format (all little-endian, strings length-prefixed **UTF-8** —
 //! localized names exceed Windows-1252, e.g. Ragnarök's
-//! "Jǫrmungandr"): `UVC3` magic, source-fingerprint list (path, size,
+//! "Jǫrmungandr"): `UVC4` magic, source-fingerprint list (path, size,
 //! mtime seconds), a table of runtime display labels, then entries
 //! keyed by normalized record path: name, footprint, classification
 //! and kind tags, an optional JSON-encoded stat block, and an
@@ -29,7 +29,10 @@ use crate::style::{Classification, ItemKind};
 use crate::tex::RgbaImage;
 use crate::writer::{write_i32, write_i64};
 
-const MAGIC: i32 = 0x3343_5655; // "UVC3"
+// The magic is the cache's only version: bump it for layout changes
+// AND for content-generation changes (names, stat rendering), so
+// existing caches rebuild automatically.
+const MAGIC: i32 = 0x3443_5655; // "UVC4"
 
 /// Identity of one source file at import time; the shell compares
 /// these against the live files to detect a game update.

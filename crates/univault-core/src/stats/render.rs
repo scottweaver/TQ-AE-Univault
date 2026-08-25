@@ -206,7 +206,7 @@ impl Renderer<'_> {
             equations: self.cost_equations(record),
             item_level: record.integer("itemLevel").unwrap_or(0),
             style_text: self.style_text(record),
-            quality_text: self.translated(record, "itemQualityTag"),
+            quality_text: self.translated_or_raw(record, "itemQualityTag"),
             set_lines: self.set_lines(record),
             artifact_class: record
                 .string("artifactClassification")
@@ -219,6 +219,18 @@ impl Renderer<'_> {
         let tag = record.string(variable).filter(|tag| !tag.is_empty())?;
         let text = self.tag(tag)?;
         Some(strip_color_tags(text))
+    }
+
+    /// [`Self::translated`], falling back to the raw variable value —
+    /// the reference does this for quality/style name particles,
+    /// which `default\` template records store as literal text
+    /// (`itemQualityTag = "Pine"`).
+    fn translated_or_raw(&self, record: &DbRecord, variable: &str) -> Option<String> {
+        let raw = record.string(variable).filter(|tag| !tag.is_empty())?;
+        Some(
+            self.tag(raw)
+                .map_or_else(|| raw.to_string(), strip_color_tags),
+        )
     }
 
     /// The style/flavor text source per record kind — `Info`'s
@@ -238,7 +250,7 @@ impl Renderer<'_> {
         } else if class.starts_with("ITEMARTIFACT") {
             None
         } else {
-            self.translated(record, "itemStyleTag")
+            self.translated_or_raw(record, "itemStyleTag")
         }
     }
 

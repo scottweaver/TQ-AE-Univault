@@ -116,8 +116,20 @@ impl GameData {
     #[must_use]
     pub fn record_name(&self, id: &RecordId) -> Option<String> {
         let record = self.arz.record(id)?.ok()?;
-        let tag = name_tag(&record)?.to_string();
-        self.text.get(&tag).map(str::to_string)
+        self.display_name(&record)
+    }
+
+    /// The game's `default\` template records store literal display
+    /// text where regular records store a localization tag
+    /// (`description = "Buckler Ornate"`); a space marks it as text,
+    /// since real tags never contain one.
+    fn display_name(&self, record: &DbRecord) -> Option<String> {
+        let tag = name_tag(record)?;
+        match self.text.get(tag) {
+            Some(text) => Some(text.to_string()),
+            None if tag.contains(' ') => Some(tag.to_string()),
+            None => None,
+        }
     }
 
     /// Grid footprint (width, height) for an item: the real size from
@@ -184,9 +196,7 @@ impl GameData {
             if !is_item_class(&record.record_type) {
                 continue;
             }
-            let name = name_tag(&record)
-                .and_then(|tag| self.text.get(tag))
-                .map(str::to_string);
+            let name = self.display_name(&record);
             let footprint = self
                 .texture_footprint(&record)
                 .unwrap_or_else(|| class_upper_bound(Some(&record)));
