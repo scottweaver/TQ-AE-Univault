@@ -352,7 +352,8 @@ fn read_values<'data, T>(
 
 /// `TQVaultAE`'s `NormalizeRecordPath`: uppercase, `/` → `\`. Shared
 /// by the ARZ and ARC lookup keys.
-pub(crate) fn normalize(path: &str) -> String {
+#[must_use]
+pub fn normalize(path: &str) -> String {
     path.to_uppercase().replace('/', "\\")
 }
 

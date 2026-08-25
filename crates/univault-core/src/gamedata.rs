@@ -101,8 +101,9 @@ impl GameData {
         self.arz.record(id)
     }
 
-    /// Raw localization lookup for the display engine.
-    pub(crate) fn tag_text(&self, tag: &str) -> Option<&str> {
+    /// Raw localization lookup: the label for a text tag, if any.
+    #[must_use]
+    pub fn tag_text(&self, tag: &str) -> Option<&str> {
         self.text.get(tag)
     }
 

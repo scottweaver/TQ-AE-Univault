@@ -28,7 +28,7 @@ only). No issue tracker is bound yet (deliberately deferred).
 | Branch | Purpose | Status |
 |---|---|---|
 | `main` | trunk | read stack + transfers + grids + full item tooltips merged; pushed to the new GitHub origin |
-| `feat/backup-rotation` | backup rotation (5 newest per file) + respec buttons | PR #2 open |
+| `feat/skill-export` | mastery skill-tree JSON export for AI theorycrafting | PR open |
 
 ## Next up
 
@@ -66,6 +66,20 @@ eyes-only reference, implementation independent.
 
 ## Most recent meaningful progress
 
+- **2026-08-25 — Mastery skill-tree export for AI theorycrafting.**
+  PR #2 (rotation + respec) merged. New `skilltree` example distills
+  `database.arz` into one JSON per mastery (all 11 discovered via
+  `Skill_Mastery` records; dev leftovers — `OLD\`/`REV`/dated dirs,
+  the cut Medicine mastery — filtered; skills swept flat per mastery
+  dir): localized names/descriptions, tiers
+  (`skillMasteryLevelRequired`), caps, per-level effect arrays, and
+  transitively the referenced buffs/pets/sub-skills, with cosmetic
+  variables (anim/sound/particle) stripped — 83–462 KB per file
+  plus an index. Output goes to gitignored `exports/` (derived game
+  data stays local per ARCHITECTURE's never-distribute posture);
+  `arz::normalize` and `GameData::tag_text` went public for
+  example use. Spot-checked against known values (Warfare mastery
+  +2 str/level, Onslaught tier 1 max 8/12, Wolf_16 612 life).
 - **2026-08-25 — Backup rotation + full respec.** Two user-requested
   features before drag-and-drop. Rotation: after each synced backup
   the oldest `univault-bak` siblings beyond 5 are pruned per file;
@@ -221,18 +235,6 @@ eyes-only reference, implementation independent.
   byte-identically. 68 tests. Why: transfers are now a data edit
   plus a file write away. Risk: no writes hit disk yet — the
   backup-first shell function lands with the transfer UI.
-- **2026-08-24 — Read stack complete: stash reader + full real-data
-  sweep.** All feature branches merged to `main` and deleted. New
-  `stash` module (`winsys.dxb`/`.dxg`: CRC header skipped on read,
-  explicit `stackCount` = size−1, float grid offsets) reusing the
-  chr item parser via a new `Stash` context; GUI opens stashes by
-  extension. `examples/smoke.rs` now sweeps a `SaveData` tree: the
-  user's real transfer stash + 2 character stashes + 4 characters
-  all parse with resolved names. 59 tests. Why: every item source
-  (character, stash, vault, game DB) is now readable — the write
-  path is all that separates us from working transfers. Risk: the
-  real stashes were empty; a stash with items has only synthetic
-  coverage until the user stashes something in-game.
 
 ## Blocked / waiting
 
