@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
+use univault_core::cache::{GameCache, SourceStamp};
 use univault_core::chr::{self, Item, PlayerCharacter, RecordId};
 use univault_core::gamedata::GameData;
 use univault_core::stash::{self, Stash};
@@ -86,7 +87,7 @@ struct VaultPane {
 
 enum GameStatus {
     Absent,
-    Loaded(GameData),
+    Loaded(GameCache),
     Failed(String),
 }
 
@@ -98,7 +99,7 @@ struct NameCache {
 }
 
 impl NameCache {
-    fn record_name(&mut self, db: Option<&GameData>, id: &RecordId) -> String {
+    fn record_name(&mut self, db: Option<&GameCache>, id: &RecordId) -> String {
         if let Some(cached) = self.names.get(id.as_str()) {
             return cached.clone();
         }
@@ -109,7 +110,7 @@ impl NameCache {
         resolved
     }
 
-    fn item_label(&mut self, db: Option<&GameData>, item: &Item) -> String {
+    fn item_label(&mut self, db: Option<&GameCache>, item: &Item) -> String {
         let mut parts = Vec::new();
         if let Some(prefix) = &item.prefix {
             parts.push(self.record_name(db, prefix));
@@ -137,7 +138,7 @@ struct Caches {
 }
 
 impl Caches {
-    fn footprint(&mut self, db: Option<&GameData>, item: &Item) -> (i32, i32) {
+    fn footprint(&mut self, db: Option<&GameCache>, item: &Item) -> (i32, i32) {
         if let Some(cached) = self.footprints.get(item.base.as_str()) {
             return *cached;
         }
@@ -152,7 +153,7 @@ impl Caches {
     fn icon(
         &mut self,
         ctx: &egui::Context,
-        db: Option<&GameData>,
+        db: Option<&GameCache>,
         item: &Item,
     ) -> Option<egui::TextureHandle> {
         if let Some(cached) = self.icons.get(item.base.as_str()) {
@@ -241,6 +242,9 @@ impl Recents {
 
 struct App {
     game: GameStatus,
+    /// Standing advisory about the game cache (e.g. sources changed
+    /// since import), distinct from the last-action status line.
+    game_note: Option<String>,
     caches: Caches,
     recents: Recents,
     left: Option<FilePane>,
@@ -250,15 +254,29 @@ struct App {
 
 impl App {
     fn new(args: CliArgs) -> Self {
-        let game = args
-            .game_dir
-            .as_deref()
-            .map_or(GameStatus::Absent, |dir| match load_game_data(dir) {
-                Ok(data) => GameStatus::Loaded(data),
+        // --game forces a (re-)import; otherwise the local cache is
+        // the runtime database, imported automatically from the
+        // remembered game dir the first time.
+        let mut game_note = None;
+        let game = if let Some(dir) = args.game_dir.as_deref() {
+            match import_game_data(dir) {
+                Ok(cache) => GameStatus::Loaded(cache),
                 Err(message) => GameStatus::Failed(message),
-            });
+            }
+        } else if let Some(cache) = load_cached_game_data() {
+            game_note = staleness_warning(&cache);
+            GameStatus::Loaded(cache)
+        } else if let Some(dir) = stored_game_dir() {
+            match import_game_data(&dir) {
+                Ok(cache) => GameStatus::Loaded(cache),
+                Err(message) => GameStatus::Failed(message),
+            }
+        } else {
+            GameStatus::Absent
+        };
         let mut app = Self {
             game,
+            game_note,
             caches: Caches::default(),
             recents: Recents::load(),
             left: None,
@@ -475,20 +493,61 @@ impl App {
     }
 }
 
-fn load_game_data(dir: &Path) -> Result<GameData, String> {
-    let database = std::fs::read(dir.join("Database/database.arz"))
-        .map_err(|error| format!("Database/database.arz: {error}"))?;
-    let text = std::fs::read(dir.join("Text/Text_EN.arc"))
-        .map_err(|error| format!("Text/Text_EN.arc: {error}"))?;
-    let mut data = GameData::from_bytes(database, text).map_err(|error| error.to_string())?;
-    load_item_archives(dir, &mut data);
-    Ok(data)
+fn cache_file_path() -> Option<PathBuf> {
+    univault_core::platform::config_dir().map(|dir| dir.join("gamedata.cache"))
 }
 
-/// Registers every present `Items.arc` (base + expansions) for real
-/// item footprints; missing ones just leave the conservative
-/// fallback in place.
-fn load_item_archives(dir: &Path, data: &mut GameData) {
+fn game_dir_file_path() -> Option<PathBuf> {
+    univault_core::platform::config_dir().map(|dir| dir.join("game-dir.txt"))
+}
+
+fn stored_game_dir() -> Option<PathBuf> {
+    let path = game_dir_file_path()?;
+    let text = std::fs::read_to_string(path).ok()?;
+    let dir = PathBuf::from(text.trim());
+    dir.is_dir().then_some(dir)
+}
+
+fn load_cached_game_data() -> Option<GameCache> {
+    let bytes = std::fs::read(cache_file_path()?).ok()?;
+    GameCache::from_bytes(&bytes).ok()
+}
+
+fn read_stamped(path: &Path) -> Result<(Vec<u8>, SourceStamp), String> {
+    let bytes = std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    Ok((
+        bytes,
+        stamp_of(path).unwrap_or(SourceStamp {
+            path: path.display().to_string(),
+            size: 0,
+            mtime_seconds: 0,
+        }),
+    ))
+}
+
+fn stamp_of(path: &Path) -> Option<SourceStamp> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let mtime_seconds = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|elapsed| i64::try_from(elapsed.as_secs()).ok())
+        .unwrap_or(0);
+    Some(SourceStamp {
+        path: path.display().to_string(),
+        size: i64::try_from(metadata.len()).unwrap_or(0),
+        mtime_seconds,
+    })
+}
+
+/// One-time import: reads the game archives, distills the item cache,
+/// and persists it (plus the game dir for later refreshes) under the
+/// config directory.
+fn import_game_data(dir: &Path) -> Result<GameCache, String> {
+    let (database, database_stamp) = read_stamped(&dir.join("Database/database.arz"))?;
+    let (text, text_stamp) = read_stamped(&dir.join("Text/Text_EN.arc"))?;
+    let mut stamps = vec![database_stamp, text_stamp];
+    let mut data = GameData::from_bytes(database, text).map_err(|error| error.to_string())?;
     let candidates = [
         ("", "Resources/Items.arc"),
         ("XPACK", "Resources/XPack/Items.arc"),
@@ -497,12 +556,38 @@ fn load_item_archives(dir: &Path, data: &mut GameData) {
         ("XPACK4", "Resources/XPack4/Items.arc"),
     ];
     for (label, relative) in candidates {
-        if let Ok(bytes) = std::fs::read(dir.join(relative))
+        let path = dir.join(relative);
+        if let Ok((bytes, stamp)) = read_stamped(&path)
             && let Ok(archive) = univault_core::arc::ArcFile::parse(bytes)
         {
             data.add_items_archive(label, archive);
+            stamps.push(stamp);
         }
     }
+    let cache = data.build_cache(stamps);
+    if let Some(path) = cache_file_path() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(&path, cache.to_bytes())
+            .map_err(|error| format!("writing cache: {error}"))?;
+    }
+    if let Some(path) = game_dir_file_path() {
+        let _ = std::fs::write(path, dir.display().to_string());
+    }
+    Ok(cache)
+}
+
+/// `Some(warning)` when any imported source file has changed on disk
+/// since the cache was built. Unreachable sources are ignored (the
+/// game volume may simply not be mounted).
+fn staleness_warning(cache: &GameCache) -> Option<String> {
+    let changed = cache.stamps().iter().any(|recorded| {
+        stamp_of(Path::new(&recorded.path)).is_some_and(|current| current != *recorded)
+    });
+    changed.then(|| {
+        "Game files changed since the last import — use 'Import game data…' to refresh.".to_string()
+    })
 }
 
 const EQUIPMENT_SLOT_NAMES: [&str; chr::EQUIPMENT_SLOTS] = [
@@ -559,6 +644,28 @@ impl App {
             if ui.button("Open vault…").clicked() {
                 requested = pick_file("Vault", &["json", "vault"], self.dialog_start_dir());
             }
+            if ui.button("Import game data…").clicked() {
+                let start = stored_game_dir();
+                let mut dialog = rfd::FileDialog::new();
+                if let Some(start) = start {
+                    dialog = dialog.set_directory(start);
+                }
+                if let Some(dir) = dialog.pick_folder() {
+                    match import_game_data(&dir) {
+                        Ok(cache) => {
+                            self.status = Some(Ok(format!(
+                                "imported {} item records from {}",
+                                cache.len(),
+                                dir.display()
+                            )));
+                            self.game = GameStatus::Loaded(cache);
+                            self.game_note = None;
+                            self.caches = Caches::default();
+                        }
+                        Err(message) => self.status = Some(Err(message)),
+                    }
+                }
+            }
             ui.menu_button("Recent", |ui| {
                 if self.recents.entries.is_empty() {
                     ui.weak("nothing yet");
@@ -585,10 +692,16 @@ impl App {
             }
             ui.weak("(⌘+ / ⌘− / ⌘0 work too)");
         });
+        if let Some(note) = &self.game_note {
+            ui.colored_label(ui.visuals().warn_fg_color, note);
+        }
         match &self.game {
             GameStatus::Loaded(_) => {}
             GameStatus::Absent => {
-                ui.weak("No --game <dir> given — showing record ids instead of item names.");
+                ui.weak(
+                    "No game data imported yet — use 'Import game data…' and pick your \
+                     Titan Quest install (one time; names, icons and sizes come from it).",
+                );
             }
             GameStatus::Failed(message) => {
                 ui.colored_label(
@@ -670,7 +783,7 @@ fn grid_view(
     entries: &[(usize, &Item)],
     container: usize,
     selected: &mut Option<(usize, usize)>,
-    db: Option<&GameData>,
+    db: Option<&GameCache>,
     caches: &mut Caches,
 ) {
     let size = egui::vec2(cells_to_points(dims.0), cells_to_points(dims.1));
@@ -771,7 +884,7 @@ fn grid_view(
 fn show_file_pane(
     ui: &mut egui::Ui,
     pane: &mut FilePane,
-    db: Option<&GameData>,
+    db: Option<&GameCache>,
     caches: &mut Caches,
     can_move: bool,
 ) -> Option<PaneAction> {
@@ -869,7 +982,7 @@ fn show_file_pane(
 fn show_vault_pane(
     ui: &mut egui::Ui,
     pane: &mut VaultPane,
-    db: Option<&GameData>,
+    db: Option<&GameCache>,
     caches: &mut Caches,
     can_move: bool,
 ) -> Option<PaneAction> {

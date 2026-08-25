@@ -92,6 +92,21 @@ impl<'a> ByteReader<'a> {
     }
 
     /// # Errors
+    /// [`ReadError::UnexpectedEof`] if fewer than `length` bytes remain.
+    pub fn read_bytes(&mut self, length: usize) -> Result<&'a [u8], ReadError> {
+        self.take(length)
+    }
+
+    /// # Errors
+    /// [`ReadError::UnexpectedEof`] if fewer than 8 bytes remain.
+    pub fn read_i64(&mut self) -> Result<i64, ReadError> {
+        let bytes = self.take(8)?;
+        Ok(i64::from_le_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        ]))
+    }
+
+    /// # Errors
     /// [`ReadError::UnexpectedEof`] if fewer than 2 bytes remain.
     pub fn read_i16(&mut self) -> Result<i16, ReadError> {
         let bytes = self.take(2)?;

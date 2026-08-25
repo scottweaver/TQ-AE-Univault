@@ -150,6 +150,45 @@ impl GameData {
         Some(tex::cells(width_px, height_px))
     }
 
+    /// Distills every item-classed record into a [`GameCache`]: name,
+    /// footprint, and icon resolved once, so launches can skip the
+    /// game archives entirely. `stamps` identify the source files for
+    /// freshness checks.
+    #[must_use]
+    pub fn build_cache(&self, stamps: Vec<crate::cache::SourceStamp>) -> crate::cache::GameCache {
+        let mut entries = std::collections::HashMap::new();
+        for id in self.arz.record_ids() {
+            let Some(Ok(record)) = self.arz.record(id) else {
+                continue;
+            };
+            if !is_item_class(&record.record_type) {
+                continue;
+            }
+            let name = name_tag(&record)
+                .and_then(|tag| self.text.get(tag))
+                .map(str::to_string);
+            let footprint = self
+                .texture_footprint(&record)
+                .unwrap_or_else(|| class_upper_bound(Some(&record)));
+            let icon = record
+                .string(bitmap_variable(&record.record_type))
+                .filter(|path| !path.is_empty())
+                .and_then(|bitmap| self.resource(bitmap))
+                .and_then(|bytes| tex::decode(&bytes).ok())
+                .as_ref()
+                .and_then(crate::cache::compress_icon);
+            entries.insert(
+                normalize(id.as_str()),
+                crate::cache::CacheEntry {
+                    name,
+                    footprint,
+                    icon,
+                },
+            );
+        }
+        crate::cache::GameCache::from_entries(stamps, entries)
+    }
+
     /// Display name for an item: localized prefix + base + suffix.
     /// Every part that fails to resolve falls back to its record file
     /// stem, so an item never renders empty.
@@ -181,6 +220,26 @@ fn class_upper_bound(record: Option<&DbRecord>) -> (i32, i32) {
         Some(_) => (2, 2),
         None => FALLBACK_FOOTPRINT,
     }
+}
+
+/// Whether a record class belongs to the item domain the app cares
+/// about (equipment, consumables, relics, artifacts, quest items,
+/// affixes) — the cache only carries these.
+fn is_item_class(record_type: &str) -> bool {
+    [
+        "Weapon",
+        "Armor",
+        "Item",
+        "OneShot",
+        "QuestItem",
+        "LootRandomizer",
+    ]
+    .iter()
+    .any(|prefix| {
+        record_type
+            .get(..prefix.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+    })
 }
 
 /// Which variable holds a record's bitmap path — the bitmap column of
@@ -448,6 +507,68 @@ mod tests {
         assert_eq!(crate::tex::dimensions(&bytes), Ok((32, 160)));
         assert!(db.resource("Items\\gear\\missing.tex").is_none());
         assert!(db.resource("Creatures\\gear\\spear.tex").is_none());
+    }
+
+    #[test]
+    fn cache_round_trips_names_footprints_and_icons() {
+        let mut builder = ArzBuilder::default();
+        builder.record(
+            "records\\item\\axe.dbr",
+            "WeaponMelee_Axe",
+            &[
+                ("itemNameTag", Values::Strings(&["tagAxe"])),
+                ("bitmap", Values::Strings(&["Items\\gear\\axe.tex"])),
+            ],
+        );
+        builder.record(
+            "records\\item\\sharp.dbr",
+            "LootRandomizer",
+            &[("lootRandomizerName", Values::Strings(&["tagSharp"]))],
+        );
+        builder.record(
+            "records\\creature\\monster.dbr",
+            "Monster",
+            &[("description", Values::Strings(&["tagAxe"]))],
+        );
+        let mut text = TextDb::new();
+        text.add_file(&text_file("tagAxe=War Axe\ntagSharp=Sharp\n"));
+        let mut db = GameData::from_parts(ArzFile::parse(builder.build()).unwrap(), text);
+        let payload = [0xFF, 0x00, 0x00, 0xFF];
+        let archive = crate::arc::fixture::build_arc(&[(
+            "gear\\axe.tex",
+            crate::tex::fixture::tex_with_pixels(32, 32, 32, &payload.repeat(32 * 32)).as_slice(),
+        )]);
+        db.add_items_archive("", crate::arc::ArcFile::parse(archive).unwrap());
+
+        let stamps = vec![crate::cache::SourceStamp {
+            path: "database.arz".to_string(),
+            size: 42,
+            mtime_seconds: 1_756_000_000,
+        }];
+        let cache = db.build_cache(stamps.clone());
+        let reloaded = crate::cache::GameCache::from_bytes(&cache.to_bytes()).unwrap();
+
+        assert_eq!(reloaded.stamps(), stamps.as_slice());
+        // Item-classed records survive; the monster does not.
+        assert_eq!(reloaded.len(), 2);
+        assert_eq!(
+            reloaded.record_name(&record_id("records\\item\\axe.dbr")),
+            Some("War Axe".to_string())
+        );
+        assert_eq!(
+            reloaded.record_name(&record_id("records\\item\\sharp.dbr")),
+            Some("Sharp".to_string())
+        );
+        assert_eq!(
+            reloaded.record_name(&record_id("records\\creature\\monster.dbr")),
+            None
+        );
+
+        let axe = bare_item("records\\item\\axe.dbr");
+        assert_eq!(reloaded.item_footprint(&axe), db.item_footprint(&axe));
+        assert_eq!(reloaded.item_icon(&axe), db.item_icon(&axe));
+        let unknown = bare_item("records\\item\\unknown.dbr");
+        assert_eq!(reloaded.item_footprint(&unknown), FALLBACK_FOOTPRINT);
     }
 
     #[test]

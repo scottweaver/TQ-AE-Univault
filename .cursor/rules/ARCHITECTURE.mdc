@@ -43,6 +43,11 @@ bootstrap Q&A).
   read-only reference data. This app never writes them. (2026-08-24)
 - Nothing held in memory is authoritative: a mutation exists only
   once explicitly serialized to disk. (2026-08-24)
+- A derived local cache of item reference data (names, footprints,
+  icons) lives under the platform config directory: regenerable at
+  any time, fingerprint-keyed to the archives it was built from,
+  never authoritative, and never distributed (it embeds extracted
+  game assets for local personal use only). (2026-08-24)
 
 ## Crate layering
 

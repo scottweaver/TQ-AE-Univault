@@ -47,6 +47,8 @@ fn main() {
     println!("item archives loaded: {archives}");
     let db = db;
 
+    let cache = validate_cache(&db);
+
     let ids: Vec<_> = db.record_ids().cloned().collect();
     println!("{} records indexed", ids.len());
 
@@ -98,14 +100,40 @@ fn main() {
     assert!(resolved > 10_000, "suspiciously few names resolved");
 
     if let Some(saves) = std::env::args().nth(2) {
-        sweep_saves(Path::new(&saves), &db);
+        sweep_saves(Path::new(&saves), &db, &cache);
     }
+}
+
+/// Builds the local cache, round-trips it through its file format,
+/// and demands name agreement with the live database.
+fn validate_cache(db: &GameData) -> univault_core::cache::GameCache {
+    let built = db.build_cache(Vec::new());
+    let cache_bytes = built.to_bytes();
+    #[allow(clippy::cast_precision_loss)]
+    let megabytes = cache_bytes.len() as f64 / (1024.0 * 1024.0);
+    println!(
+        "cache: {} item records, {} bytes ({megabytes:.1} MB)",
+        built.len(),
+        cache_bytes.len()
+    );
+    let cache = univault_core::cache::GameCache::from_bytes(&cache_bytes).expect("reload cache");
+    assert_eq!(cache.len(), built.len());
+    let mut name_mismatches = 0_usize;
+    for id in db.record_ids() {
+        if let Some(cached_name) = cache.record_name(id)
+            && db.record_name(id).as_deref() != Some(cached_name.as_str())
+        {
+            name_mismatches += 1;
+        }
+    }
+    assert_eq!(name_mismatches, 0, "cache names diverge from live data");
+    cache
 }
 
 /// Parses every character and stash in a `SaveData` tree, printing
 /// contents with resolved names. Panics on any parse failure so the
 /// sweep is a hard validation gate.
-fn sweep_saves(saves: &Path, db: &GameData) {
+fn sweep_saves(saves: &Path, db: &GameData, cache: &univault_core::cache::GameCache) {
     let mut characters = 0_usize;
     let mut stashes = 0_usize;
 
@@ -124,7 +152,7 @@ fn sweep_saves(saves: &Path, db: &GameData) {
             let chr_path = dir.join("Player.chr");
             if chr_path.is_file() {
                 characters += 1;
-                report_character(&chr_path, db);
+                report_character(&chr_path, db, cache);
             }
             let stash_path = dir.join("winsys.dxb");
             if stash_path.is_file() {
@@ -137,7 +165,7 @@ fn sweep_saves(saves: &Path, db: &GameData) {
     assert!(characters > 0, "no characters found in {}", saves.display());
 }
 
-fn report_character(path: &Path, db: &GameData) {
+fn report_character(path: &Path, db: &GameData, cache: &univault_core::cache::GameCache) {
     let bytes = std::fs::read(path).expect("read Player.chr");
     let character = univault_core::chr::parse_player(&bytes)
         .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
@@ -163,6 +191,26 @@ fn report_character(path: &Path, db: &GameData) {
         info.level,
         sack_items
     );
+    // The cache must answer exactly like the live database.
+    for item in character
+        .sacks
+        .iter()
+        .flat_map(|sack| &sack.items)
+        .chain(character.equipment.slots.iter().flatten())
+    {
+        assert_eq!(
+            cache.item_footprint(item),
+            db.item_footprint(item),
+            "cache footprint diverges for {}",
+            item.base.as_str()
+        );
+        assert_eq!(
+            cache.item_icon(item).is_some(),
+            db.item_icon(item).is_some(),
+            "cache icon presence diverges for {}",
+            item.base.as_str()
+        );
+    }
 }
 
 /// Byte-identity gate with a diagnostic dump of the first difference.

@@ -5,6 +5,7 @@
 
 pub mod arc;
 pub mod arz;
+pub mod cache;
 pub mod chr;
 pub mod gamedata;
 pub mod grid;

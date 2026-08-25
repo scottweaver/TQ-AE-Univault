@@ -48,8 +48,8 @@ transferred-back item in-game and open our vault JSON in TQVaultAE.
 1. Drag-and-drop item movement on the grids (click-select + buttons
    today), including cross-pane drags and an occupied-cell drop
    preview.
-2. Platform module in core: per-OS discovery of the game install and
-   save directories (removes the need for `--game`).
+2. Game-install auto-discovery (Steam library paths per OS in
+   `platform`) to preseed the one-time Import dialog.
 3. DXT1/3 decode for the ~7 compressed item bitmaps (currently an
    initial-letter fallback tile).
 4. Stretch (unscheduled): local SQLite index across vaults for
@@ -57,6 +57,20 @@ transferred-back item in-game and open our vault JSON in TQVaultAE.
 
 ## Most recent meaningful progress
 
+- **2026-08-24 — Local game-data cache: import once, launch from
+  cache.** User-directed pivot: instead of pointing at the game dir
+  every launch, one Import pass distills all 13,188 item records
+  (names, footprints, zlib'd RGBA icons) into a 50MB UTF-8/binary
+  cache under the config dir (`cache` module; ARCHITECTURE gained
+  the derived-cache constraint). `GameCache` replaced `GameData` as
+  the runtime DB everywhere (GameData is now import-time only);
+  launches need no game volume, staleness is fingerprint-detected
+  (size+mtime), `--game` now just forces a re-import, and the GUI
+  gained "Import game data…". Real-data gate caught a 1252-encoding
+  bug: "Jǫrmungandr" doesn't fit Windows-1252 — cache strings are
+  UTF-8. 95+ tests; cache answers verified identical to live data
+  across all real characters. Risk: cache format is versioned only
+  by magic — bump `UVC1` on layout changes.
 - **2026-08-24 — Grid rendering with item icons.** `tex::decode`
   turns the game's uncompressed 32-bit BGRA / 24-bit BGR textures
   into RGBA (a probe of the real install put those at 99.9% of item

@@ -12,6 +12,10 @@ pub(crate) fn write_f32(buf: &mut Vec<u8>, value: f32) {
     buf.extend_from_slice(&value.to_le_bytes());
 }
 
+pub(crate) fn write_i64(buf: &mut Vec<u8>, value: i64) {
+    buf.extend_from_slice(&value.to_le_bytes());
+}
+
 /// Writes a length-prefixed Windows-1252 string (keys and record
 /// paths alike).
 pub(crate) fn write_cstring(buf: &mut Vec<u8>, value: &str) {

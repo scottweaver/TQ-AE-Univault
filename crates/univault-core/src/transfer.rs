@@ -4,12 +4,13 @@
 //! backup-first.
 //!
 //! Every placement uses conservative footprints (see
-//! [`GameData::item_footprint`]) through the grid search ported from
+//! [`GameCache::item_footprint`]) through the grid search ported from
 //! `TQVaultAE`, so items never overlap at their true sizes. A failed
 //! placement returns the item to the caller instead of dropping it.
 
+use crate::cache::GameCache;
 use crate::chr::{GridPos, Item, PlayerCharacter, sack_dimensions};
-use crate::gamedata::{FALLBACK_FOOTPRINT, GameData};
+use crate::gamedata::FALLBACK_FOOTPRINT;
 use crate::grid::{CellRect, find_open_cells};
 use crate::stash::Stash;
 use crate::vault::{TAB_HEIGHT, TAB_WIDTH, Vault, VaultItem};
@@ -40,11 +41,11 @@ impl Rejected {
     }
 }
 
-fn footprint(db: Option<&GameData>, item: &Item) -> (i32, i32) {
+fn footprint(db: Option<&GameCache>, item: &Item) -> (i32, i32) {
     db.map_or(FALLBACK_FOOTPRINT, |db| db.item_footprint(item))
 }
 
-fn occupied(items: &[Item], db: Option<&GameData>) -> Vec<CellRect> {
+fn occupied(items: &[Item], db: Option<&GameCache>) -> Vec<CellRect> {
     items
         .iter()
         .map(|item| {
@@ -59,7 +60,7 @@ fn occupied(items: &[Item], db: Option<&GameData>) -> Vec<CellRect> {
         .collect()
 }
 
-fn vault_occupied(items: &[VaultItem], db: Option<&GameData>) -> Vec<CellRect> {
+fn vault_occupied(items: &[VaultItem], db: Option<&GameCache>) -> Vec<CellRect> {
     items
         .iter()
         .map(|entry| {
@@ -109,7 +110,7 @@ pub fn place_in_vault(
     vault: &mut Vault,
     item: Item,
     preferred_tab: usize,
-    db: Option<&GameData>,
+    db: Option<&GameCache>,
 ) -> Result<usize, Rejected> {
     let (width, height) = footprint(db, &item);
     let tab_count = vault.sacks.len();
@@ -138,7 +139,7 @@ pub fn place_in_character(
     character: &mut PlayerCharacter,
     item: Item,
     preferred_sack: usize,
-    db: Option<&GameData>,
+    db: Option<&GameCache>,
 ) -> Result<usize, Rejected> {
     let (width, height) = footprint(db, &item);
     let sack_count = character.sacks.len();
@@ -166,7 +167,7 @@ pub fn place_in_character(
 pub fn place_in_stash(
     stash: &mut Stash,
     item: Item,
-    db: Option<&GameData>,
+    db: Option<&GameCache>,
 ) -> Result<(), Rejected> {
     let (width, height) = footprint(db, &item);
     let taken = occupied(&stash.items, db);
