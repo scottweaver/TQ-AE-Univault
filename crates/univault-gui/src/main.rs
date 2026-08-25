@@ -50,10 +50,14 @@ struct CliArgs {
 
 impl CliArgs {
     fn parse() -> Self {
+        Self::from_args(std::env::args_os().skip(1))
+    }
+
+    fn from_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Self {
         let mut game_dir = None;
         let mut vault = None;
         let mut file = None;
-        let mut args = std::env::args_os().skip(1);
+        let mut args = args.into_iter();
         while let Some(arg) = args.next() {
             if arg == "--game" {
                 game_dir = args.next().map(PathBuf::from);
@@ -1266,4 +1270,65 @@ fn first_dropped_path(ctx: &egui::Context) -> Option<PathBuf> {
             .first()
             .map(|file| file.path().to_path_buf())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(raw: &[&str]) -> CliArgs {
+        CliArgs::from_args(raw.iter().map(std::ffi::OsString::from))
+    }
+
+    #[test]
+    fn cli_args_route_flags_and_file() {
+        let parsed = args(&["--game", "/tq", "--vault", "v.json", "save/Player.chr"]);
+        assert_eq!(parsed.game_dir, Some(PathBuf::from("/tq")));
+        assert_eq!(parsed.vault, Some(PathBuf::from("v.json")));
+        assert_eq!(parsed.file, Some(PathBuf::from("save/Player.chr")));
+        let empty = args(&[]);
+        assert_eq!(empty.game_dir, None);
+        assert_eq!(empty.vault, None);
+        assert_eq!(empty.file, None);
+        // A dangling flag consumes nothing and breaks nothing.
+        assert_eq!(args(&["--game"]).game_dir, None);
+    }
+
+    #[test]
+    fn recents_labels_hide_the_player_chr_boilerplate() {
+        let label = |raw: &str| Recents::label(Path::new(raw));
+        assert_eq!(label("/saves/_Pally Don/Player.chr"), "Pally Don");
+        assert_eq!(
+            label("/saves/_Pally Don/winsys.dxb"),
+            "Pally Don — winsys.dxb"
+        );
+        assert_eq!(label("vault.json"), " — vault.json");
+    }
+
+    #[test]
+    fn tooltip_title_assembles_name_particles() {
+        let mut caches = Caches::default();
+        let mut item = Item::bare(
+            RecordId::parse("records\\item\\sword.dbr".to_string()).unwrap(),
+            univault_core::chr::ItemSeed::new(1),
+        );
+        item.prefix = Some(RecordId::parse("records\\item\\sharp.dbr".to_string()).unwrap());
+        item.stack_size = 3;
+        // Without game data, names fall back to record file stems.
+        assert_eq!(
+            tooltip_title(&item, None, None, &mut caches),
+            "sharp sword ×3"
+        );
+        item.prefix = None;
+        item.stack_size = 1;
+        assert_eq!(tooltip_title(&item, None, None, &mut caches), "sword");
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)] // quarters are exact in f32
+    fn fraction_is_zero_safe() {
+        assert_eq!(fraction(0, 0), 0.0);
+        assert_eq!(fraction(1, 4), 0.25);
+        assert_eq!(fraction(4, 4), 1.0);
+    }
 }

@@ -499,6 +499,80 @@ mod tests {
     }
 
     #[test]
+    fn every_style_has_a_label() {
+        for style in [
+            ItemStyle::Broken,
+            ItemStyle::Mundane,
+            ItemStyle::Common,
+            ItemStyle::Rare,
+            ItemStyle::Epic,
+            ItemStyle::Legendary,
+            ItemStyle::Quest,
+            ItemStyle::Relic,
+            ItemStyle::Potion,
+            ItemStyle::Scroll,
+            ItemStyle::Parchment,
+            ItemStyle::Formulae,
+            ItemStyle::Artifact,
+        ] {
+            assert!(!style.label().is_empty());
+        }
+    }
+
+    #[test]
+    fn palette_letters_match_the_game_color_map() {
+        assert_eq!(
+            palette_color('B'),
+            Rgb {
+                r: 0,
+                g: 163,
+                b: 255
+            }
+        );
+        assert_eq!(
+            palette_color('o'),
+            Rgb {
+                r: 255,
+                g: 173,
+                b: 0
+            }
+        );
+        assert_eq!(
+            palette_color('S'),
+            Rgb {
+                r: 224,
+                g: 224,
+                b: 224
+            }
+        );
+        assert_eq!(
+            palette_color('L'),
+            Rgb {
+                r: 145,
+                g: 203,
+                b: 0
+            }
+        );
+        // Unknown letters render white, like the game's fallback.
+        assert_eq!(
+            palette_color('?'),
+            Rgb {
+                r: 255,
+                g: 255,
+                b: 255
+            }
+        );
+        assert_eq!(
+            palette_color('W'),
+            Rgb {
+                r: 255,
+                g: 255,
+                b: 255
+            }
+        );
+    }
+
+    #[test]
     fn style_colors_match_the_game_palette() {
         assert_eq!(
             style_color(ItemStyle::Legendary),

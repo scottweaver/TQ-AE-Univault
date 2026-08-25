@@ -381,3 +381,73 @@ pub(crate) fn compress_icon(image: &RgbaImage) -> Option<CachedIcon> {
         zlib_rgba: encoder.finish().ok()?,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry_header(classification_tag: i32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        write_i32(&mut bytes, MAGIC);
+        write_i32(&mut bytes, 0); // stamps
+        write_i32(&mut bytes, 0); // labels
+        write_i32(&mut bytes, 1); // entries
+        write_utf8(&mut bytes, "RECORDS\\ITEM\\X.DBR");
+        write_i32(&mut bytes, 0); // no name
+        write_i32(&mut bytes, 1); // footprint
+        write_i32(&mut bytes, 1);
+        write_i32(&mut bytes, classification_tag);
+        bytes
+    }
+
+    #[test]
+    fn unknown_classification_tag_is_corrupt() {
+        let bytes = entry_header(9);
+        assert!(matches!(
+            GameCache::from_bytes(&bytes),
+            Err(CacheError::Corrupt)
+        ));
+    }
+
+    #[test]
+    fn unknown_kind_tag_is_corrupt() {
+        let mut bytes = entry_header(0);
+        write_i32(&mut bytes, 9);
+        assert!(matches!(
+            GameCache::from_bytes(&bytes),
+            Err(CacheError::Corrupt)
+        ));
+    }
+
+    #[test]
+    fn undecodable_stats_blob_is_corrupt() {
+        let mut bytes = entry_header(0);
+        write_i32(&mut bytes, 0); // kind: gear
+        write_i32(&mut bytes, 1); // stats present
+        write_i32(&mut bytes, 4);
+        bytes.extend_from_slice(b"?!?!");
+        assert!(matches!(
+            GameCache::from_bytes(&bytes),
+            Err(CacheError::Corrupt)
+        ));
+    }
+
+    #[test]
+    fn truncated_cache_is_a_read_error() {
+        let mut bytes = Vec::new();
+        write_i32(&mut bytes, MAGIC);
+        write_i32(&mut bytes, 3); // claims stamps that are not there
+        assert!(matches!(
+            GameCache::from_bytes(&bytes),
+            Err(CacheError::Read(_))
+        ));
+    }
+
+    #[test]
+    fn foreign_file_is_bad_magic() {
+        assert!(matches!(
+            GameCache::from_bytes(b"PK\x03\x04not a cache"),
+            Err(CacheError::BadMagic)
+        ));
+    }
+}

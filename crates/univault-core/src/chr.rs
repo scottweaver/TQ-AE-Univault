@@ -107,6 +107,27 @@ pub struct Item {
     pub(crate) folded_members: Vec<FoldedMember>,
 }
 
+impl Item {
+    /// A bare, unstacked item at the grid origin — the shape items
+    /// have when born outside a parsed file (shells, tests).
+    #[must_use]
+    pub fn bare(base: RecordId, seed: ItemSeed) -> Self {
+        Self {
+            base,
+            prefix: None,
+            suffix: None,
+            relic: None,
+            relic_bonus: None,
+            seed,
+            var1: 0,
+            atlantis: None,
+            position: GridPos { x: 0, y: 0 },
+            stack_size: 1,
+            folded_members: Vec::new(),
+        }
+    }
+}
+
 /// The varying fields of one folded stack member.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FoldedMember {

@@ -374,6 +374,9 @@ impl Assembler<'_> {
             let Some(id) = id else { return 0 };
             let upper = id.as_str().to_uppercase();
             let head = upper.trim_start_matches(['\\', '/']);
+            let head = head
+                .strip_prefix("RECORDS")
+                .map_or(head, |rest| rest.trim_start_matches(['\\', '/']));
             if head.starts_with("XPACK4") {
                 4
             } else if head.starts_with("XPACK3") {
@@ -570,6 +573,174 @@ mod tests {
             ],
         );
         builder.record(
+            "records\\item\\stormblade.dbr",
+            "WeaponMelee_Sword",
+            &[
+                ("itemNameTag", Values::Strings(&["tagStorm"])),
+                ("offensivePhysicalMin", Values::Floats(&[10.0])),
+                ("offensivePhysicalMax", Values::Floats(&[10.0])),
+                (
+                    "itemSkillName",
+                    Values::Strings(&["records\\skills\\stormnova.dbr"]),
+                ),
+                ("itemSkillLevel", Values::Ints(&[2])),
+                (
+                    "itemSkillAutoController",
+                    Values::Strings(&["records\\controllers\\onhit.dbr"]),
+                ),
+            ],
+        );
+        builder.record(
+            "records\\skills\\stormnova.dbr",
+            "Skill_AttackRadius",
+            &[
+                ("skillDisplayName", Values::Strings(&["tagNova"])),
+                ("skillBaseDescription", Values::Strings(&["tagNovaDesc"])),
+                ("offensiveLightningMin", Values::Floats(&[20.0, 40.0])),
+                ("offensiveLightningMax", Values::Floats(&[20.0, 40.0])),
+            ],
+        );
+        builder.record(
+            "records\\controllers\\onhit.dbr",
+            "SkillControl",
+            &[("triggerType", Values::Strings(&["HitByEnemy"]))],
+        );
+        builder.record(
+            "records\\item\\augmentring.dbr",
+            "ArmorJewelry_Ring",
+            &[
+                (
+                    "augmentSkillName1",
+                    Values::Strings(&["records\\skills\\warwind.dbr"]),
+                ),
+                ("augmentSkillLevel1", Values::Ints(&[2])),
+                (
+                    "augmentMasteryName1",
+                    Values::Strings(&["records\\skills\\warfare.dbr"]),
+                ),
+                ("augmentMasteryLevel1", Values::Ints(&[3])),
+                ("augmentAllLevel", Values::Ints(&[1])),
+                ("racialBonusPercentDamage", Values::Floats(&[25.0])),
+                ("racialBonusRace", Values::Strings(&["Beastman"])),
+            ],
+        );
+        builder.record(
+            "records\\skills\\warwind.dbr",
+            "Skill_Attack",
+            &[("skillDisplayName", Values::Strings(&["tagWarWind"]))],
+        );
+        builder.record(
+            "records\\skills\\warfare.dbr",
+            "Skill_Mastery",
+            &[("skillDisplayName", Values::Strings(&["tagWarfare"]))],
+        );
+        builder.record(
+            "records\\item\\chaosaxe.dbr",
+            "WeaponMelee_Axe",
+            &[
+                ("offensiveGlobalChance", Values::Floats(&[10.0])),
+                ("offensiveFireMin", Values::Floats(&[5.0])),
+                ("offensiveFireMax", Values::Floats(&[5.0])),
+                ("offensiveFireGlobal", Values::Bools(&[true])),
+                ("offensiveFireXOR", Values::Bools(&[true])),
+                ("offensiveColdMin", Values::Floats(&[7.0])),
+                ("offensiveColdMax", Values::Floats(&[7.0])),
+                ("offensiveColdGlobal", Values::Bools(&[true])),
+                ("offensiveColdXOR", Values::Bools(&[true])),
+            ],
+        );
+        builder.record(
+            "records\\item\\wardhelm.dbr",
+            "ArmorProtective_Head",
+            &[
+                ("damageAbsorption", Values::Floats(&[50.0])),
+                ("physicalDamageQualifier", Values::Bools(&[true])),
+                ("fireDamageQualifier", Values::Bools(&[true])),
+            ],
+        );
+        builder.record(
+            "records\\item\\pawbonus.dbr",
+            "LootRandomizer",
+            &[("offensiveColdModifier", Values::Floats(&[10.0]))],
+        );
+        builder.record(
+            "records\\item\\venomblade.dbr",
+            "WeaponMelee_Sword",
+            &[
+                ("offensiveSlowPoisonMin", Values::Floats(&[30.0])),
+                ("offensiveSlowPoisonMax", Values::Floats(&[30.0])),
+                ("offensiveSlowPoisonDurationMin", Values::Floats(&[3.0])),
+                ("offensiveSlowPoisonDurationMax", Values::Floats(&[6.0])),
+                ("offensiveSlowPoisonChance", Values::Floats(&[15.0])),
+                ("offensiveSlowPoisonModifier", Values::Floats(&[20.0])),
+                (
+                    "offensiveSlowPoisonDurationModifier",
+                    Values::Floats(&[30.0]),
+                ),
+                ("offensiveSlowPoisonModifierChance", Values::Floats(&[25.0])),
+            ],
+        );
+        builder.record(
+            "records\\item\\summonstaff.dbr",
+            "WeaponMagical_Staff",
+            &[
+                (
+                    "itemSkillName",
+                    Values::Strings(&["records\\skills\\summonwolf.dbr"]),
+                ),
+                (
+                    "itemSkillAutoController",
+                    Values::Strings(&["records\\controllers\\onhit.dbr"]),
+                ),
+            ],
+        );
+        builder.record(
+            "records\\skills\\summonwolf.dbr",
+            "Skill_SpawnPet",
+            &[
+                ("skillDisplayName", Values::Strings(&["tagWolf"])),
+                ("petLimit", Values::Ints(&[2])),
+                (
+                    "spawnObjects",
+                    Values::Strings(&["records\\pets\\wolf.dbr"]),
+                ),
+                ("spawnObjectsTimeToLive", Values::Floats(&[30.0])),
+            ],
+        );
+        builder.record(
+            "records\\pets\\wolf.dbr",
+            "Pet",
+            &[
+                ("description", Values::Strings(&["tagWolfName"])),
+                ("characterLife", Values::Floats(&[500.0])),
+                ("handHitDamageMin", Values::Floats(&[10.0])),
+                ("handHitDamageMax", Values::Floats(&[20.0])),
+                (
+                    "skillName0",
+                    Values::Strings(&["records\\skills\\bite.dbr"]),
+                ),
+                ("skillLevel0", Values::Ints(&[1])),
+            ],
+        );
+        builder.record(
+            "records\\skills\\bite.dbr",
+            "Skill_Attack",
+            &[
+                ("skillDisplayName", Values::Strings(&["tagBite"])),
+                ("offensivePhysicalMin", Values::Floats(&[5.0])),
+                ("offensivePhysicalMax", Values::Floats(&[5.0])),
+            ],
+        );
+        builder.record(
+            "records\\item\\artifacts\\stormeye.dbr",
+            "ItemArtifact",
+            &[
+                ("description", Values::Strings(&["tagStormEye"])),
+                ("artifactClassification", Values::Strings(&["Greater"])),
+                ("characterDexterity", Values::Floats(&[15.0])),
+            ],
+        );
+        builder.record(
             "records\\item\\equipmentshield\\default\\pinebuckler.dbr",
             "WeaponArmor_Shield",
             &[
@@ -591,17 +762,50 @@ mod tests {
         let mut text = TextDb::new();
         text.add_file(&text_file(
             "tagSword=Broadsword\ntagSharp=Sharp\ntagPaw=Monkey Paw\n\
-             tagSpeedFast=Fast\n\
+             tagSpeedFast=Fast\ntagStorm=Stormblade\n\
              DamageBasePhysical=Damage\n\
              DamageBasePierceRatio={%.0f0}% Pierce Ratio\n\
              DamageFire=Fire Damage\nDamageCold=Cold Damage\n\
+             DamageLightning=Lightning Damage\n\
+             DamageModifierCold={%+.0f0}% Cold Damage\n\
              DamageSingleFormat={%.0f0}\n\
              DamageRangeFormat={%.0f0} ~ {%.0f1}\n\
              characterDexterity={%+.0f0} Dexterity\n\
              MeetsRequirement=Required {%s0}: {%.0f1}\n\
              Strength=Strength\nDexterity=Dexterity\nLevelRequirement=Player Level\n\
              tagAnimalPart=Charm\ntagAnimalPartRatio={%s0 - %d1 / %d2}\n\
-             tagAnimalPartComplete=Completed\n",
+             tagAnimalPartComplete=Completed\n\
+             tagAnimalPartcompleteBonus=Charm Bonus:\n\
+             xtagArtifactBonus=Completion Bonus :\n\
+             xtagArtifactClass02=Greater Artifact\n\
+             tagStormEye=Eye of the Storm\n\
+             tagNova=Storm Nova\ntagNovaDesc=Unleashes a nova of storm.\n\
+             xtagAutoSkillCondition03=Activated upon taking damage\n\
+             MenuLevel=Level:   {%d0}\n\
+             tagItemGrantSkill=Grants Skill :\n\
+             DamageDurationPoison={%.0f0} Poison Damage\n\
+             DamageDurationModifierPoison={%+.0f0}% Poison Damage\n\
+             ChanceOfTag={%.1f0}% Chance of\n\
+             DamageRangeFormatTime=over {%.1f0} - {%.1f1} Seconds\n\
+             ImprovedTimeFormat=with {%+.0f0}% Improved Duration\n\
+             tagWolf=Summon Wolf\ntagWolfName=Wolf\ntagBite=Bite\n\
+             SkillPetLimit={%d0} Summon Limit\n\
+             SkillPetDescriptionHeading={%s0} Attributes:\n\
+             tagSkillPetTimeToLive=Life Time {%.1f0} Seconds\n\
+             SkillPetDescriptionHealth={%.0f0} Health\n\
+             tagSkillPetAbilities={%s0} Abilities:\n\
+             SkillPetDescriptionDamageMinMax={%.0f0} - {%.0f1} Damage\n\
+             tagWarWind=War Wind\ntagWarfare=Warfare\n\
+             ItemSkillIncrement={+%d0} to {%s1}\n\
+             ItemMasteryIncrement={+%d0} to all skills in {%s1}\n\
+             ItemAllSkillIncrement={+%d0} to all Skills\n\
+             racialBonusRaceBeastman=Beastmen\n\
+             RacialBonusPercentDamage={%.0f0}% Damage to {%s1}\n\
+             GlobalPercentChanceOfOneTag={%.0f0}% Chance for one of the following:\n\
+             SkillDamageAbsorption={%.0f0} Damage Absorption\n\
+             tagDamageAbsorptionTitle=Protects Against :\n\
+             tagQualifyingDamagePhysical=Physical\ntagQualifyingDamageFire=Fire\n\
+             formatQualifyingDamage={     %s0}\n",
         ));
         let data = GameData::from_parts(ArzFile::parse(builder.build()).unwrap(), text);
         let cache = data.build_cache(Vec::new());
@@ -652,6 +856,197 @@ mod tests {
                 "Required Strength: 141",
             ]
         );
+    }
+
+    fn attributes_of(details: &ItemDetails, needle: &str) -> Vec<String> {
+        details
+            .blocks
+            .iter()
+            .find(|block| block.iter().any(|line| line.text.contains(needle)))
+            .unwrap_or_else(|| panic!("no block containing {needle:?}: {:?}", details.blocks))
+            .iter()
+            .map(|line| line.text.clone())
+            .collect()
+    }
+
+    #[test]
+    fn granted_skills_render_name_description_and_leveled_effects() {
+        let db = sample_cache();
+        let details = item_details(&db, &item("records\\item\\stormblade.dbr"));
+        assert_eq!(
+            attributes_of(&details, "Grants Skill"),
+            vec![
+                "10 Damage",
+                "",
+                "Grants Skill :",
+                "Storm Nova Activated upon taking damage",
+                "    Unleashes a nova of storm.",
+                "Level:   2",
+                "",
+                // itemSkillLevel 2 selects the second value slot.
+                "40 Lightning Damage",
+            ]
+        );
+    }
+
+    #[test]
+    fn slow_damage_renders_chance_duration_and_modifier_lines() {
+        let db = sample_cache();
+        let details = item_details(&db, &item("records\\item\\venomblade.dbr"));
+        assert_eq!(
+            attributes_of(&details, "Poison"),
+            vec![
+                // Amount scales by the duration (30 × 3 seconds).
+                "15.0% Chance of 90 Poison Damage over 3.0 - 6.0 Seconds",
+                "25.0% Chance of +20% Poison Damage with +30% Improved Duration",
+            ]
+        );
+    }
+
+    #[test]
+    fn summon_skills_render_pet_stats_and_abilities() {
+        let db = sample_cache();
+        let details = item_details(&db, &item("records\\item\\summonstaff.dbr"));
+        let lines = attributes_of(&details, "Summon Limit");
+        for expected in [
+            "2 Summon Limit",
+            "Wolf Attributes:",
+            "Life Time 30.0 Seconds",
+            "500 Health",
+            "Wolf Abilities:",
+            "10 - 20 Damage",
+            "Bite",
+            "5 Damage",
+        ] {
+            assert!(
+                lines.iter().any(|line| line == expected),
+                "missing {expected:?} in {lines:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn augments_and_racial_bonuses_render() {
+        let db = sample_cache();
+        let details = item_details(&db, &item("records\\item\\augmentring.dbr"));
+        let lines = attributes_of(&details, "Skills");
+        for expected in [
+            "+2 to War Wind",
+            "+3 to all skills in Warfare",
+            "+1 to all Skills",
+            "25% Damage to Beastmen",
+        ] {
+            assert!(
+                lines.iter().any(|line| line == expected),
+                "missing {expected:?} in {lines:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn global_xor_chance_groups_render_indented_under_one_of() {
+        let db = sample_cache();
+        let details = item_details(&db, &item("records\\item\\chaosaxe.dbr"));
+        assert_eq!(
+            attributes_of(&details, "Chance for one"),
+            vec![
+                "10% Chance for one of the following:",
+                // Cold sorts before fire by dictionary suborder.
+                "    7 Cold Damage",
+                "    5 Fire Damage",
+            ]
+        );
+    }
+
+    #[test]
+    fn damage_qualifiers_render_under_a_single_title() {
+        let db = sample_cache();
+        let details = item_details(&db, &item("records\\item\\wardhelm.dbr"));
+        assert_eq!(
+            attributes_of(&details, "Protects Against"),
+            vec![
+                "50 Damage Absorption",
+                "Protects Against :",
+                "     Physical",
+                "     Fire",
+            ]
+        );
+    }
+
+    #[test]
+    fn socketed_relics_render_their_section_and_bonus() {
+        let db = sample_cache();
+        let mut sword = item("records\\item\\broadsword.dbr");
+        sword.relic = Some(record_id("records\\item\\animalrelics\\monkeypaw.dbr"));
+        sword.relic_bonus = Some(record_id("records\\item\\pawbonus.dbr"));
+        sword.var1 = 3;
+        sword.atlantis = Some(crate::chr::AtlantisRelic {
+            relic: Some(record_id("records\\item\\animalrelics\\monkeypaw.dbr")),
+            bonus: None,
+            var2: 1,
+        });
+        let details = item_details(&db, &sword);
+        assert_eq!(
+            attributes_of(&details, "Charm Bonus:"),
+            vec![
+                "Monkey Paw",
+                // var1 = 3 selects the third shard slot.
+                "12 Cold Damage",
+                "Charm Bonus:",
+                "+10% Cold Damage",
+            ]
+        );
+        let second: Vec<_> = details
+            .blocks
+            .iter()
+            .filter(|block| block.first().is_some_and(|line| line.text == "Monkey Paw"))
+            .collect();
+        assert_eq!(second.len(), 2, "expected two relic sections");
+        assert_eq!(second[1][1].text, "4 Cold Damage");
+    }
+
+    #[test]
+    fn artifacts_render_class_and_completion_bonus() {
+        let db = sample_cache();
+        let mut artifact = item("records\\item\\artifacts\\stormeye.dbr");
+        artifact.relic_bonus = Some(record_id("records\\item\\pawbonus.dbr"));
+        let details = item_details(&db, &artifact);
+        assert!(
+            details
+                .blocks
+                .iter()
+                .flatten()
+                .any(|line| line.text == "Greater Artifact")
+        );
+        assert_eq!(
+            attributes_of(&details, "Completion Bonus :"),
+            vec!["Completion Bonus :", "+10% Cold Damage"]
+        );
+    }
+
+    #[test]
+    fn expansion_origin_comes_from_the_record_path() {
+        let db = sample_cache();
+        for (path, origin) in [
+            ("records\\xpack\\item\\thing.dbr", "Immortal Throne"),
+            ("records\\xpack2\\item\\thing.dbr", "Ragnarök"),
+            ("records\\xpack3\\item\\thing.dbr", "Atlantis"),
+            ("records\\xpack4\\item\\thing.dbr", "Eternal Embers"),
+        ] {
+            let details = item_details(&db, &item(path));
+            assert!(
+                details
+                    .blocks
+                    .iter()
+                    .flatten()
+                    .any(|line| line.text == origin),
+                "expected {origin:?} for {path}"
+            );
+        }
+        let base_game = item_details(&db, &item("records\\item\\plainsword.dbr"));
+        for line in base_game.blocks.iter().flatten() {
+            assert!(!line.text.contains("Throne"));
+        }
     }
 
     #[test]
