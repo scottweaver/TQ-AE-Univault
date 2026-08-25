@@ -182,6 +182,8 @@ impl GameData {
                 crate::cache::CacheEntry {
                     name,
                     footprint,
+                    classification: crate::style::Classification::of(&record),
+                    kind: crate::style::ItemKind::of(&record),
                     icon,
                 },
             );
@@ -328,6 +330,7 @@ mod tests {
     use super::*;
     use crate::arz::fixture::{ArzBuilder, Values};
     use crate::chr::{GridPos, ItemSeed};
+    use crate::style::{self, ItemStyle};
 
     fn record_id(raw: &str) -> RecordId {
         RecordId::parse(raw.to_string()).unwrap()
@@ -523,7 +526,15 @@ mod tests {
         builder.record(
             "records\\item\\sharp.dbr",
             "LootRandomizer",
-            &[("lootRandomizerName", Values::Strings(&["tagSharp"]))],
+            &[
+                ("lootRandomizerName", Values::Strings(&["tagSharp"])),
+                ("itemClassification", Values::Strings(&["Rare"])),
+            ],
+        );
+        builder.record(
+            "records\\item\\boarhide.dbr",
+            "ItemCharm",
+            &[("completedRelicLevel", Values::Ints(&[10]))],
         );
         builder.record(
             "records\\creature\\monster.dbr",
@@ -550,7 +561,7 @@ mod tests {
 
         assert_eq!(reloaded.stamps(), stamps.as_slice());
         // Item-classed records survive; the monster does not.
-        assert_eq!(reloaded.len(), 2);
+        assert_eq!(reloaded.len(), 3);
         assert_eq!(
             reloaded.record_name(&record_id("records\\item\\axe.dbr")),
             Some("War Axe".to_string())
@@ -569,6 +580,38 @@ mod tests {
         assert_eq!(reloaded.item_icon(&axe), db.item_icon(&axe));
         let unknown = bare_item("records\\item\\unknown.dbr");
         assert_eq!(reloaded.item_footprint(&unknown), FALLBACK_FOOTPRINT);
+
+        // Classification and kind survive the byte round trip.
+        let mut rare_axe = axe.clone();
+        rare_axe.suffix = Some(record_id("records\\item\\sharp.dbr"));
+        assert_eq!(
+            style::item_style(Some(&reloaded), &rare_axe),
+            ItemStyle::Rare
+        );
+        let mut charm = bare_item("records\\item\\boarhide.dbr");
+        charm.var1 = 4;
+        assert_eq!(
+            style::relic_shards(Some(&reloaded), &charm),
+            Some(style::RelicShards {
+                have: 4,
+                needed: Some(10)
+            })
+        );
+    }
+
+    #[test]
+    fn previous_cache_versions_are_rejected() {
+        let cache = GameData::from_parts(
+            ArzFile::parse(ArzBuilder::default().build()).unwrap(),
+            TextDb::new(),
+        )
+        .build_cache(Vec::new());
+        let mut bytes = cache.to_bytes();
+        bytes[..4].copy_from_slice(&0x3143_5655_i32.to_le_bytes()); // "UVC1"
+        assert!(matches!(
+            crate::cache::GameCache::from_bytes(&bytes),
+            Err(crate::cache::CacheError::BadMagic)
+        ));
     }
 
     #[test]

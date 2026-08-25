@@ -8,9 +8,10 @@
 //!
 //! Format (all little-endian, strings length-prefixed **UTF-8** —
 //! localized names exceed Windows-1252, e.g. Ragnarök's
-//! "Jǫrmungandr"): `UVC1` magic, source-fingerprint list (path, size,
+//! "Jǫrmungandr"): `UVC2` magic, source-fingerprint list (path, size,
 //! mtime seconds), then entries keyed by normalized record path:
-//! name, footprint, and an optional zlib-compressed RGBA icon.
+//! name, footprint, classification and kind tags, and an optional
+//! zlib-compressed RGBA icon.
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -22,10 +23,11 @@ use crate::arz::normalize;
 use crate::chr::{Item, RecordId};
 use crate::gamedata::FALLBACK_FOOTPRINT;
 use crate::reader::{ByteReader, ReadError};
+use crate::style::{Classification, ItemKind};
 use crate::tex::RgbaImage;
 use crate::writer::{write_i32, write_i64};
 
-const MAGIC: i32 = 0x3143_5655; // "UVC1"
+const MAGIC: i32 = 0x3243_5655; // "UVC2"
 
 /// Identity of one source file at import time; the shell compares
 /// these against the live files to detect a game update.
@@ -45,6 +47,8 @@ pub(crate) struct CachedIcon {
 pub(crate) struct CacheEntry {
     pub(crate) name: Option<String>,
     pub(crate) footprint: (i32, i32),
+    pub(crate) classification: Classification,
+    pub(crate) kind: ItemKind,
     pub(crate) icon: Option<CachedIcon>,
 }
 
@@ -60,6 +64,8 @@ pub struct GameCache {
 pub enum CacheError {
     #[error("not a tq-univault cache file")]
     BadMagic,
+    #[error("unrecognized cache entry data")]
+    Corrupt,
     #[error("icon decompression failed: {0}")]
     Icon(std::io::Error),
     #[error(transparent)]
@@ -90,30 +96,29 @@ impl GameCache {
         self.entries.is_empty()
     }
 
+    pub(crate) fn entry(&self, id: &RecordId) -> Option<&CacheEntry> {
+        self.entries.get(&normalize(id.as_str()))
+    }
+
     /// Localized name of a record, mirroring
     /// [`crate::gamedata::GameData::record_name`].
     #[must_use]
     pub fn record_name(&self, id: &RecordId) -> Option<String> {
-        self.entries.get(&normalize(id.as_str()))?.name.clone()
+        self.entry(id)?.name.clone()
     }
 
     /// Grid footprint for an item, with the same conservative fallback
     /// as the live database.
     #[must_use]
     pub fn item_footprint(&self, item: &Item) -> (i32, i32) {
-        self.entries
-            .get(&normalize(item.base.as_str()))
+        self.entry(&item.base)
             .map_or(FALLBACK_FOOTPRINT, |entry| entry.footprint)
     }
 
     /// Decoded icon for an item, when one was imported.
     #[must_use]
     pub fn item_icon(&self, item: &Item) -> Option<RgbaImage> {
-        let icon = self
-            .entries
-            .get(&normalize(item.base.as_str()))?
-            .icon
-            .as_ref()?;
+        let icon = self.entry(&item.base)?.icon.as_ref()?;
         let mut pixels = Vec::new();
         ZlibDecoder::new(icon.zlib_rgba.as_slice())
             .read_to_end(&mut pixels)
@@ -151,6 +156,8 @@ impl GameCache {
             }
             write_i32(&mut out, entry.footprint.0);
             write_i32(&mut out, entry.footprint.1);
+            write_classification(&mut out, entry.classification);
+            write_kind(&mut out, entry.kind);
             match &entry.icon {
                 Some(icon) => {
                     write_i32(&mut out, 1);
@@ -193,6 +200,8 @@ impl GameCache {
                 None
             };
             let footprint = (reader.read_i32()?, reader.read_i32()?);
+            let classification = read_classification(&mut reader)?;
+            let kind = read_kind(&mut reader)?;
             let icon = if reader.read_i32()? == 1 {
                 let width = reader.read_i32()?;
                 let height = reader.read_i32()?;
@@ -212,11 +221,78 @@ impl GameCache {
                 CacheEntry {
                     name,
                     footprint,
+                    classification,
+                    kind,
                     icon,
                 },
             );
         }
         Ok(Self { stamps, entries })
+    }
+}
+
+fn write_classification(buf: &mut Vec<u8>, classification: Classification) {
+    write_i32(
+        buf,
+        match classification {
+            Classification::Other => 0,
+            Classification::Broken => 1,
+            Classification::Rare => 2,
+            Classification::Epic => 3,
+            Classification::Legendary => 4,
+        },
+    );
+}
+
+fn read_classification(reader: &mut ByteReader<'_>) -> Result<Classification, CacheError> {
+    match reader.read_i32()? {
+        0 => Ok(Classification::Other),
+        1 => Ok(Classification::Broken),
+        2 => Ok(Classification::Rare),
+        3 => Ok(Classification::Epic),
+        4 => Ok(Classification::Legendary),
+        _ => Err(CacheError::Corrupt),
+    }
+}
+
+fn write_kind(buf: &mut Vec<u8>, kind: ItemKind) {
+    match kind {
+        ItemKind::Gear => write_i32(buf, 0),
+        ItemKind::Artifact => write_i32(buf, 1),
+        ItemKind::Formula => write_i32(buf, 2),
+        ItemKind::Scroll => write_i32(buf, 3),
+        ItemKind::Potion => write_i32(buf, 4),
+        ItemKind::RelicOrCharm { completed_level } => {
+            write_i32(buf, 5);
+            match completed_level {
+                Some(level) => {
+                    write_i32(buf, 1);
+                    write_i32(buf, level);
+                }
+                None => write_i32(buf, 0),
+            }
+        }
+        ItemKind::Quest => write_i32(buf, 6),
+    }
+}
+
+fn read_kind(reader: &mut ByteReader<'_>) -> Result<ItemKind, CacheError> {
+    match reader.read_i32()? {
+        0 => Ok(ItemKind::Gear),
+        1 => Ok(ItemKind::Artifact),
+        2 => Ok(ItemKind::Formula),
+        3 => Ok(ItemKind::Scroll),
+        4 => Ok(ItemKind::Potion),
+        5 => {
+            let completed_level = if reader.read_i32()? == 1 {
+                Some(reader.read_i32()?)
+            } else {
+                None
+            };
+            Ok(ItemKind::RelicOrCharm { completed_level })
+        }
+        6 => Ok(ItemKind::Quest),
+        _ => Err(CacheError::Corrupt),
     }
 }
 

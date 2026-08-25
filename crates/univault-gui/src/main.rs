@@ -18,6 +18,7 @@ use univault_core::cache::{GameCache, SourceStamp};
 use univault_core::chr::{self, Item, PlayerCharacter, RecordId};
 use univault_core::gamedata::GameData;
 use univault_core::stash::{self, Stash};
+use univault_core::style;
 use univault_core::transfer;
 use univault_core::vault::Vault;
 
@@ -828,7 +829,7 @@ fn grid_view(
         );
     }
 
-    let mut hovered: Option<String> = None;
+    let mut hovered: Option<&Item> = None;
     for (index, item) in entries {
         let (width, height) = caches.footprint(db, item);
         let item_rect = egui::Rect::from_min_size(
@@ -888,15 +889,62 @@ fn grid_view(
         if let Some(pointer) = response.hover_pos()
             && item_rect.contains(pointer)
         {
-            hovered = Some(caches.names.item_label(db, item));
+            hovered = Some(item);
             if response.clicked() {
                 *selected = Some((container, *index));
             }
         }
     }
-    if let Some(label) = hovered {
-        response.on_hover_text(label);
+    if let Some(item) = hovered {
+        response.on_hover_ui(|ui| item_tooltip(ui, item, db, caches));
     }
+}
+
+/// Item details on hover, name colored by rarity. The game's palette
+/// assumes its dark backdrop, so the tooltip paints its own instead
+/// of inheriting the theme.
+fn item_tooltip(ui: &mut egui::Ui, item: &Item, db: Option<&GameCache>, caches: &mut Caches) {
+    let item_style = style::item_style(db, item);
+    egui::Frame::NONE
+        .fill(egui::Color32::from_rgb(24, 20, 16))
+        .corner_radius(egui::CornerRadius::same(4))
+        .inner_margin(egui::Margin::same(8))
+        .show(ui, |ui| {
+            ui.style_mut().visuals.override_text_color = Some(egui::Color32::from_gray(190));
+            ui.label(
+                egui::RichText::new(caches.names.item_label(db, item))
+                    .color(game_color(style::style_color(item_style)))
+                    .size(15.0),
+            );
+            ui.label(
+                egui::RichText::new(item_style.label())
+                    .color(egui::Color32::from_gray(140))
+                    .size(11.0),
+            );
+            if let Some(shards) = style::relic_shards(db, item) {
+                ui.label(match shards.needed {
+                    Some(needed) if shards.have >= needed => "Complete".to_string(),
+                    Some(needed) => format!("Pieces: {} / {needed}", shards.have),
+                    None => format!("Pieces: {}", shards.have),
+                });
+            }
+            let second_relic = item
+                .atlantis
+                .as_ref()
+                .and_then(|extra| extra.relic.as_ref());
+            for (label, relic) in [
+                ("Relic", item.relic.as_ref()),
+                ("Second relic", second_relic),
+            ] {
+                if let Some(relic) = relic {
+                    ui.label(format!("{label}: {}", caches.names.record_name(db, relic)));
+                }
+            }
+        });
+}
+
+fn game_color(rgb: style::Rgb) -> egui::Color32 {
+    egui::Color32::from_rgb(rgb.r, rgb.g, rgb.b)
 }
 
 fn show_file_pane(

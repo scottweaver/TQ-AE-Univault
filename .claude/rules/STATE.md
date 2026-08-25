@@ -5,7 +5,7 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-24
+Last updated: 2026-08-25
 
 ## Active workstream
 
@@ -28,6 +28,7 @@ only). No issue tracker is bound yet (deliberately deferred).
 | Branch | Purpose | Status |
 |---|---|---|
 | `main` | trunk | read stack + transfers + grid rendering merged; all gates green |
+| `feat/item-hover-details` | rarity-colored hover tooltips | implemented + gated; awaiting user visual check + merge |
 
 ## Next up
 
@@ -57,6 +58,19 @@ transferred-back item in-game and open our vault JSON in TQVaultAE.
 
 ## Most recent meaningful progress
 
+- **2026-08-25 — Rarity-colored item tooltips.** New core `style`
+  module ports TQVaultAE's `Item.ItemStyle` decision order and the
+  game's exact text-palette RGB values (MIT refs fetched from the
+  repo — no local checkout). Hovering a grid item now shows a
+  dark game-style tooltip: name in its rarity color, style caption,
+  relic/charm piece progress (`completedRelicLevel` now cached),
+  and socketed-relic names. Cache entries gained classification +
+  kind — magic bumped `UVC1`→`UVC2`, so the next launch re-imports
+  (game volume must be reachable once). Unknown records fall back
+  to TQVaultAE's record-path heuristics, so items color sensibly
+  even with no game data. 105 tests. Risk: tooltip visuals
+  unverified until the user hovers a real grid; path fallback skips
+  TQVaultAE's Eternal Embers special-case relic lists.
 - **2026-08-24 — Local game-data cache: import once, launch from
   cache.** User-directed pivot: instead of pointing at the game dir
   every launch, one Import pass distills all 13,188 item records
@@ -174,27 +188,6 @@ transferred-back item in-game and open our vault JSON in TQVaultAE.
   names/descriptions and vault grid sizes. Risk: not yet run against
   a real `database.arz` — needs a game install; ARC text reader
   still missing before names show in the GUI.
-- **2026-08-24 — Vault files land (`feat/vault-files`).** Core
-  `vault` module: TQVaultAE JSON schema read/write (verbatim member
-  names, `""` for empty ids, `var2Default` 2035248, unknown-field
-  preservation for forward compat), legacy binary `.vault` import
-  reusing the chr sacks-block parser, `serde`/`serde_json` adopted
-  for the JSON boundary. GUI opens vaults by extension. 23 tests
-  green. Why: first half of the core save-to-vault feature; wire
-  schema verified against TQVaultAE sources (DTOs +
-  `JsonSerializerOptions`). Risk: not yet validated against a vault
-  file written by real TQVaultAE — ask the user for one.
-- **2026-08-24 — chr read slice implemented
-  (`feat/chr-read-slice`).** `univault-core` gained `reader`
-  (typed LE reader, Windows-1252/UTF-16 strings, key scan) and `chr`
-  (sacks, stack folding, 12-slot equipment, header info), ported
-  from TQVaultAE's providers; GUI loads a chr via arg or drag-drop
-  and renders it read-only. 16 unit tests against a synthetic
-  fixture in TQVaultAE's exact layout. Why: first end-to-end proof
-  of the port-from-reference approach. Risk: validated only against
-  the synthetic fixture — a real save may expose key-order or
-  version quirks; eframe 0.36's `App::ui`/`DroppedFile` APIs differ
-  from published examples.
 ## Blocked / waiting
 
 - *(nothing)*
