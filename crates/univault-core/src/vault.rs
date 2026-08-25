@@ -21,6 +21,11 @@ use crate::reader::ByteReader;
 /// second relic (`Item.var2Default`).
 pub const VAR2_DEFAULT: i32 = 2_035_248;
 
+/// Vault tab grid width (`TQVaultAE`'s `VaultPanel` size).
+pub const TAB_WIDTH: i32 = 18;
+/// Vault tab grid height.
+pub const TAB_HEIGHT: i32 = 20;
+
 /// A vault: tabs ("sacks") of stored items.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Vault {
@@ -72,6 +77,18 @@ pub enum VaultError {
 }
 
 impl Vault {
+    /// A fresh empty vault with `tabs` tabs.
+    #[must_use]
+    pub fn new(tabs: usize) -> Self {
+        Self {
+            disabled_tooltips: None,
+            focused_sack: -1,
+            selected_sack: -1,
+            sacks: (0..tabs).map(|_| VaultSack::new()).collect(),
+            extra: Map::new(),
+        }
+    }
+
     /// Parses a modern (JSON) vault file.
     ///
     /// # Errors
@@ -146,6 +163,38 @@ impl Vault {
             extra: self.extra.clone(),
         };
         Ok(serde_json::to_string_pretty(&dto)?)
+    }
+}
+
+impl VaultSack {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            items: Vec::new(),
+            icon_info: None,
+            extra: Map::new(),
+        }
+    }
+}
+
+impl Default for VaultSack {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl VaultItem {
+    /// Wraps an item for vault storage. `width`/`height` may be 0
+    /// ("unknown") — `TQVaultAE` recomputes footprints from game data
+    /// on load, so the stored values are advisory.
+    #[must_use]
+    pub fn new(item: Item, width: i32, height: i32) -> Self {
+        Self {
+            item,
+            width,
+            height,
+            extra: Map::new(),
+        }
     }
 }
 

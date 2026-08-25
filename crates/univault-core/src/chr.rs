@@ -128,6 +128,13 @@ pub struct Sack {
 /// layout: 11 gear slots plus the artifact).
 pub const EQUIPMENT_SLOTS: usize = 12;
 
+/// Grid size of inventory sack `index` (`TQVaultAE`'s `PlayerPanel`:
+/// the main sack is 12×5, the extra bags 8×5).
+#[must_use]
+pub fn sack_dimensions(index: usize) -> (i32, i32) {
+    if index == 0 { (12, 5) } else { (8, 5) }
+}
+
 /// Worn equipment; a `None` slot is empty (stored as a dummy item with
 /// an empty `baseName`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -502,6 +509,26 @@ pub fn replace_inventory(original: &[u8], sacks: &[Sack]) -> Result<Vec<u8>, Par
 
 fn encodable_count(count: usize, what: &'static str) -> Result<i32, ParseError> {
     i32::try_from(count).map_err(|_| ParseError::Overflow { what, count })
+}
+
+/// Patches the character's `money` value in place — a four-byte edit
+/// at the same anchored location the parser reads, leaving every
+/// other byte untouched.
+///
+/// # Errors
+/// [`ParseError::MissingSection`] when the save has no `money` key.
+pub fn replace_money(original: &[u8], money: i32) -> Result<Vec<u8>, ParseError> {
+    let anchor = find_key(original, "playerClassTag", 0).unwrap_or(0);
+    let value_at =
+        find_key(original, "money", anchor).ok_or(ParseError::MissingSection("money"))?;
+    let mut out = original.to_vec();
+    out.get_mut(value_at..value_at + 4)
+        .ok_or(ParseError::Read(ReadError::UnexpectedEof {
+            at: Offset(value_at),
+            wanted: 4,
+        }))?
+        .copy_from_slice(&money.to_le_bytes());
+    Ok(out)
 }
 
 fn encode_sack(buf: &mut Vec<u8>, sack: &Sack) -> Result<(), ParseError> {
@@ -909,6 +936,25 @@ mod tests {
                 2
             ]
         );
+    }
+
+    #[test]
+    fn replace_money_patches_exactly_four_bytes() {
+        let original = player_file();
+        let modified = replace_money(&original, 999_999).unwrap();
+        assert_eq!(parse_player(&modified).unwrap().info.money, 999_999);
+        assert_eq!(original.len(), modified.len());
+        let differing = original
+            .iter()
+            .zip(&modified)
+            .filter(|(a, b)| a != b)
+            .count();
+        assert!(differing <= 4);
+        // Everything else (name, level, items) is untouched.
+        let before = parse_player(&original).unwrap();
+        let after = parse_player(&modified).unwrap();
+        assert_eq!(before.sacks, after.sacks);
+        assert_eq!(before.info.level, after.info.level);
     }
 
     #[test]

@@ -62,6 +62,26 @@ impl GameData {
         self.text.get(&tag).map(str::to_string)
     }
 
+    /// Conservative grid footprint (width, height) for an item, by its
+    /// base record's class. Real footprints come from bitmap textures
+    /// (not read yet) and `TQVaultAE` recomputes them on load, so these
+    /// upper bounds only have to guarantee that placements made with
+    /// them never overlap at true sizes.
+    #[must_use]
+    pub fn item_footprint(&self, item: &Item) -> (i32, i32) {
+        let record_type = self
+            .arz
+            .record(&item.base)
+            .and_then(Result::ok)
+            .map(|record| record.record_type);
+        match record_type.as_deref() {
+            Some(class) if class.starts_with("Weapon") => (2, 5),
+            Some(class) if class.starts_with("ArmorProtective") => (2, 3),
+            Some(_) => (2, 2),
+            None => FALLBACK_FOOTPRINT,
+        }
+    }
+
     /// Display name for an item: localized prefix + base + suffix.
     /// Every part that fails to resolve falls back to its record file
     /// stem, so an item never renders empty.
@@ -79,6 +99,10 @@ impl GameData {
         parts.into_iter().flatten().collect::<Vec<_>>().join(" ")
     }
 }
+
+/// Footprint used when the base record is unknown (or no game data is
+/// loaded): the largest footprint any TQ item has.
+pub const FALLBACK_FOOTPRINT: (i32, i32) = (2, 5);
 
 /// Which variable holds a record's name tag — `TQVaultAE`'s
 /// `Info.AssignVariableNames` dispatch, collapsed to the naming

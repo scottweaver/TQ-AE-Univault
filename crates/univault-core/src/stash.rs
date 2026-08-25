@@ -145,6 +145,38 @@ fn cell_to_offset(cell: i32) -> f32 {
     cell as f32
 }
 
+/// Builds the `.dxg` backup-twin bytes for a `.dxb` image: identical
+/// content with the stored `fName`'s trailing `b` patched to `g` and
+/// the CRC recomputed — `TQVaultAE`'s `EncodeBackupFile`. The game
+/// falls back to the twin when the `.dxb` is corrupt.
+///
+/// # Errors
+/// The parse errors of locating `fName`.
+pub fn backup_twin(dxb: &[u8]) -> Result<Vec<u8>, StashError> {
+    let mut reader = ByteReader::new(dxb);
+    reader.read_i32().map_err(ParseError::from)?;
+    for key in ["begin_block", "stashVersion"] {
+        reader.expect_key(key).map_err(ParseError::from)?;
+        reader.read_i32().map_err(ParseError::from)?;
+    }
+    reader.expect_key("fName").map_err(ParseError::from)?;
+    let name_length = reader.read_i32().map_err(ParseError::from)?;
+    let name_length = usize::try_from(name_length)
+        .map_err(|_| StashError::InvalidItemCount { count: name_length })?;
+    let last_name_byte = reader.pos() + name_length.saturating_sub(1);
+
+    let mut twin = dxb.to_vec();
+    if let Some(byte) = twin.get_mut(last_name_byte)
+        && (*byte == b'b' || *byte == b'B')
+    {
+        *byte = b'g';
+    }
+    twin[..4].fill(0);
+    let crc = stash_crc(&twin);
+    twin[..4].copy_from_slice(&crc.to_le_bytes());
+    Ok(twin)
+}
+
 /// `TQVaultAE`'s `CalculateCRC`: the standard reflected CRC-32 table
 /// (polynomial 0xEDB88320) but with a zero initial value and no final
 /// complement. Computed over the whole file with the checksum field
@@ -265,6 +297,21 @@ mod tests {
             stash_crc(&zeroed).to_le_bytes(),
             "stored CRC must match the recomputed one"
         );
+    }
+
+    #[test]
+    fn backup_twin_patches_the_stored_name_and_crc() {
+        let original = stash_file();
+        let twin = backup_twin(&original).unwrap();
+
+        let name_at = crate::reader::find_key(&twin, "fName", 0).unwrap();
+        let mut reader = crate::reader::ByteReader::at(&twin, name_at);
+        assert_eq!(reader.read_cstring().unwrap(), "winsys.dxg");
+
+        let mut zeroed = twin.clone();
+        zeroed[..4].fill(0);
+        assert_eq!(twin[..4], stash_crc(&zeroed).to_le_bytes());
+        assert_eq!(parse_stash(&twin).unwrap(), parse_stash(&original).unwrap());
     }
 
     #[test]

@@ -32,7 +32,7 @@ deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | full read stack + splice write path merged; all gates green |
+| `main` | trunk | transfer UI merged — the core feature loop is live; all gates green |
 
 ## Next up
 
@@ -45,18 +45,37 @@ constraint change. The entire read stack is done and validated
 against the user's real install + save tree (mounted; path in agent
 memory). Sequence:
 
-1. Transfer UI: two-pane vault ↔ character/stash item movement in
-   the GUI, plus the shell-side backup-first write function (backup
-   on disk before the original is touched, `.dxg` twin for stashes)
-   that the splice encoders were built for — it lands with the UI
-   that calls it, keeping the core IO-free.
-2. Platform module in core: per-OS discovery of the game install and
+1. User acceptance: run a real transfer (character/stash → vault →
+   back) against a copy of the save tree and confirm in-game and in
+   TQVaultAE. First real disk writes happen here.
+2. Real item footprints: a TEX-header reader for `Resources/*.arc`
+   bitmaps so placement stops using conservative upper bounds
+   (denser packing); TQVaultAE derives sizes from texture pixels ÷
+   cell size.
+3. Grid rendering: draw sacks/tabs as actual grids with items at
+   their cells (list view today), then drag-and-drop movement.
+4. Platform module in core: per-OS discovery of the game install and
    save directories (removes the need for `--game`).
-3. Stretch (unscheduled): local SQLite index across vaults for
+5. Stretch (unscheduled): local SQLite index across vaults for
    search — would be additive, vault files stay the source of truth.
 
 ## Most recent meaningful progress
 
+- **2026-08-24 — Transfer UI: the core feature loop is live.**
+  Two-pane GUI (game file ⇄ vault) with click-to-select item
+  movement, dirty tracking, and explicit saves through the new
+  backup-first shell writer (synced timestamped sibling backups;
+  stash saves rewrite the `.dxg` twin via the ported
+  `EncodeBackupFile`). Pure `transfer` module in core: take/place
+  operations using TQVaultAE's column-major grid search with
+  conservative per-class footprints (no overlap possible at true
+  sizes; real footprints need a TEX reader — next). Legacy `.vault`
+  opens import-only, saving as `.json`. Side request landed: gold is
+  editable on the character pane (`replace_money`, a 4-byte
+  in-place patch). 84 tests. Why: the product's reason to exist now
+  functions end to end. Risk: no real disk write has happened yet —
+  user acceptance on a save-tree copy is the next gate; placement
+  is sparse until real footprints land.
 - **2026-08-24 — Splice write path lands, byte-identity proven on
   real files.** `writer` module (1252 encoding), `chr::
   replace_inventory` and `stash::replace_items` rebuild only the
@@ -154,12 +173,6 @@ memory). Sequence:
   Why: unblocks the vertical slice with license-clean references.
   Risk: the vault schema is now an external contract tracked from a
   live upstream project.
-- **2026-08-24 — Workspace scaffolded.** Cargo workspace with
-  `univault-core` (lib, empty) and `univault-gui` (eframe 0.36
-  window); pedantic clippy wired workspace-wide; fmt/clippy/build
-  green. Why: locks the core/gui layering from the first line of
-  code. Risk: cross-platform claim unverified — only macOS has
-  actually built it so far.
 ## Blocked / waiting
 
 - *(nothing)*
