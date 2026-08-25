@@ -1,18 +1,23 @@
-//! Real-data smoke check for the ARZ/ARC/text/naming pipeline.
+//! Real-data smoke check for the whole read stack.
 //!
-//! Usage: `cargo run --release -p univault-core --example smoke -- "<TQ AE install dir>"`
+//! Usage: `cargo run --release -p univault-core --example smoke -- "<TQ AE install dir>" ["<SaveData dir>"]`
 //!
 //! Builds the combined [`GameData`] from `Database/database.arz` and
 //! `Text/Text_EN.arc`, decompresses **every** record, and resolves
-//! localized names through the per-type dispatch. Read-only against
-//! the install; exits non-zero on any structural failure.
+//! localized names through the per-type dispatch. With a `SaveData`
+//! directory as second argument it also parses every `Player.chr`
+//! and stash (`winsys.dxb`) in the tree and prints their contents
+//! with resolved names. Read-only; exits non-zero on any structural
+//! failure.
+
+use std::path::Path;
 
 use univault_core::gamedata::GameData;
 
 fn main() {
     let game_dir = std::env::args()
         .nth(1)
-        .expect("usage: smoke <TQ AE install dir>");
+        .expect("usage: smoke <TQ AE install dir> [SaveData dir]");
     let game = std::path::Path::new(&game_dir);
 
     let database_bytes =
@@ -74,4 +79,86 @@ fn main() {
     }
     assert_eq!(record_errors, 0, "some records failed to decompress");
     assert!(resolved > 10_000, "suspiciously few names resolved");
+
+    if let Some(saves) = std::env::args().nth(2) {
+        sweep_saves(Path::new(&saves), &db);
+    }
+}
+
+/// Parses every character and stash in a `SaveData` tree, printing
+/// contents with resolved names. Panics on any parse failure so the
+/// sweep is a hard validation gate.
+fn sweep_saves(saves: &Path, db: &GameData) {
+    let mut characters = 0_usize;
+    let mut stashes = 0_usize;
+
+    let transfer = saves.join("Sys/winsys.dxb");
+    if transfer.is_file() {
+        stashes += 1;
+        report_stash(&transfer, db);
+    }
+
+    for area in ["Main", "User"] {
+        let Ok(entries) = std::fs::read_dir(saves.join(area)) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let dir = entry.path();
+            let chr_path = dir.join("Player.chr");
+            if chr_path.is_file() {
+                characters += 1;
+                report_character(&chr_path, db);
+            }
+            let stash_path = dir.join("winsys.dxb");
+            if stash_path.is_file() {
+                stashes += 1;
+                report_stash(&stash_path, db);
+            }
+        }
+    }
+    println!("save sweep: {characters} characters, {stashes} stashes — all parsed");
+    assert!(characters > 0, "no characters found in {}", saves.display());
+}
+
+fn report_character(path: &Path, db: &GameData) {
+    let bytes = std::fs::read(path).expect("read Player.chr");
+    let character = univault_core::chr::parse_player(&bytes)
+        .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    let info = &character.info;
+    let equipped = character
+        .equipment
+        .slots
+        .iter()
+        .flatten()
+        .map(|item| db.item_name(item))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sack_items: usize = character.sacks.iter().map(|sack| sack.items.len()).sum();
+    println!(
+        "character {:?} (level {}, {} sack items): wearing [{equipped}]",
+        info.name.as_deref().unwrap_or("?"),
+        info.level,
+        sack_items
+    );
+}
+
+fn report_stash(path: &Path, db: &GameData) {
+    let bytes = std::fs::read(path).expect("read stash");
+    let stash = univault_core::stash::parse_stash(&bytes)
+        .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    let names = stash
+        .items
+        .iter()
+        .take(6)
+        .map(|item| db.item_name(item))
+        .collect::<Vec<_>>()
+        .join(", ");
+    println!(
+        "stash {} ({}x{}, {} items): [{names}{}]",
+        path.display(),
+        stash.width,
+        stash.height,
+        stash.items.len(),
+        if stash.items.len() > 6 { ", …" } else { "" }
+    );
 }

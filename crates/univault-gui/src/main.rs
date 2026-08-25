@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use eframe::egui;
 use univault_core::chr::{self, Item, PlayerCharacter};
 use univault_core::gamedata::GameData;
+use univault_core::stash::{self, Stash};
 use univault_core::vault::Vault;
 
 fn main() -> eframe::Result {
@@ -116,6 +117,7 @@ impl App {
                 View::File(character_view(path, &character, self.db()))
             }
             Ok(Parsed::Vault(vault)) => View::File(vault_view(path, &vault, self.db())),
+            Ok(Parsed::Stash(stash)) => View::File(stash_view(path, &stash, self.db())),
             Err(message) => View::Failed {
                 path: path.display().to_string(),
                 message,
@@ -135,10 +137,12 @@ fn load_game_data(dir: &Path) -> Result<GameData, String> {
 enum Parsed {
     Character(Box<PlayerCharacter>),
     Vault(Box<Vault>),
+    Stash(Box<Stash>),
 }
 
 /// Vaults are `.json` (modern) or `.vault` (legacy binary, imported
-/// read-only); anything else is treated as a `Player.chr`.
+/// read-only); stashes are `.dxb` / `.dxg`; anything else is treated
+/// as a `Player.chr`.
 fn parse_by_extension(path: &Path, bytes: &[u8]) -> Result<Parsed, String> {
     let extension = path
         .extension()
@@ -149,6 +153,9 @@ fn parse_by_extension(path: &Path, bytes: &[u8]) -> Result<Parsed, String> {
             .map_err(|error| error.to_string()),
         Some("vault") => Vault::from_legacy_binary(bytes)
             .map(|vault| Parsed::Vault(Box::new(vault)))
+            .map_err(|error| error.to_string()),
+        Some("dxb" | "dxg") => stash::parse_stash(bytes)
+            .map(|stash| Parsed::Stash(Box::new(stash)))
             .map_err(|error| error.to_string()),
         _ => chr::parse_player(bytes)
             .map(|character| Parsed::Character(Box::new(character)))
@@ -275,6 +282,28 @@ fn vault_view(path: &Path, vault: &Vault, db: Option<&GameData>) -> FileView {
     }
 }
 
+fn stash_view(path: &Path, stash: &Stash, db: Option<&GameData>) -> FileView {
+    let name = path.file_stem().map_or_else(
+        || "Stash".to_string(),
+        |stem| stem.to_string_lossy().to_string(),
+    );
+    FileView {
+        heading: format!("Stash — {name}"),
+        subtitle: format!(
+            "{}×{} grid — {} items",
+            stash.width,
+            stash.height,
+            stash.items.len()
+        ),
+        path: path.display().to_string(),
+        sections: vec![item_section(
+            format!("Items ({})", stash.items.len()),
+            &stash.items,
+            db,
+        )],
+    }
+}
+
 fn item_section(title: String, items: &[Item], db: Option<&GameData>) -> Section {
     let rows = if items.is_empty() {
         vec![Row {
@@ -308,8 +337,8 @@ impl eframe::App for App {
             View::Idle => {
                 ui.heading("TQ UniVault");
                 ui.label(
-                    "Drop a Player.chr or a vault (.json / legacy .vault) here, \
-                     or pass a path as the first argument.",
+                    "Drop a Player.chr, a stash (.dxb/.dxg), or a vault (.json / \
+                     legacy .vault) here, or pass a path as the first argument.",
                 );
             }
             View::Failed { path, message } => {

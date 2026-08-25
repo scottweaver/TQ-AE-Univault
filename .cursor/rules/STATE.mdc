@@ -38,10 +38,7 @@ deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | chr read slice merged; all gates green |
-| `feat/chr-read-slice` | chr parser + read-only inventory GUI | merged into `main`; local deletion pending user confirmation |
-| `feat/vault-files` | vault JSON read/write + legacy import + GUI viewing | done; ready to merge |
-| `feat/arz-reader` | game database readers + name resolution + GUI wiring | done; real-install validated; ready to merge with vault branch |
+| `main` | trunk | all readers merged (chr, vault, ARZ/ARC/text, naming, stash); all gates green |
 
 ## Next up
 
@@ -50,27 +47,35 @@ saving items out of a character inventory or transfer stash into
 external vault storage, and transferring/copying them back later.
 Vault-format decision reconfirmed 2026-08-24: TQVaultAE-style vault
 files; a local SQLite DB is a recorded **stretch idea** only, not a
-constraint change. Sequence:
+constraint change. The entire read stack is done and validated
+against the user's real install + save tree (mounted; path in agent
+memory). Sequence:
 
-User re-prioritized 2026-08-24: the game item database comes before
-stash/write work, both for proper item names/descriptions and because
-vault `width`/`height` needs it.
-
-1. Merge the stacked `feat/vault-files` + `feat/arz-reader` branches
-   to `main` (user has validated chr against a real save and the DB
-   pipeline against a real install; a real TQVaultAE-written vault
-   file remains untested — nice-to-have, not blocking).
-2. Transfer stash (`winsys.dxb`) parsing — the other item source.
-3. The write path: targeted-splice item-block re-encode for chr and
+1. The write path: targeted-splice item-block re-encode for chr and
    stash plus the backup-first infrastructure, enabling actual
    vault ↔ character transfers (vault JSON writing already exists).
-4. Platform module in core: per-OS discovery of the game install and
+   This is the first game-file-mutating code — ARCHITECTURE.md's
+   backup-first and targeted-splice constraints govern it.
+2. Transfer UI: two-pane vault ↔ character/stash item movement.
+3. Platform module in core: per-OS discovery of the game install and
    save directories (removes the need for `--game`).
-5. Stretch (unscheduled): local SQLite index across vaults for
+4. Stretch (unscheduled): local SQLite index across vaults for
    search — would be additive, vault files stay the source of truth.
 
 ## Most recent meaningful progress
 
+- **2026-08-24 — Read stack complete: stash reader + full real-data
+  sweep.** All feature branches merged to `main` and deleted. New
+  `stash` module (`winsys.dxb`/`.dxg`: CRC header skipped on read,
+  explicit `stackCount` = size−1, float grid offsets) reusing the
+  chr item parser via a new `Stash` context; GUI opens stashes by
+  extension. `examples/smoke.rs` now sweeps a `SaveData` tree: the
+  user's real transfer stash + 2 character stashes + 4 characters
+  all parse with resolved names. 59 tests. Why: every item source
+  (character, stash, vault, game DB) is now readable — the write
+  path is all that separates us from working transfers. Risk: the
+  real stashes were empty; a stash with items has only synthetic
+  coverage until the user stashes something in-game.
 - **2026-08-24 — Name resolution + GUI wiring; items have real
   names.** `gamedata` module combines ARZ + text: per-type name-tag
   dispatch ported from TQVaultAE's `Info.AssignVariableNames`

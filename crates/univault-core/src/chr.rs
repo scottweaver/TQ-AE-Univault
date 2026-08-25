@@ -284,16 +284,18 @@ fn parse_equipment(data: &[u8]) -> Result<Equipment, ParseError> {
 }
 
 /// Where an item entry is being parsed from; the surrounding keys
-/// differ per container.
+/// differ per container. Stash callers read the leading `stackCount`
+/// themselves before calling [`parse_raw_item`].
 #[derive(Clone, Copy)]
-enum ItemContext {
+pub(crate) enum ItemContext {
     PlayerSack,
     Equipment,
+    Stash,
 }
 
 /// Item fields exactly as stored, before empty-`baseName` and stacking
 /// semantics are applied.
-struct RawItem {
+pub(crate) struct RawItem {
     base: String,
     prefix: String,
     suffix: String,
@@ -312,7 +314,7 @@ impl RawItem {
     }
 
     /// `None` when `baseName` is empty — an empty equipment slot.
-    fn into_item(self) -> Option<Item> {
+    pub(crate) fn into_item(self) -> Option<Item> {
         let base = RecordId::parse(self.base)?;
         Some(Item {
             base,
@@ -333,13 +335,16 @@ impl RawItem {
     }
 }
 
-fn parse_raw_item(
+pub(crate) fn parse_raw_item(
     reader: &mut ByteReader<'_>,
     context: ItemContext,
 ) -> Result<RawItem, ParseError> {
-    if let ItemContext::PlayerSack = context {
-        reader.expect_key("begin_block")?;
-        reader.read_i32()?;
+    match context {
+        ItemContext::PlayerSack => {
+            reader.expect_key("begin_block")?;
+            reader.read_i32()?;
+        }
+        ItemContext::Equipment | ItemContext::Stash => {}
     }
     reader.expect_key("begin_block")?;
     reader.read_i32()?;
@@ -385,6 +390,16 @@ fn parse_raw_item(
             GridPos { x, y }
         }
         ItemContext::Equipment => GridPos { x: 0, y: 0 },
+        ItemContext::Stash => {
+            reader.expect_key("xOffset")?;
+            let x = reader.read_f32()?;
+            reader.expect_key("yOffset")?;
+            let y = reader.read_f32()?;
+            GridPos {
+                x: offset_to_cell(x),
+                y: offset_to_cell(y),
+            }
+        }
     };
 
     Ok(RawItem {
@@ -398,6 +413,13 @@ fn parse_raw_item(
         atlantis,
         position,
     })
+}
+
+// Stash grids store whole-number cells as floats; C# reads them with
+// Convert.ToInt32 (rounding), so truncation cannot occur in range.
+#[allow(clippy::cast_possible_truncation)]
+fn offset_to_cell(offset: f32) -> i32 {
+    offset.round() as i32
 }
 
 /// Builds save-format byte images in the exact shape `TQVaultAE`
@@ -445,6 +467,12 @@ pub(crate) mod fixture {
             self.key(key).int(value)
         }
 
+        pub(crate) fn keyed_f32(mut self, key: &str, value: f32) -> Self {
+            self = self.key(key);
+            self.bytes.extend_from_slice(&value.to_le_bytes());
+            self
+        }
+
         pub(crate) fn begin_block(self) -> Self {
             self.keyed_int("begin_block", BEGIN_BLOCK)
         }
@@ -476,6 +504,20 @@ pub(crate) mod fixture {
         pub(crate) fn equipment_slot(self, base: &str) -> Self {
             self.item_body(base, 1)
                 .keyed_int("itemAttached", i32::from(!base.is_empty()))
+        }
+
+        pub(crate) fn stash_item(
+            self,
+            base: &str,
+            seed: i32,
+            stack_count: i32,
+            x: f32,
+            y: f32,
+        ) -> Self {
+            self.keyed_int("stackCount", stack_count)
+                .item_body(base, seed)
+                .keyed_f32("xOffset", x)
+                .keyed_f32("yOffset", y)
         }
     }
 }

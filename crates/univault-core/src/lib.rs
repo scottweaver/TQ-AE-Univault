@@ -8,5 +8,6 @@ pub mod arz;
 pub mod chr;
 pub mod gamedata;
 pub mod reader;
+pub mod stash;
 pub mod text;
 pub mod vault;
