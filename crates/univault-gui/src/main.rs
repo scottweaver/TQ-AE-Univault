@@ -250,6 +250,8 @@ struct App {
     left: Option<FilePane>,
     right: Option<VaultPane>,
     status: Option<Result<String, String>>,
+    /// Zoom shown by the slider while dragging; applied on release.
+    pending_zoom: f32,
 }
 
 impl App {
@@ -282,6 +284,7 @@ impl App {
             left: None,
             right: None,
             status: None,
+            pending_zoom: 1.0,
         };
         if let Some(path) = args.vault {
             app.status = Some(app.open(&path));
@@ -681,17 +684,7 @@ impl App {
         if let Some(path) = requested {
             self.status = Some(self.open(&path));
         }
-        ui.horizontal(|ui| {
-            ui.label("Zoom:");
-            let mut zoom = ui.ctx().zoom_factor();
-            if ui
-                .add(egui::Slider::new(&mut zoom, 0.75..=2.5).step_by(0.05))
-                .changed()
-            {
-                ui.ctx().set_zoom_factor(zoom);
-            }
-            ui.weak("(⌘+ / ⌘− / ⌘0 work too)");
-        });
+        self.show_zoom_control(ui);
         if let Some(note) = &self.game_note {
             ui.colored_label(ui.visuals().warn_fg_color, note);
         }
@@ -726,6 +719,31 @@ impl App {
             }
             None => {}
         }
+    }
+
+    /// Applying zoom mid-drag rescales the slider out from under the
+    /// pointer, so the slider tracks a pending value while dragging
+    /// and the zoom only takes effect on release.
+    fn show_zoom_control(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label("Zoom:");
+            let mut value = self.pending_zoom;
+            let response = ui.add(
+                egui::Slider::new(&mut value, 0.75..=2.5)
+                    .step_by(0.05)
+                    .custom_formatter(|zoom, _| format!("{:.0}%", zoom * 100.0)),
+            );
+            if response.dragged() {
+                self.pending_zoom = value;
+            } else if response.drag_stopped() {
+                self.pending_zoom = value;
+                ui.ctx().set_zoom_factor(value);
+            } else {
+                // Stay in step with the ⌘+/⌘−/⌘0 shortcuts.
+                self.pending_zoom = ui.ctx().zoom_factor();
+            }
+            ui.weak("(⌘+ / ⌘− / ⌘0 work too)");
+        });
     }
 
     /// Where file dialogs start: near what the user last touched.
