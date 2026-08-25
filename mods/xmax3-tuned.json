@@ -10,6 +10,17 @@
       "kind": "record",
       "record": "records\\skills\\earth\\fireenchantmentbuff.dbr",
       "multiply": { "skillTargetRadius": 3.0 }
+    },
+    {
+      "kind": "fill_player_skills",
+      "class": "Skill_SpawnPet",
+      "variable": "skillCooldownTime",
+      "value": 0.0
+    },
+    {
+      "kind": "revert_variables",
+      "record": "records\\xpack\\game\\gameengine.dbr",
+      "variables": ["experienceEquation"]
     }
   ]
 }

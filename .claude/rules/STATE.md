@@ -43,8 +43,10 @@ memory). Sequence:
 
 User acceptance PASSED 2026-08-24: the user saved real transfer
 edits through the app on their network-mounted save tree ("It
-worked!"). Residual check whenever convenient: confirm a
-transferred-back item in-game and open our vault JSON in TQVaultAE.
+worked!"). Respec acceptance PASSED 2026-08-25: "I tested it and
+it works great!" — both respec buttons verified in-game. Residual
+check whenever convenient: confirm a transferred-back item in-game
+and open our vault JSON in TQVaultAE.
 
 User-inserted priorities (2026-08-25, before drag-and-drop):
 backup rotation (5 newest per file — in PR) and two respec buttons
@@ -85,10 +87,15 @@ eyes-only reference, implementation independent.
   hero/quest-script skills and dev leftovers excluded) and Earth
   Enchantment aura radius ×3 (15→60m at ultimate). Patch spec
   committed at `mods/xmax3-tuned.json`. Composed db self-checks:
-  full re-parse + every record decode-equal. 140 tests. Risk:
-  in-game acceptance pending (select the mod in Play Custom Quest);
-  record-table ordering assumptions unverified against the engine's
-  loader (mod arz mirrors base order + appends).
+  full re-parse + every record decode-equal. 146 tests. Two
+  follow-up rules same-day (user request): all summon cooldowns
+  (`Skill_SpawnPet` × `skillCooldownTime`) filled to 0 — 28 skills
+  incl. item/artifact summons — and the x3 mod's global 30% XP cut
+  (`* 0.7` wrapper on gameengine.dbr `experienceEquation`, found
+  with the new `moddiff` example) reverted to vanilla via a
+  variable-level revert rule. Risk: in-game acceptance pending
+  (select the mod in Play Custom Quest); record-table ordering
+  assumptions unverified against the engine's loader.
 
 - **2026-08-25 — Mastery skill-tree export for AI theorycrafting.**
   PR #2 (rotation + respec) merged. New `skilltree` example distills

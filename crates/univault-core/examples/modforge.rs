@@ -40,6 +40,20 @@ enum Rule {
     /// (`records\skills\…` and expansion equivalents, monster
     /// skills excluded).
     MultiplyPlayerSkills { variable: String, factor: f64 },
+    /// Overwrites every value of a variable (array length and type
+    /// preserved) on player-side skills of one class.
+    FillPlayerSkills {
+        class: String,
+        variable: String,
+        value: f64,
+    },
+    /// Restores listed variables of one record to their vanilla
+    /// (main-database) values, undoing a base mod's change while
+    /// keeping the rest of its record edits.
+    RevertVariables {
+        record: String,
+        variables: Vec<String>,
+    },
     /// Targeted edits on one record.
     Record {
         record: String,
@@ -116,6 +130,55 @@ fn main() {
                     report.push(format!("{key}: {variable} {changed}"));
                     patched.insert(key, record);
                 }
+            }
+            Rule::FillPlayerSkills {
+                class,
+                variable,
+                value,
+            } => {
+                let targets: Vec<RecordId> = main_db
+                    .record_ids()
+                    .filter(|id| player_skill(&normalize(id.as_str())))
+                    .cloned()
+                    .collect();
+                for id in targets {
+                    let key = normalize(id.as_str());
+                    let record = patched.get(&key).cloned().or_else(|| effective(&id));
+                    let Some(mut record) = record else { continue };
+                    if !record.record_type.eq_ignore_ascii_case(class) {
+                        continue;
+                    }
+                    let Some(changed) = fill_variable(&mut record, variable, *value) else {
+                        continue;
+                    };
+                    report.push(format!("{key}: {variable} {changed}"));
+                    patched.insert(key, record);
+                }
+            }
+            Rule::RevertVariables { record, variables } => {
+                let id = RecordId::parse(record.clone()).expect("record id in patch");
+                let key = normalize(id.as_str());
+                let vanilla = main_db
+                    .record(&id)
+                    .and_then(Result::ok)
+                    .unwrap_or_else(|| panic!("vanilla record not found: {record}"));
+                let mut target = patched
+                    .get(&key)
+                    .cloned()
+                    .or_else(|| effective(&id))
+                    .unwrap_or_else(|| panic!("record not found: {record}"));
+                for name in variables {
+                    let Some(original) = vanilla.variable(name) else {
+                        report.push(format!("{key}: {name} has no vanilla value; left as-is"));
+                        continue;
+                    };
+                    if target.variable(name).map(|v| &v.values) == Some(&original.values) {
+                        continue;
+                    }
+                    report.push(format!("{key}: {name} reverted to vanilla"));
+                    target.set_variable(original.clone());
+                }
+                patched.insert(key, target);
             }
             Rule::Record {
                 record,
@@ -228,10 +291,18 @@ fn player_skill(normalized: &str) -> bool {
     let enemy = ["MONSTER", "BOSS", "HERO", "QUEST SKILLS"]
         .iter()
         .any(|dir| normalized.contains(dir));
-    // MEDICINE is a cut mastery the database still ships.
-    let leftover = [r"\OLD\", r"\REV", "11-15-06", r"\MEDICINE\"]
-        .iter()
-        .any(|junk| normalized.contains(junk));
+    // MEDICINE is a cut mastery the database still ships; \OUT\ and
+    // _OLD-suffixed records are other development leftovers.
+    let leftover = [
+        r"\OLD\",
+        r"\REV",
+        "11-15-06",
+        r"\MEDICINE\",
+        r"\OUT\",
+        "_OLD.",
+    ]
+    .iter()
+    .any(|junk| normalized.contains(junk));
     in_skills && !enemy && !leftover
 }
 
@@ -264,6 +335,38 @@ fn multiply_variable(record: &mut DbRecord, variable: &str, factor: f64) -> Opti
             }
             let text = format!("{values:?} -> {scaled:?}");
             (DbValues::Floats(scaled), text)
+        }
+        DbValues::Strings(_) | DbValues::Booleans(_) => return None,
+    };
+    record.set_variable(DbVariable {
+        name: variable.to_string(),
+        values,
+    });
+    Some(description)
+}
+
+/// Overwrites every value of `variable` with `value`, preserving the
+/// array's length and type; `None` when absent or unchanged.
+fn fill_variable(record: &mut DbRecord, variable: &str, value: f64) -> Option<String> {
+    let current = record.variable(variable)?;
+    let (values, description) = match &current.values {
+        DbValues::Integers(existing) => {
+            #[allow(clippy::cast_possible_truncation)] // game-scale ints
+            let filled = vec![value.round() as i32; existing.len()];
+            if filled == *existing {
+                return None;
+            }
+            let text = format!("{existing:?} -> {filled:?}");
+            (DbValues::Integers(filled), text)
+        }
+        DbValues::Floats(existing) => {
+            #[allow(clippy::cast_possible_truncation)] // patch data
+            let filled = vec![value as f32; existing.len()];
+            if filled == *existing {
+                return None;
+            }
+            let text = format!("{existing:?} -> {filled:?}");
+            (DbValues::Floats(filled), text)
         }
         DbValues::Strings(_) | DbValues::Booleans(_) => return None,
     };
