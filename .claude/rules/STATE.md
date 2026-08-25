@@ -28,7 +28,7 @@ only). No issue tracker is bound yet (deliberately deferred).
 | Branch | Purpose | Status |
 |---|---|---|
 | `main` | trunk | read stack + transfers + grids + full item tooltips merged; pushed to the new GitHub origin |
-| `feat/skill-export` | mastery skill-tree JSON export for AI theorycrafting | PR open |
+| `feat/mod-forge` | ARZ composer + mod patch compiler; first tuned mod installed | PR open |
 
 ## Next up
 
@@ -65,6 +65,30 @@ eyes-only reference, implementation independent.
    search — would be additive, vault files stay the source of truth.
 
 ## Most recent meaningful progress
+
+- **2026-08-25 — Mod forge: from reader to mod maker.** User pivot
+  into modding, design-dialogued: `arz::compose` (writer half of the
+  format; layout from the MIT `TQArchive-Wrapper` reference — 24B
+  header, zlib payloads, record table w/ timestamps, string table)
+  with parser upgrades it needed: record-table order + timestamps
+  preserved, `DbRecord` variables now an ordered Vec (also fixes
+  latent HashMap-iteration nondeterminism), `set_variable` edit op.
+  ARCHITECTURE amended: mod bundles are a sanctioned output
+  boundary; the game's own archives stay read-only. New `modforge`
+  example compiles a JSON patch spec into a CustomMaps bundle
+  merged onto a base mod (game loads one custom quest at a time —
+  the user plays LootPlus XMAX x3): effective-record logic patches
+  the base mod's version when it overrides vanilla (proven: x3's
+  own Earth Enchantment radii got scaled, not vanilla's). First
+  real mod built + installed: `LootPlusXMAX3Tuned` — all
+  player-side `skillTargetNumber` ×3 (11 records; monster/boss/
+  hero/quest-script skills and dev leftovers excluded) and Earth
+  Enchantment aura radius ×3 (15→60m at ultimate). Patch spec
+  committed at `mods/xmax3-tuned.json`. Composed db self-checks:
+  full re-parse + every record decode-equal. 140 tests. Risk:
+  in-game acceptance pending (select the mod in Play Custom Quest);
+  record-table ordering assumptions unverified against the engine's
+  loader (mod arz mirrors base order + appends).
 
 - **2026-08-25 — Mastery skill-tree export for AI theorycrafting.**
   PR #2 (rotation + respec) merged. New `skilltree` example distills
@@ -222,19 +246,6 @@ eyes-only reference, implementation independent.
   is rejected by SMB mounts ("os error 45") — the writer now
   degrades to close-flush on "unsupported", validated by running the
   safe-write tests with TMPDIR on the user's network volume.
-- **2026-08-24 — Splice write path lands, byte-identity proven on
-  real files.** `writer` module (1252 encoding), `chr::
-  replace_inventory` and `stash::replace_items` rebuild only the
-  item regions and copy every other byte through; stash CRC ported
-  (zero-init, no final complement, verified against real files).
-  The model now preserves `tempBool` and per-stack-member
-  `seed`/`var2` — the latter found by the byte-identity gate on the
-  user's real save (Atlantis-era folded members carry their own
-  `var2`; first attempt repeated the head's). Sweep: 4 real
-  characters + 3 stashes (one with an item) resplice
-  byte-identically. 68 tests. Why: transfers are now a data edit
-  plus a file write away. Risk: no writes hit disk yet — the
-  backup-first shell function lands with the transfer UI.
 
 ## Blocked / waiting
 
