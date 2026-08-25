@@ -35,6 +35,12 @@ bootstrap Q&A).
   store for vaulted items. (2026-08-24)
 - The game's ARC/ARZ archives (item database, textures, strings) are
   read-only reference data. This app never writes them. (2026-08-24)
+- Mod bundles are a sanctioned **output** boundary: `arz::compose`
+  serializes this app's own mod databases into new CustomMaps
+  bundles (optionally merged onto a base mod's records). The game's
+  databases and third-party mod files are never modified — a
+  composed bundle is always a new folder, deletable without trace.
+  (2026-08-25, mod-forge design dialog)
 - Nothing held in memory is authoritative: a mutation exists only
   once explicitly serialized to disk. (2026-08-24)
 - A derived local cache of item reference data (names, footprints,
@@ -129,7 +135,9 @@ cleanup:
 Structural (this doc must change in the same PR): a GUI dependency
 appearing in core or any reversal of the crate DAG; a new external
 boundary (network access, a new file format, telemetry); a change to
-who holds authoritative state; writing to ARC/ARZ; a change to the
+who holds authoritative state; writing to the game's own ARC/ARZ
+files (composing new mod bundles is the sanctioned exception,
+recorded above); a change to the
 vault JSON schema contract; weakening or bypassing the backup-first
 or targeted-splice write rules; adopting a parser-derive dependency;
 a license change; replacing egui/eframe; dropping a supported

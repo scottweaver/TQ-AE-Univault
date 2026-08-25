@@ -1,0 +1,15 @@
+{
+  "name": "LootPlusXMAX3Tuned",
+  "rules": [
+    {
+      "kind": "multiply_player_skills",
+      "variable": "skillTargetNumber",
+      "factor": 3.0
+    },
+    {
+      "kind": "record",
+      "record": "records\\skills\\earth\\fireenchantmentbuff.dbr",
+      "multiply": { "skillTargetRadius": 3.0 }
+    }
+  ]
+}

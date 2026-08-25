@@ -1,8 +1,11 @@
 //! Reader for the game's `database.arz` — the compressed record
 //! database holding item stats, classifications, and the localization
-//! tags that name things. Read-only reference data per ARCHITECTURE.md;
-//! this module never writes. Ported from `TQVaultAE`'s
-//! `ArzFileProvider.cs` and `RecordInfoProvider.cs` (MIT).
+//! tags that name things — plus [`compose`], which serializes records
+//! into **new** database images for this app's own mod bundles. The
+//! game's databases remain read-only reference data per
+//! ARCHITECTURE.md: nothing here ever rewrites them. Reader ported
+//! from `TQVaultAE`'s `ArzFileProvider.cs` / `RecordInfoProvider.cs`
+//! (MIT); writer layout from the MIT `TQArchive-Wrapper` reference.
 //!
 //! Layout: a 24-byte header (six `i32`s: unknown, record-table start /
 //! size / count, string-table start / size), a string table (`i32`
@@ -14,6 +17,8 @@
 
 use std::collections::HashMap;
 use std::io::Read;
+
+use crate::writer::{write_i32, write_i64};
 
 use flate2::read::ZlibDecoder;
 
@@ -29,6 +34,9 @@ pub struct ArzFile {
     data: Vec<u8>,
     strings: Vec<String>,
     entries: HashMap<String, RecordEntry>,
+    /// Normalized ids in record-table order, so re-serialization and
+    /// iteration are deterministic.
+    order: Vec<String>,
 }
 
 struct RecordEntry {
@@ -36,25 +44,39 @@ struct RecordEntry {
     record_type: String,
     payload_offset: usize,
     payload_size: usize,
+    timestamp: i64,
 }
 
-/// One decompressed database record: a set of named, typed variables.
+/// One decompressed database record: a set of named, typed variables
+/// in file order.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DbRecord {
     pub id: RecordId,
     /// The record's class string, e.g. `ArmorProtective_Head`.
     pub record_type: String,
-    variables: HashMap<String, DbVariable>,
+    variables: Vec<DbVariable>,
 }
 
 impl DbRecord {
     #[must_use]
     pub fn variable(&self, name: &str) -> Option<&DbVariable> {
-        self.variables.get(name)
+        self.variables.iter().find(|variable| variable.name == name)
     }
 
     pub fn variables(&self) -> impl Iterator<Item = &DbVariable> {
-        self.variables.values()
+        self.variables.iter()
+    }
+
+    /// Replaces (or appends) a variable — the mod-patching edit.
+    pub fn set_variable(&mut self, variable: DbVariable) {
+        match self
+            .variables
+            .iter_mut()
+            .find(|existing| existing.name == variable.name)
+        {
+            Some(existing) => *existing = variable,
+            None => self.variables.push(variable),
+        }
     }
 
     /// First value of a string variable — the common case for tag
@@ -174,11 +196,13 @@ impl ArzFile {
         let string_table_start = offset_field(header.read_i32()?, "string table start")?;
 
         let strings = read_string_table(&data, string_table_start)?;
-        let entries = read_record_table(&data, record_table_start, record_count, &strings)?;
+        let (entries, order) =
+            read_record_table(&data, record_table_start, record_count, &strings)?;
         Ok(Self {
             data,
             strings,
             entries,
+            order,
         })
     }
 
@@ -191,8 +215,16 @@ impl ArzFile {
         Some(self.decompress(entry))
     }
 
+    /// Record ids in record-table order.
     pub fn record_ids(&self) -> impl Iterator<Item = &RecordId> {
-        self.entries.values().map(|entry| &entry.id)
+        self.order.iter().map(|key| &self.entries[key].id)
+    }
+
+    /// The record's stored build timestamp, preserved when composing
+    /// mod databases.
+    #[must_use]
+    pub fn record_timestamp(&self, id: &RecordId) -> Option<i64> {
+        Some(self.entries.get(&normalize(id.as_str()))?.timestamp)
     }
 
     fn decompress(&self, entry: &RecordEntry) -> Result<DbRecord, ArzError> {
@@ -238,16 +270,16 @@ fn read_record_table(
     start: usize,
     count: usize,
     strings: &[String],
-) -> Result<HashMap<String, RecordEntry>, ArzError> {
+) -> Result<(HashMap<String, RecordEntry>, Vec<String>), ArzError> {
     let mut reader = ByteReader::at(data, start);
     let mut entries = HashMap::with_capacity(count);
+    let mut order = Vec::with_capacity(count);
     for index in 0..count {
         let id_index = reader.read_i32()?;
         let record_type = reader.read_cstring()?;
         let payload_offset = offset_field(reader.read_i32()?, "record payload offset")?;
         let payload_size = offset_field(reader.read_i32()?, "record payload size")?;
-        reader.read_i32()?;
-        reader.read_i32()?;
+        let timestamp = reader.read_i64()?;
 
         let raw_id = usize::try_from(id_index)
             .ok()
@@ -257,24 +289,27 @@ fn read_record_table(
                 len: strings.len(),
             })?;
         let id = RecordId::parse(raw_id.clone()).ok_or(ArzError::EmptyRecordPath { index })?;
+        let key = normalize(id.as_str());
+        order.push(key.clone());
         entries.insert(
-            normalize(id.as_str()),
+            key,
             RecordEntry {
                 id,
                 record_type,
                 payload_offset: HEADER_SIZE + payload_offset,
                 payload_size,
+                timestamp,
             },
         );
     }
-    Ok(entries)
+    Ok((entries, order))
 }
 
 fn parse_variables(
     payload: &[u8],
     record_id: &RecordId,
     strings: &[String],
-) -> Result<HashMap<String, DbVariable>, ArzError> {
+) -> Result<Vec<DbVariable>, ArzError> {
     let id = || record_id.as_str().to_string();
     if !payload.len().is_multiple_of(4) {
         return Err(ArzError::UnalignedPayload {
@@ -283,7 +318,7 @@ fn parse_variables(
         });
     }
     let mut reader = ByteReader::new(payload);
-    let mut variables = HashMap::new();
+    let mut variables = Vec::new();
     while reader.pos() < payload.len() {
         let data_type = reader.read_i16()?;
         let count = reader.read_i16()?;
@@ -337,7 +372,7 @@ fn parse_variables(
                 });
             }
         };
-        variables.insert(name.clone(), DbVariable { name, values });
+        variables.push(DbVariable { name, values });
     }
     Ok(variables)
 }
@@ -355,6 +390,120 @@ fn read_values<'data, T>(
 #[must_use]
 pub fn normalize(path: &str) -> String {
     path.to_uppercase().replace('/', "\\")
+}
+
+/// Serializes records into a new database image — the write half of
+/// this format, used to build the app's **own** mod archives. The
+/// game's databases stay read-only (ARCHITECTURE.md); a composed
+/// image is always a new file. Layout mirrors `ArtManager`'s output
+/// (via the MIT `TQArchive-Wrapper` reference): 24-byte header,
+/// zlib-compressed record payloads, record table, string table.
+#[must_use]
+pub fn compose(records: &[(DbRecord, i64)]) -> Vec<u8> {
+    use std::io::Write as _;
+
+    use flate2::Compression;
+
+    let mut interner = Interner::default();
+    let mut payloads = Vec::new();
+    let mut table = Vec::new();
+    for (record, timestamp) in records {
+        let name_index = interner.intern(record.id.as_str());
+        let mut raw = Vec::new();
+        for variable in record.variables() {
+            let (type_code, count) = match &variable.values {
+                DbValues::Integers(values) => (0_i16, values.len()),
+                DbValues::Floats(values) => (1_i16, values.len()),
+                DbValues::Strings(values) => (2_i16, values.len()),
+                DbValues::Booleans(values) => (3_i16, values.len()),
+            };
+            raw.extend_from_slice(&type_code.to_le_bytes());
+            raw.extend_from_slice(&i16::try_from(count).unwrap_or(i16::MAX).to_le_bytes());
+            write_i32(&mut raw, interner.intern(&variable.name));
+            match &variable.values {
+                DbValues::Integers(values) => {
+                    for value in values {
+                        write_i32(&mut raw, *value);
+                    }
+                }
+                DbValues::Floats(values) => {
+                    for value in values {
+                        crate::writer::write_f32(&mut raw, *value);
+                    }
+                }
+                DbValues::Strings(values) => {
+                    for value in values {
+                        write_i32(&mut raw, interner.intern(value));
+                    }
+                }
+                DbValues::Booleans(values) => {
+                    for value in values {
+                        write_i32(&mut raw, i32::from(*value));
+                    }
+                }
+            }
+        }
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), Compression::default());
+        let _ = encoder.write_all(&raw);
+        let compressed = encoder.finish().unwrap_or_default();
+        table.push((
+            name_index,
+            record.record_type.clone(),
+            payloads.len(),
+            compressed.len(),
+            *timestamp,
+        ));
+        payloads.extend_from_slice(&compressed);
+    }
+
+    let mut record_table = Vec::new();
+    for (name_index, record_type, offset, length, timestamp) in &table {
+        write_i32(&mut record_table, *name_index);
+        crate::writer::write_cstring(&mut record_table, record_type);
+        write_i32(&mut record_table, i32::try_from(*offset).unwrap_or(0));
+        write_i32(&mut record_table, i32::try_from(*length).unwrap_or(0));
+        write_i64(&mut record_table, *timestamp);
+    }
+    let mut string_table = Vec::new();
+    write_i32(
+        &mut string_table,
+        i32::try_from(interner.strings.len()).unwrap_or(0),
+    );
+    for value in &interner.strings {
+        crate::writer::write_cstring(&mut string_table, value);
+    }
+
+    let record_table_start = HEADER_SIZE + payloads.len();
+    let string_table_start = record_table_start + record_table.len();
+    let mut out = Vec::with_capacity(string_table_start + string_table.len());
+    write_i32(&mut out, 0x0003_0004);
+    write_i32(&mut out, i32::try_from(record_table_start).unwrap_or(0));
+    write_i32(&mut out, i32::try_from(record_table.len()).unwrap_or(0));
+    write_i32(&mut out, i32::try_from(table.len()).unwrap_or(0));
+    write_i32(&mut out, i32::try_from(string_table_start).unwrap_or(0));
+    write_i32(&mut out, i32::try_from(string_table.len()).unwrap_or(0));
+    out.extend_from_slice(&payloads);
+    out.extend_from_slice(&record_table);
+    out.extend_from_slice(&string_table);
+    out
+}
+
+#[derive(Default)]
+struct Interner {
+    strings: Vec<String>,
+    indexes: HashMap<String, i32>,
+}
+
+impl Interner {
+    fn intern(&mut self, value: &str) -> i32 {
+        if let Some(index) = self.indexes.get(value) {
+            return *index;
+        }
+        let index = i32::try_from(self.strings.len()).unwrap_or(0);
+        self.strings.push(value.to_string());
+        self.indexes.insert(value.to_string(), index);
+        index
+    }
 }
 
 /// Builds synthetic ARZ byte images so tests (here and in `gamedata`)
@@ -572,6 +721,84 @@ mod tests {
     fn unknown_record_is_none() {
         let arz = ArzFile::parse(sword_arz()).unwrap();
         assert!(arz.record(&record_id("records\\nothing.dbr")).is_none());
+    }
+
+    #[test]
+    fn compose_round_trips_records_order_and_timestamps() {
+        let mut builder = ArzBuilder::default();
+        builder.record(
+            "records\\item\\zeta.dbr",
+            "WeaponMelee_Sword",
+            &[
+                ("itemNameTag", Values::Strings(&["tagZeta"])),
+                ("offensivePhysicalMin", Values::Floats(&[12.5, 14.0])),
+                ("levelRequirement", Values::Ints(&[4])),
+                ("cannotPickUpMultiple", Values::Bools(&[true])),
+            ],
+        );
+        builder.record(
+            "records\\item\\alpha.dbr",
+            "LootRandomizer",
+            &[("lootRandomizerName", Values::Strings(&["tagAlpha"]))],
+        );
+        let original = ArzFile::parse(builder.build()).unwrap();
+
+        let records: Vec<(DbRecord, i64)> = original
+            .record_ids()
+            .map(|id| {
+                (
+                    original.record(id).unwrap().unwrap(),
+                    original.record_timestamp(id).unwrap(),
+                )
+            })
+            .collect();
+        let composed = ArzFile::parse(compose(&records)).unwrap();
+
+        let original_ids: Vec<&str> = original.record_ids().map(RecordId::as_str).collect();
+        let composed_ids: Vec<&str> = composed.record_ids().map(RecordId::as_str).collect();
+        assert_eq!(original_ids, composed_ids);
+        for id in original.record_ids() {
+            assert_eq!(
+                original.record(id).unwrap().unwrap(),
+                composed.record(id).unwrap().unwrap(),
+                "{id:?}"
+            );
+            assert_eq!(original.record_timestamp(id), composed.record_timestamp(id));
+        }
+    }
+
+    #[test]
+    fn set_variable_replaces_in_place_and_appends() {
+        let mut builder = ArzBuilder::default();
+        builder.record(
+            "records\\skills\\thing.dbr",
+            "Skill_Attack",
+            &[
+                ("skillTargetNumber", Values::Ints(&[4])),
+                ("skillManaCost", Values::Floats(&[10.0])),
+            ],
+        );
+        let arz = ArzFile::parse(builder.build()).unwrap();
+        let mut record = arz
+            .record(&RecordId::parse("records\\skills\\thing.dbr".into()).unwrap())
+            .unwrap()
+            .unwrap();
+        record.set_variable(DbVariable {
+            name: "skillTargetNumber".to_string(),
+            values: DbValues::Integers(vec![12]),
+        });
+        record.set_variable(DbVariable {
+            name: "skillTargetRadius".to_string(),
+            values: DbValues::Floats(vec![18.0]),
+        });
+        assert_eq!(record.integer("skillTargetNumber"), Some(12));
+        assert_eq!(record.float("skillTargetRadius"), Some(18.0));
+        // Replacement keeps position; the append lands last.
+        let names: Vec<&str> = record.variables().map(|v| v.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["skillTargetNumber", "skillManaCost", "skillTargetRadius"]
+        );
     }
 
     #[test]
