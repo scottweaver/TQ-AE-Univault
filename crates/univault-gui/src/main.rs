@@ -33,7 +33,11 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "TQ UniVault",
         options,
-        Box::new(move |_cc| Ok(Box::new(App::new(args)))),
+        Box::new(move |cc| {
+            cc.egui_ctx
+                .all_styles_mut(|style| style.interaction.tooltip_delay = 0.0);
+            Ok(Box::new(App::new(args)))
+        }),
     )
 }
 
