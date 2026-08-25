@@ -18,6 +18,7 @@ use univault_core::cache::{GameCache, SourceStamp};
 use univault_core::chr::{self, Item, PlayerCharacter, RecordId};
 use univault_core::gamedata::GameData;
 use univault_core::stash::{self, Stash};
+use univault_core::stats;
 use univault_core::style;
 use univault_core::transfer;
 use univault_core::vault::Vault;
@@ -909,14 +910,16 @@ fn grid_view(
 /// of inheriting the theme.
 fn item_tooltip(ui: &mut egui::Ui, item: &Item, db: Option<&GameCache>, caches: &mut Caches) {
     let item_style = style::item_style(db, item);
+    let details = db.map(|db| stats::item_details(db, item));
     egui::Frame::NONE
         .fill(egui::Color32::from_rgb(24, 20, 16))
         .corner_radius(egui::CornerRadius::same(4))
         .inner_margin(egui::Margin::same(8))
         .show(ui, |ui| {
             ui.style_mut().visuals.override_text_color = Some(egui::Color32::from_gray(190));
+            ui.spacing_mut().item_spacing.y = 2.0;
             ui.label(
-                egui::RichText::new(caches.names.item_label(db, item))
+                egui::RichText::new(tooltip_title(item, db, details.as_ref(), caches))
                     .color(game_color(style::style_color(item_style)))
                     .size(15.0),
             );
@@ -925,26 +928,50 @@ fn item_tooltip(ui: &mut egui::Ui, item: &Item, db: Option<&GameCache>, caches: 
                     .color(egui::Color32::from_gray(140))
                     .size(11.0),
             );
-            if let Some(shards) = style::relic_shards(db, item) {
-                ui.label(match shards.needed {
-                    Some(needed) if shards.have >= needed => "Complete".to_string(),
-                    Some(needed) => format!("Pieces: {} / {needed}", shards.have),
-                    None => format!("Pieces: {}", shards.have),
-                });
-            }
-            let second_relic = item
-                .atlantis
-                .as_ref()
-                .and_then(|extra| extra.relic.as_ref());
-            for (label, relic) in [
-                ("Relic", item.relic.as_ref()),
-                ("Second relic", second_relic),
-            ] {
-                if let Some(relic) = relic {
-                    ui.label(format!("{label}: {}", caches.names.record_name(db, relic)));
+            let Some(details) = details else { return };
+            for block in &details.blocks {
+                ui.add(egui::Separator::default().spacing(6.0));
+                for line in block {
+                    if line.text.trim().is_empty() {
+                        ui.add_space(4.0);
+                    } else {
+                        ui.label(
+                            egui::RichText::new(&line.text)
+                                .color(game_color(stats::palette_color(line.color)))
+                                .size(12.0),
+                        );
+                    }
                 }
             }
         });
+}
+
+/// The game's full item name: prefix, quality, base, style, suffix,
+/// and the stack count.
+fn tooltip_title(
+    item: &Item,
+    db: Option<&GameCache>,
+    details: Option<&stats::ItemDetails>,
+    caches: &mut Caches,
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(prefix) = &item.prefix {
+        parts.push(caches.names.record_name(db, prefix));
+    }
+    if let Some(quality) = details.and_then(|details| details.quality.clone()) {
+        parts.push(quality);
+    }
+    parts.push(caches.names.record_name(db, &item.base));
+    if let Some(style_word) = details.and_then(|details| details.style_word.clone()) {
+        parts.push(style_word);
+    }
+    if let Some(suffix) = &item.suffix {
+        parts.push(caches.names.record_name(db, suffix));
+    }
+    if item.stack_size > 1 {
+        parts.push(format!("×{}", item.stack_size));
+    }
+    parts.join(" ")
 }
 
 fn game_color(rgb: style::Rgb) -> egui::Color32 {

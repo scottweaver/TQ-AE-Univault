@@ -94,6 +94,23 @@ pub struct DbVariable {
     pub values: DbValues,
 }
 
+impl DbVariable {
+    #[must_use]
+    pub fn len(&self) -> usize {
+        match &self.values {
+            DbValues::Integers(values) => values.len(),
+            DbValues::Floats(values) => values.len(),
+            DbValues::Strings(values) => values.len(),
+            DbValues::Booleans(values) => values.len(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
 /// The four value types the format defines (0=int, 1=float,
 /// 2=string-table index, 3=bool-as-i32).
 #[derive(Debug, Clone, PartialEq)]

@@ -8,10 +8,11 @@
 //!
 //! Format (all little-endian, strings length-prefixed **UTF-8** —
 //! localized names exceed Windows-1252, e.g. Ragnarök's
-//! "Jǫrmungandr"): `UVC2` magic, source-fingerprint list (path, size,
-//! mtime seconds), then entries keyed by normalized record path:
-//! name, footprint, classification and kind tags, and an optional
-//! zlib-compressed RGBA icon.
+//! "Jǫrmungandr"): `UVC3` magic, source-fingerprint list (path, size,
+//! mtime seconds), a table of runtime display labels, then entries
+//! keyed by normalized record path: name, footprint, classification
+//! and kind tags, an optional JSON-encoded stat block, and an
+//! optional zlib-compressed RGBA icon.
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -23,11 +24,12 @@ use crate::arz::normalize;
 use crate::chr::{Item, RecordId};
 use crate::gamedata::FALLBACK_FOOTPRINT;
 use crate::reader::{ByteReader, ReadError};
+use crate::stats::StatBlock;
 use crate::style::{Classification, ItemKind};
 use crate::tex::RgbaImage;
 use crate::writer::{write_i32, write_i64};
 
-const MAGIC: i32 = 0x3243_5655; // "UVC2"
+const MAGIC: i32 = 0x3343_5655; // "UVC3"
 
 /// Identity of one source file at import time; the shell compares
 /// these against the live files to detect a game update.
@@ -49,6 +51,7 @@ pub(crate) struct CacheEntry {
     pub(crate) footprint: (i32, i32),
     pub(crate) classification: Classification,
     pub(crate) kind: ItemKind,
+    pub(crate) stats: Option<StatBlock>,
     pub(crate) icon: Option<CachedIcon>,
 }
 
@@ -56,6 +59,7 @@ pub(crate) struct CacheEntry {
 /// a cache file.
 pub struct GameCache {
     stamps: Vec<SourceStamp>,
+    labels: HashMap<String, String>,
     entries: HashMap<String, CacheEntry>,
 }
 
@@ -75,9 +79,20 @@ pub enum CacheError {
 impl GameCache {
     pub(crate) fn from_entries(
         stamps: Vec<SourceStamp>,
+        labels: HashMap<String, String>,
         entries: HashMap<String, CacheEntry>,
     ) -> Self {
-        Self { stamps, entries }
+        Self {
+            stamps,
+            labels,
+            entries,
+        }
+    }
+
+    /// A translated display label captured at import (see
+    /// [`crate::stats::RUNTIME_LABEL_TAGS`]).
+    pub(crate) fn runtime_label(&self, tag: &str) -> Option<&str> {
+        self.labels.get(tag).map(String::as_str)
     }
 
     /// The source files this cache was built from.
@@ -141,6 +156,13 @@ impl GameCache {
             write_i64(&mut out, stamp.size);
             write_i64(&mut out, stamp.mtime_seconds);
         }
+        write_i32(&mut out, i32::try_from(self.labels.len()).unwrap_or(0));
+        let mut label_keys: Vec<&String> = self.labels.keys().collect();
+        label_keys.sort_unstable();
+        for key in label_keys {
+            write_utf8(&mut out, key);
+            write_utf8(&mut out, &self.labels[key]);
+        }
         write_i32(&mut out, i32::try_from(self.entries.len()).unwrap_or(0));
         let mut paths: Vec<&String> = self.entries.keys().collect();
         paths.sort_unstable();
@@ -158,6 +180,18 @@ impl GameCache {
             write_i32(&mut out, entry.footprint.1);
             write_classification(&mut out, entry.classification);
             write_kind(&mut out, entry.kind);
+            match entry
+                .stats
+                .as_ref()
+                .and_then(|stats| serde_json::to_vec(stats).ok())
+            {
+                Some(json) => {
+                    write_i32(&mut out, 1);
+                    write_i32(&mut out, i32::try_from(json.len()).unwrap_or(0));
+                    out.extend_from_slice(&json);
+                }
+                None => write_i32(&mut out, 0),
+            }
             match &entry.icon {
                 Some(icon) => {
                     write_i32(&mut out, 1);
@@ -190,6 +224,13 @@ impl GameCache {
                 mtime_seconds: reader.read_i64()?,
             });
         }
+        let label_count = usize::try_from(reader.read_i32()?).map_err(|_| CacheError::BadMagic)?;
+        let mut labels = HashMap::with_capacity(label_count);
+        for _ in 0..label_count {
+            let key = read_utf8(&mut reader)?;
+            let value = read_utf8(&mut reader)?;
+            labels.insert(key, value);
+        }
         let entry_count = usize::try_from(reader.read_i32()?).map_err(|_| CacheError::BadMagic)?;
         let mut entries = HashMap::with_capacity(entry_count);
         for _ in 0..entry_count {
@@ -202,6 +243,14 @@ impl GameCache {
             let footprint = (reader.read_i32()?, reader.read_i32()?);
             let classification = read_classification(&mut reader)?;
             let kind = read_kind(&mut reader)?;
+            let stats = if reader.read_i32()? == 1 {
+                let length =
+                    usize::try_from(reader.read_i32()?).map_err(|_| CacheError::Corrupt)?;
+                let json = reader.read_bytes(length)?;
+                Some(serde_json::from_slice(json).map_err(|_| CacheError::Corrupt)?)
+            } else {
+                None
+            };
             let icon = if reader.read_i32()? == 1 {
                 let width = reader.read_i32()?;
                 let height = reader.read_i32()?;
@@ -223,11 +272,16 @@ impl GameCache {
                     footprint,
                     classification,
                     kind,
+                    stats,
                     icon,
                 },
             );
         }
-        Ok(Self { stamps, entries })
+        Ok(Self {
+            stamps,
+            labels,
+            entries,
+        })
     }
 }
 
@@ -262,7 +316,10 @@ fn write_kind(buf: &mut Vec<u8>, kind: ItemKind) {
         ItemKind::Formula => write_i32(buf, 2),
         ItemKind::Scroll => write_i32(buf, 3),
         ItemKind::Potion => write_i32(buf, 4),
-        ItemKind::RelicOrCharm { completed_level } => {
+        ItemKind::RelicOrCharm {
+            completed_level,
+            is_charm,
+        } => {
             write_i32(buf, 5);
             match completed_level {
                 Some(level) => {
@@ -271,6 +328,7 @@ fn write_kind(buf: &mut Vec<u8>, kind: ItemKind) {
                 }
                 None => write_i32(buf, 0),
             }
+            write_i32(buf, i32::from(is_charm));
         }
         ItemKind::Quest => write_i32(buf, 6),
     }
@@ -289,7 +347,11 @@ fn read_kind(reader: &mut ByteReader<'_>) -> Result<ItemKind, CacheError> {
             } else {
                 None
             };
-            Ok(ItemKind::RelicOrCharm { completed_level })
+            let is_charm = reader.read_i32()? == 1;
+            Ok(ItemKind::RelicOrCharm {
+                completed_level,
+                is_charm,
+            })
         }
         6 => Ok(ItemKind::Quest),
         _ => Err(CacheError::Corrupt),

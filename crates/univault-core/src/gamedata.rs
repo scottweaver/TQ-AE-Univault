@@ -101,6 +101,11 @@ impl GameData {
         self.arz.record(id)
     }
 
+    /// Raw localization lookup for the display engine.
+    pub(crate) fn tag_text(&self, tag: &str) -> Option<&str> {
+        self.text.get(tag)
+    }
+
     pub fn record_ids(&self) -> impl Iterator<Item = &RecordId> {
         self.arz.record_ids()
     }
@@ -156,6 +161,7 @@ impl GameData {
     /// freshness checks.
     #[must_use]
     pub fn build_cache(&self, stamps: Vec<crate::cache::SourceStamp>) -> crate::cache::GameCache {
+        let renderer = crate::stats::Renderer { data: self };
         let mut entries = std::collections::HashMap::new();
         for id in self.arz.record_ids() {
             let Some(Ok(record)) = self.arz.record(id) else {
@@ -184,11 +190,16 @@ impl GameData {
                     footprint,
                     classification: crate::style::Classification::of(&record),
                     kind: crate::style::ItemKind::of(&record),
+                    stats: Some(renderer.stat_block(&record)),
                     icon,
                 },
             );
         }
-        crate::cache::GameCache::from_entries(stamps, entries)
+        crate::cache::GameCache::from_entries(
+            stamps,
+            crate::stats::capture_runtime_labels(self),
+            entries,
+        )
     }
 
     /// Display name for an item: localized prefix + base + suffix.

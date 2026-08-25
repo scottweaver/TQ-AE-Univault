@@ -55,6 +55,32 @@ pub struct Rgb {
     pub b: u8,
 }
 
+/// The palette color of one of the game's `{^X}` color-tag letters —
+/// `TQVaultAE`'s `TQColorHelper.ColorMap`.
+#[must_use]
+pub fn palette_color(tag: char) -> Rgb {
+    let rgb = |r, g, b| Rgb { r, g, b };
+    match tag.to_ascii_uppercase() {
+        'A' => rgb(0, 255, 255),
+        'B' => rgb(0, 163, 255),
+        'C' => rgb(224, 255, 255),
+        'D' => rgb(153, 153, 153),
+        'F' => rgb(255, 0, 255),
+        'G' => rgb(64, 255, 64),
+        'I' => rgb(75, 0, 130),
+        'K' => rgb(195, 176, 145),
+        'L' => rgb(145, 203, 0),
+        'M' => rgb(128, 0, 0),
+        'O' => rgb(255, 173, 0),
+        'P' => rgb(217, 5, 255),
+        'R' => rgb(255, 0, 0),
+        'S' => rgb(224, 224, 224),
+        'T' => rgb(0, 255, 209),
+        'Y' => rgb(255, 245, 43),
+        _ => rgb(255, 255, 255),
+    }
+}
+
 /// The palette color a style renders in — `TQVaultAE`'s
 /// `ItemStyleExtension.TQColor` composed with its `ColorMap` values.
 #[must_use]
@@ -106,7 +132,10 @@ pub(crate) enum ItemKind {
     Formula,
     Scroll,
     Potion,
-    RelicOrCharm { completed_level: Option<i32> },
+    RelicOrCharm {
+        completed_level: Option<i32>,
+        is_charm: bool,
+    },
     Quest,
 }
 
@@ -127,6 +156,7 @@ impl ItemKind {
         } else if class("ItemRelic") || class("ItemCharm") {
             Self::RelicOrCharm {
                 completed_level: record.integer("completedRelicLevel"),
+                is_charm: class("ItemCharm"),
             }
         } else if class("QuestItem")
             || record
@@ -156,6 +186,7 @@ fn kind_from_path(normalized: &str) -> ItemKind {
     } else if charm || contains("RELICS") {
         ItemKind::RelicOrCharm {
             completed_level: None,
+            is_charm: charm,
         }
     } else if contains("QUEST") {
         ItemKind::Quest
@@ -232,7 +263,9 @@ pub fn relic_shards(db: Option<&GameCache>, item: &Item) -> Option<RelicShards> 
         needed: db
             .and_then(|db| db.entry(&item.base))
             .and_then(|entry| match entry.kind {
-                ItemKind::RelicOrCharm { completed_level } => completed_level,
+                ItemKind::RelicOrCharm {
+                    completed_level, ..
+                } => completed_level,
                 ItemKind::Gear
                 | ItemKind::Artifact
                 | ItemKind::Formula

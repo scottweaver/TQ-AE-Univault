@@ -12,6 +12,7 @@ pub mod grid;
 pub mod platform;
 pub mod reader;
 pub mod stash;
+pub mod stats;
 pub mod style;
 pub mod tex;
 pub mod text;

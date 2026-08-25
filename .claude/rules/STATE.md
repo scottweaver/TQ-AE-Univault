@@ -28,7 +28,7 @@ only). No issue tracker is bound yet (deliberately deferred).
 | Branch | Purpose | Status |
 |---|---|---|
 | `main` | trunk | read stack + transfers + grid rendering merged; all gates green |
-| `feat/item-hover-details` | rarity-colored hover tooltips | implemented + gated; awaiting user visual check + merge |
+| `feat/item-hover-details` | full item tooltips: rarity colors + ported stats engine | implemented + real-data validated; awaiting user visual check + merge |
 
 ## Next up
 
@@ -58,6 +58,25 @@ transferred-back item in-game and open our vault JSON in TQVaultAE.
 
 ## Most recent meaningful progress
 
+- **2026-08-25 — Full item statistics in tooltips: the attribute
+  engine lands.** User-directed follow-up to the rarity tooltip: a
+  full-fidelity port of TQVaultAE's display engine (~5,900 reference
+  lines studied; `ItemAttributeProvider` dictionary,
+  `ConvertOffenseAttributesToString`, requirements incl. the
+  itemcost.dbr equation evaluator, granted skills/pets, sets,
+  formulae, racial bonuses, global XOR chance groups). Architecture
+  per design dialog: stats pre-render once at import into per-record
+  line blocks in the cache (`UVC3`; 50→56 MB, 8s import);
+  `stats::item_details` assembles per-item tooltips at display time
+  (relic shard slots, max-merged requirements + equations with
+  totalAttCount). Real-data gate: 80 items across the user's save
+  tree render with zero unresolved tags — set lists, XOR chance
+  groups, flavor text (via Info's per-kind `itemText`/`itemStyleTag`
+  dispatch) all correct. New `tooltips`/`dump`/`dumptag` examples
+  are the validation harness. 115 tests. Risk: granted-skill and
+  socketed-relic sections are unit-tested but absent from the real
+  saves swept; `attributeScalePercent` deliberately stays
+  record-local (deviation noted in `stats::render` docs).
 - **2026-08-25 — Rarity-colored item tooltips.** New core `style`
   module ports TQVaultAE's `Item.ItemStyle` decision order and the
   game's exact text-palette RGB values (MIT refs fetched from the
@@ -178,16 +197,7 @@ transferred-back item in-game and open our vault JSON in TQVaultAE.
   proven against reality. Risk: `description` on quest items is
   flavor text, not a name — the naming layer needs per-type variable
   selection.
-- **2026-08-24 — ARZ database reader (`feat/arz-reader`).** Core
-  `arz` module: header/string-table/record-index parse, lazy per-
-  record zlib decompression (`flate2` enters as planned), typed
-  variables (int/float/string/bool incl. arrays), record lookup via
-  TQVaultAE's normalization (uppercase, `/`→`\`). Port fixed a
-  survey error: record-table entries are variable-length; 24 is the
-  payload base offset. 31 tests green. Why: unblocks proper item
-  names/descriptions and vault grid sizes. Risk: not yet run against
-  a real `database.arz` — needs a game install; ARC text reader
-  still missing before names show in the GUI.
+
 ## Blocked / waiting
 
 - *(nothing)*
