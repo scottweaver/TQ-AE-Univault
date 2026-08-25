@@ -93,9 +93,11 @@ eyes-only reference, implementation independent.
   incl. item/artifact summons — and the x3 mod's global 30% XP cut
   (`* 0.7` wrapper on gameengine.dbr `experienceEquation`, found
   with the new `moddiff` example) reverted to vanilla via a
-  variable-level revert rule. Risk: in-game acceptance pending
-  (select the mod in Play Custom Quest); record-table ordering
-  assumptions unverified against the engine's loader.
+  variable-level revert rule. In-game acceptance STARTED
+  2026-08-25: the engine loads the composed database — zero summon
+  cooldowns verified in play, which also clears the record-table
+  ordering worry. Remaining spot checks: target caps ×3, Earth
+  Enchantment radius, vanilla XP.
 
 - **2026-08-25 — Mastery skill-tree export for AI theorycrafting.**
   PR #2 (rotation + respec) merged. New `skilltree` example distills
