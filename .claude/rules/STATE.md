@@ -28,7 +28,7 @@ only). No issue tracker is bound yet (deliberately deferred).
 | Branch | Purpose | Status |
 |---|---|---|
 | `main` | trunk | read stack + transfers + grids + full item tooltips merged; pushed to the new GitHub origin |
-| `feat/backup-rotation` | cap save backups at 5 newest per file | PR open |
+| `feat/backup-rotation` | backup rotation (5 newest per file) + respec buttons | PR #2 open |
 
 ## Next up
 
@@ -65,6 +65,29 @@ eyes-only reference, implementation independent.
    search — would be additive, vault files stay the source of truth.
 
 ## Most recent meaningful progress
+
+- **2026-08-25 — Backup rotation + full respec.** Two user-requested
+  features before drag-and-drop. Rotation: after each synced backup
+  the oldest `univault-bak` siblings beyond 5 are pruned per file;
+  new backup names floor above the newest existing so rotation
+  (which ages by name) can never eat the newest. Respec: new core
+  `respec` module — attribute reset (five `temp` floats after
+  `skillPoints`, refund from deltas vs 50/50/50/300/300 at
+  4/4/4/40/40 per point) and skill/mastery reset (skill-list splice
+  keeping Default/AllMasteries/quest skills, `playerClassTag`
+  cleared to fresh-character empty, hotbar slots of removed skills
+  emptied to storedType -1, weapon-set selections zeroed, refund
+  into `skillPoints`). Layout mapped from TQVaultAE's MIT
+  TQSaveFilesExplorer + probes of real saves (new `chrprobe`
+  example); `tqrespec` eyes-only. GUI: two buttons on the character
+  pane behind a confirm modal showing the previewed refund; applies
+  to the pane's baseline bytes, Save still explicit +
+  backup-first. Read-only dry run (`respecdry` example) across all
+  6 real saves: previews match hand-computed spend exactly (16 attr
+  / 25 skill pts, 7 skills on Pally Don), reparse identical
+  items/equipment/money, second pass refunds zero. 144 tests.
+  Risk: GUI modal visually unverified; in-game acceptance (load a
+  respecced save, re-pick masteries) still pending.
 
 - **2026-08-25 — GitHub repo + CI + test-coverage push.** The user
   created the GitHub remote and `main` is pushed. New CI workflow:
@@ -210,19 +233,6 @@ eyes-only reference, implementation independent.
   path is all that separates us from working transfers. Risk: the
   real stashes were empty; a stash with items has only synthetic
   coverage until the user stashes something in-game.
-- **2026-08-24 — Name resolution + GUI wiring; items have real
-  names.** `gamedata` module combines ARZ + text: per-type name-tag
-  dispatch ported from TQVaultAE's `Info.AssignVariableNames`
-  (gear → `itemNameTag`, affixes → `lootRandomizerName`,
-  relics/quest/artifacts → `description`), expansion-ordered text
-  loading, color-code stripping (`{^l}`), affix+base+suffix
-  assembly with stem fallback. GUI takes `--game <dir>`, loads the
-  DB once, and precomputes display rows (no per-frame record
-  decompression). Real-install smoke: 18,783 names resolved
-  (up from 11,006 description-only), clean output. 53 tests. Why:
-  the item-DB feature the user asked for is live end-to-end. Risk:
-  quality/style tags ("Ancient", "Fine") not yet part of names;
-  formula items show the generic formula name.
 
 ## Blocked / waiting
 
