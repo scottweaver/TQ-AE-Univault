@@ -45,18 +45,20 @@ constraint change. The entire read stack is done and validated
 against the user's real install + save tree (mounted; path in agent
 memory). Sequence:
 
-1. User acceptance: run a real transfer (character/stash → vault →
-   back) against a copy of the save tree and confirm in-game and in
-   TQVaultAE. First real disk writes happen here.
-2. Real item footprints: a TEX-header reader for `Resources/*.arc`
+User acceptance PASSED 2026-08-24: the user saved real transfer
+edits through the app on their network-mounted save tree ("It
+worked!"). Residual check whenever convenient: confirm a
+transferred-back item in-game and open our vault JSON in TQVaultAE.
+
+1. Real item footprints: a TEX-header reader for `Resources/*.arc`
    bitmaps so placement stops using conservative upper bounds
    (denser packing); TQVaultAE derives sizes from texture pixels ÷
    cell size.
-3. Grid rendering: draw sacks/tabs as actual grids with items at
+2. Grid rendering: draw sacks/tabs as actual grids with items at
    their cells (list view today), then drag-and-drop movement.
-4. Platform module in core: per-OS discovery of the game install and
+3. Platform module in core: per-OS discovery of the game install and
    save directories (removes the need for `--game`).
-5. Stretch (unscheduled): local SQLite index across vaults for
+4. Stretch (unscheduled): local SQLite index across vaults for
    search — would be additive, vault files stay the source of truth.
 
 ## Most recent meaningful progress
