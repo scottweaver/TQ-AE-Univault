@@ -23,6 +23,20 @@ impl CellRect {
     }
 }
 
+/// Whether `candidate` lies fully inside the grid and overlaps no
+/// occupied rectangle — the exact-position check behind drop
+/// previews and placements.
+#[must_use]
+pub fn fits(occupied: &[CellRect], candidate: CellRect, sack_width: i32, sack_height: i32) -> bool {
+    candidate.x >= 0
+        && candidate.y >= 0
+        && candidate.width > 0
+        && candidate.height > 0
+        && candidate.x + candidate.width <= sack_width
+        && candidate.y + candidate.height <= sack_height
+        && !occupied.iter().any(|rect| rect.overlaps(&candidate))
+}
+
 /// First free spot for an `item_width` × `item_height` footprint in a
 /// `sack_width` × `sack_height` grid, scanning columns left to right
 /// and each column top to bottom. `None` when nothing fits.
