@@ -75,7 +75,11 @@ memory). Sequence:
   in-place patch). 84 tests. Why: the product's reason to exist now
   functions end to end. Risk: no real disk write has happened yet —
   user acceptance on a save-tree copy is the next gate; placement
-  is sparse until real footprints land.
+  is sparse until real footprints land. First acceptance attempt
+  found and fixed a real-world snag: macOS `sync_all` (F_FULLFSYNC)
+  is rejected by SMB mounts ("os error 45") — the writer now
+  degrades to close-flush on "unsupported", validated by running the
+  safe-write tests with TMPDIR on the user's network volume.
 - **2026-08-24 — Splice write path lands, byte-identity proven on
   real files.** `writer` module (1252 encoding), `chr::
   replace_inventory` and `stash::replace_items` rebuild only the

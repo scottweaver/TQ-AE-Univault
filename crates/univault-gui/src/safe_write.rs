@@ -14,15 +14,35 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub fn backup_first_write(path: &Path, bytes: &[u8]) -> io::Result<Option<PathBuf>> {
     let backup = if path.exists() {
         let backup = fresh_backup_path(path);
-        fs::copy(path, &backup)?;
-        File::open(&backup)?.sync_all()?;
+        fs::copy(path, &backup).map_err(|error| step("copying backup", &error))?;
+        best_effort_sync(&backup).map_err(|error| step("syncing backup", &error))?;
         Some(backup)
     } else {
         None
     };
-    fs::write(path, bytes)?;
-    File::open(path)?.sync_all()?;
+    fs::write(path, bytes).map_err(|error| step("writing file", &error))?;
+    best_effort_sync(path).map_err(|error| step("syncing file", &error))?;
     Ok(backup)
+}
+
+fn step(what: &str, error: &io::Error) -> io::Error {
+    io::Error::new(error.kind(), format!("{what}: {error}"))
+}
+
+/// Flush-to-disk, degrading gracefully: macOS `sync_all` issues
+/// `F_FULLFSYNC`, which network filesystems (SMB — "os error 45")
+/// reject. There the close-flush is the strongest guarantee
+/// available, so "unsupported" is not an error.
+fn best_effort_sync(path: &Path) -> io::Result<()> {
+    match File::open(path)?.sync_all() {
+        Ok(()) => Ok(()),
+        Err(error)
+            if error.kind() == io::ErrorKind::Unsupported || error.raw_os_error() == Some(45) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn fresh_backup_path(path: &Path) -> PathBuf {
