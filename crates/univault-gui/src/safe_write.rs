@@ -32,9 +32,10 @@ fn step(what: &str, error: &io::Error) -> io::Error {
 /// Flush-to-disk, degrading gracefully: macOS `sync_all` issues
 /// `F_FULLFSYNC`, which network filesystems (SMB — "os error 45")
 /// reject. There the close-flush is the strongest guarantee
-/// available, so "unsupported" is not an error.
+/// available, so "unsupported" is not an error. The handle must be
+/// writable: Windows' `FlushFileBuffers` denies read-only handles.
 fn best_effort_sync(path: &Path) -> io::Result<()> {
-    match File::open(path)?.sync_all() {
+    match File::options().write(true).open(path)?.sync_all() {
         Ok(()) => Ok(()),
         Err(error)
             if error.kind() == io::ErrorKind::Unsupported || error.raw_os_error() == Some(45) =>
