@@ -22,9 +22,15 @@ use univault_core::vault::Vault;
 
 fn main() -> eframe::Result {
     let args = CliArgs::parse();
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1280.0, 900.0])
+            .with_min_inner_size([800.0, 600.0]),
+        ..Default::default()
+    };
     eframe::run_native(
         "TQ UniVault",
-        eframe::NativeOptions::default(),
+        options,
         Box::new(move |_cc| Ok(Box::new(App::new(args)))),
     )
 }
@@ -474,6 +480,17 @@ enum PaneAction {
 
 impl App {
     fn show_header(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label("Zoom:");
+            let mut zoom = ui.ctx().zoom_factor();
+            if ui
+                .add(egui::Slider::new(&mut zoom, 0.75..=2.5).step_by(0.05))
+                .changed()
+            {
+                ui.ctx().set_zoom_factor(zoom);
+            }
+            ui.weak("(⌘+ / ⌘− / ⌘0 work too)");
+        });
         match &self.game {
             GameStatus::Loaded(_) => {}
             GameStatus::Absent => {
@@ -532,8 +549,8 @@ impl App {
     }
 }
 
-/// On-screen size of one grid cell.
-const CELL_SIZE: f32 = 24.0;
+/// On-screen size of one grid cell — the textures' native 32 pixels.
+const CELL_SIZE: f32 = 32.0;
 
 // Grid coordinates are small integers; f32 represents them exactly.
 #[allow(clippy::cast_precision_loss)]
