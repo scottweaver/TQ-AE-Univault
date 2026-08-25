@@ -7,6 +7,26 @@ code) and never "how should we work" (that's METHODOLOGIES.md).
 
 Last updated: 2026-08-25
 
+## Session handoff
+<!-- transient; owned by the checkpoint skill -->
+
+**Resume here:** PR #5 (drag-and-drop, `feat/drag-and-drop`) — CI is
+green; the user's drag feel-test is the acceptance gate; merge +
+post-merge cleanup once it passes.
+
+- PR #5 CI green at checkpoint time (rustfmt, clippy+test on
+  ubuntu/macos/windows, coverage). All gates green locally (150 tests).
+- PR #5 carries the routine STATE.md refresh (branch table, drag-and-drop
+  progress entry); expect a trivial STATE.md rebase when both PRs are in.
+- Post-merge cleanup debt: merged remote branches feat/ci-and-test-coverage,
+  feat/backup-rotation, feat/skill-export, feat/mod-forge still on origin —
+  deletion awaits user confirmation.
+- User in-game checks outstanding (mod acceptance): vanilla XP restored
+  (even-level trash mob on Normal ≈ level×15); target caps ×3 in dense
+  packs. Older residual: open one of our vault JSONs in TQVaultAE.
+- PROJECT.md bootstrap still deferred (user re-confirmed 2026-08-25);
+  answers saved in agent memory (bootstrap-project-deferred).
+
 ## Active workstream
 
 tq-univault: a platform-independent (Windows/macOS/Linux)
