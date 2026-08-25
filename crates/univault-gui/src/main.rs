@@ -175,9 +175,74 @@ impl Caches {
     }
 }
 
+/// Recently opened game files, persisted one path per line under the
+/// platform config directory.
+struct Recents {
+    file: Option<PathBuf>,
+    entries: Vec<PathBuf>,
+}
+
+const RECENTS_CAP: usize = 10;
+
+impl Recents {
+    fn load() -> Self {
+        let file = univault_core::platform::config_dir().map(|dir| dir.join("recent-files.txt"));
+        let entries = file
+            .as_deref()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .map(|text| {
+                text.lines()
+                    .map(PathBuf::from)
+                    .filter(|path| path.exists())
+                    .take(RECENTS_CAP)
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self { file, entries }
+    }
+
+    fn remember(&mut self, path: &Path) {
+        self.entries.retain(|existing| existing != path);
+        self.entries.insert(0, path.to_path_buf());
+        self.entries.truncate(RECENTS_CAP);
+        if let Some(file) = &self.file {
+            if let Some(parent) = file.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let text = self
+                .entries
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let _ = std::fs::write(file, text);
+        }
+    }
+
+    /// "Pally Don" for `.../_Pally Don/Player.chr`, otherwise
+    /// "folder — file".
+    fn label(path: &Path) -> String {
+        let folder = path
+            .parent()
+            .and_then(std::path::Path::file_name)
+            .map(|name| name.to_string_lossy().trim_start_matches('_').to_string())
+            .unwrap_or_default();
+        let file_name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |name| name.to_string_lossy().to_string(),
+        );
+        if file_name.eq_ignore_ascii_case("Player.chr") {
+            folder
+        } else {
+            format!("{folder} — {file_name}")
+        }
+    }
+}
+
 struct App {
     game: GameStatus,
     caches: Caches,
+    recents: Recents,
     left: Option<FilePane>,
     right: Option<VaultPane>,
     status: Option<Result<String, String>>,
@@ -195,6 +260,7 @@ impl App {
         let mut app = Self {
             game,
             caches: Caches::default(),
+            recents: Recents::load(),
             left: None,
             right: None,
             status: None,
@@ -237,6 +303,7 @@ impl App {
             dirty: false,
             selected: None,
         });
+        self.recents.remember(path);
         Ok(format!("opened {}", path.display()))
     }
 
@@ -480,6 +547,33 @@ enum PaneAction {
 
 impl App {
     fn show_header(&mut self, ui: &mut egui::Ui) {
+        let mut requested: Option<PathBuf> = None;
+        ui.horizontal(|ui| {
+            if ui.button("Open character…").clicked() {
+                requested = pick_file(
+                    "Character / stash",
+                    &["chr", "dxb", "dxg"],
+                    self.dialog_start_dir(),
+                );
+            }
+            if ui.button("Open vault…").clicked() {
+                requested = pick_file("Vault", &["json", "vault"], self.dialog_start_dir());
+            }
+            ui.menu_button("Recent", |ui| {
+                if self.recents.entries.is_empty() {
+                    ui.weak("nothing yet");
+                }
+                for path in &self.recents.entries {
+                    if ui.button(Recents::label(path)).clicked() {
+                        requested = Some(path.clone());
+                        ui.close();
+                    }
+                }
+            });
+        });
+        if let Some(path) = requested {
+            self.status = Some(self.open(&path));
+        }
         ui.horizontal(|ui| {
             ui.label("Zoom:");
             let mut zoom = ui.ctx().zoom_factor();
@@ -519,6 +613,15 @@ impl App {
             }
             None => {}
         }
+    }
+
+    /// Where file dialogs start: near what the user last touched.
+    fn dialog_start_dir(&self) -> Option<PathBuf> {
+        self.left
+            .as_ref()
+            .map(|pane| pane.path.clone())
+            .or_else(|| self.recents.entries.first().cloned())
+            .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
     }
 
     fn show_panes(&mut self, ui: &mut egui::Ui) -> Option<PaneAction> {
@@ -820,6 +923,14 @@ fn show_vault_pane(
             }
         });
     action
+}
+
+fn pick_file(description: &str, extensions: &[&str], start: Option<PathBuf>) -> Option<PathBuf> {
+    let mut dialog = rfd::FileDialog::new().add_filter(description, extensions);
+    if let Some(start) = start {
+        dialog = dialog.set_directory(start);
+    }
+    dialog.pick_file()
 }
 
 fn first_dropped_path(ctx: &egui::Context) -> Option<PathBuf> {
