@@ -6,6 +6,7 @@
 pub mod arc;
 pub mod arz;
 pub mod chr;
+pub mod gamedata;
 pub mod reader;
 pub mod text;
 pub mod vault;

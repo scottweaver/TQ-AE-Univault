@@ -1,15 +1,13 @@
-//! Real-data smoke check for the ARZ/ARC/text pipeline.
+//! Real-data smoke check for the ARZ/ARC/text/naming pipeline.
 //!
 //! Usage: `cargo run --release -p univault-core --example smoke -- "<TQ AE install dir>"`
 //!
-//! Parses `Database/database.arz`, decompresses **every** record,
-//! loads `Text/Text_EN.arc` into a tag table, and resolves item names
-//! end to end. Read-only against the install; exits non-zero on any
-//! structural failure.
+//! Builds the combined [`GameData`] from `Database/database.arz` and
+//! `Text/Text_EN.arc`, decompresses **every** record, and resolves
+//! localized names through the per-type dispatch. Read-only against
+//! the install; exits non-zero on any structural failure.
 
-use univault_core::arc::ArcFile;
-use univault_core::arz::ArzFile;
-use univault_core::text::TextDb;
+use univault_core::gamedata::GameData;
 
 fn main() {
     let game_dir = std::env::args()
@@ -19,74 +17,61 @@ fn main() {
 
     let database_bytes =
         std::fs::read(game.join("Database/database.arz")).expect("read database.arz");
-    println!("database.arz: {} bytes", database_bytes.len());
-    let arz = ArzFile::parse(database_bytes).expect("parse database.arz");
-    println!("database.arz: {} records indexed", arz.record_ids().count());
-
     let archive_bytes = std::fs::read(game.join("Text/Text_EN.arc")).expect("read Text_EN.arc");
-    let arc = ArcFile::parse(archive_bytes).expect("parse Text_EN.arc");
-    let mut names: Vec<String> = arc.file_names().map(str::to_string).collect();
-    names.sort_unstable();
-    println!("Text_EN.arc: {} files: {names:?}", names.len());
+    println!(
+        "database.arz: {} bytes, Text_EN.arc: {} bytes",
+        database_bytes.len(),
+        archive_bytes.len()
+    );
+    let db = GameData::from_bytes(database_bytes, archive_bytes).expect("assemble game data");
 
-    let mut text = TextDb::new();
-    for name in &names {
-        if name.to_lowercase().ends_with(".txt") {
-            let bytes = arc.file(name).unwrap().expect("extract text file");
-            text.add_file(&bytes);
-        }
-    }
-    println!("text db: {} tags", text.len());
+    let ids: Vec<_> = db.record_ids().cloned().collect();
+    println!("{} records indexed", ids.len());
 
-    let ids: Vec<_> = arz.record_ids().cloned().collect();
     let mut record_errors = 0_usize;
     let mut resolved = 0_usize;
-    let mut examples: Vec<String> = Vec::new();
-    let mut dumped_one = false;
+    let mut gear_samples: Vec<String> = Vec::new();
+    let mut affix_samples: Vec<String> = Vec::new();
     for id in &ids {
-        match arz.record(id).expect("indexed id must resolve") {
-            Ok(record) => {
-                let is_gear = record.record_type.starts_with("Weapon")
-                    || record.record_type.starts_with("Armor");
-                if is_gear && !dumped_one {
-                    dumped_one = true;
-                    println!(
-                        "--- sample record {} [{}] ---",
-                        id.as_str(),
-                        record.record_type
-                    );
-                    let mut variables: Vec<String> = record
-                        .variables()
-                        .map(|variable| format!("  {} = {:?}", variable.name, variable.values))
-                        .collect();
-                    variables.sort_unstable();
-                    for line in variables.iter().take(30) {
-                        println!("{line}");
-                    }
-                }
-                if let Some(label) = record.string("description").and_then(|tag| text.get(tag)) {
-                    resolved += 1;
-                    if is_gear && examples.len() < 10 {
-                        examples.push(format!("  {} -> {label}", id.file_stem()));
-                    }
-                }
-            }
+        let record = match db.record(id).expect("indexed id must resolve") {
+            Ok(record) => record,
             Err(error) => {
                 record_errors += 1;
                 if record_errors <= 3 {
                     eprintln!("record error: {error}");
                 }
+                continue;
             }
+        };
+        let Some(name) = db.record_name(id) else {
+            continue;
+        };
+        resolved += 1;
+        let is_gear =
+            record.record_type.starts_with("Weapon") || record.record_type.starts_with("Armor");
+        if is_gear && gear_samples.len() < 8 {
+            gear_samples.push(format!(
+                "  {} [{}] -> {name}",
+                id.file_stem(),
+                record.record_type
+            ));
+        }
+        if record.record_type.starts_with("LootRandomizer") && affix_samples.len() < 8 {
+            affix_samples.push(format!("  {} -> {name}", id.file_stem()));
         }
     }
     println!(
-        "decompressed {} records: {} errors, {resolved} resolved to localized names",
-        ids.len(),
-        record_errors
+        "decompressed {} records: {record_errors} errors, {resolved} resolved to localized names",
+        ids.len()
     );
-    println!("sample names:");
-    for line in &examples {
+    println!("gear samples:");
+    for line in &gear_samples {
+        println!("{line}");
+    }
+    println!("affix samples:");
+    for line in &affix_samples {
         println!("{line}");
     }
     assert_eq!(record_errors, 0, "some records failed to decompress");
+    assert!(resolved > 10_000, "suspiciously few names resolved");
 }

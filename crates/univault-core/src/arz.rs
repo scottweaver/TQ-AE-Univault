@@ -339,100 +339,176 @@ pub(crate) fn normalize(path: &str) -> String {
     path.to_uppercase().replace('/', "\\")
 }
 
+/// Builds synthetic ARZ byte images so tests (here and in `gamedata`)
+/// can assemble records with chosen types and variables.
 #[cfg(test)]
-mod tests {
+pub(crate) mod fixture {
     use std::io::Write;
 
     use flate2::Compression;
     use flate2::write::ZlibEncoder;
 
+    use super::HEADER_SIZE;
+
+    #[derive(Default)]
+    pub(crate) struct ArzBuilder {
+        strings: Vec<String>,
+        records: Vec<(i32, String, Vec<u8>)>,
+    }
+
+    pub(crate) enum Values<'a> {
+        Ints(&'a [i32]),
+        Floats(&'a [f32]),
+        Strings(&'a [&'a str]),
+        Bools(&'a [bool]),
+    }
+
+    impl ArzBuilder {
+        pub(crate) fn intern(&mut self, value: &str) -> i32 {
+            let index = self
+                .strings
+                .iter()
+                .position(|existing| existing == value)
+                .unwrap_or_else(|| {
+                    self.strings.push(value.to_string());
+                    self.strings.len() - 1
+                });
+            i32::try_from(index).unwrap()
+        }
+
+        pub(crate) fn record(
+            &mut self,
+            id: &str,
+            record_type: &str,
+            variables: &[(&str, Values<'_>)],
+        ) {
+            let mut payload = Vec::new();
+            for (name, values) in variables {
+                let name_index = self.intern(name);
+                let (type_code, count): (i16, usize) = match values {
+                    Values::Ints(v) => (0, v.len()),
+                    Values::Floats(v) => (1, v.len()),
+                    Values::Strings(v) => (2, v.len()),
+                    Values::Bools(v) => (3, v.len()),
+                };
+                payload.extend_from_slice(&type_code.to_le_bytes());
+                payload.extend_from_slice(&i16::try_from(count).unwrap().to_le_bytes());
+                payload.extend_from_slice(&name_index.to_le_bytes());
+                match values {
+                    Values::Ints(v) => {
+                        for value in *v {
+                            payload.extend_from_slice(&value.to_le_bytes());
+                        }
+                    }
+                    Values::Floats(v) => {
+                        for value in *v {
+                            payload.extend_from_slice(&value.to_le_bytes());
+                        }
+                    }
+                    Values::Strings(v) => {
+                        for value in *v {
+                            let index = self.intern(value);
+                            payload.extend_from_slice(&index.to_le_bytes());
+                        }
+                    }
+                    Values::Bools(v) => {
+                        for value in *v {
+                            payload.extend_from_slice(&i32::from(*value).to_le_bytes());
+                        }
+                    }
+                }
+            }
+            self.record_raw(id, record_type, payload);
+        }
+
+        /// Adds a record with an arbitrary (possibly corrupt) payload.
+        pub(crate) fn record_raw(&mut self, id: &str, record_type: &str, payload: Vec<u8>) {
+            let id_index = self.intern(id);
+            self.records
+                .push((id_index, record_type.to_string(), payload));
+        }
+
+        pub(crate) fn build(self) -> Vec<u8> {
+            self.build_with_layout().0
+        }
+
+        /// Also returns the record-table start offset, for tests that
+        /// corrupt table bytes.
+        pub(crate) fn build_with_layout(self) -> (Vec<u8>, usize) {
+            fn push_i32(buf: &mut Vec<u8>, value: i32) {
+                buf.extend_from_slice(&value.to_le_bytes());
+            }
+            fn push_cstr(buf: &mut Vec<u8>, value: &str) {
+                push_i32(buf, i32::try_from(value.len()).unwrap());
+                buf.extend_from_slice(value.as_bytes());
+            }
+            fn zlib(payload: &[u8]) -> Vec<u8> {
+                let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+                encoder.write_all(payload).unwrap();
+                encoder.finish().unwrap()
+            }
+
+            let mut payloads = Vec::new();
+            let mut record_table = Vec::new();
+            let mut payload_offset = 0_usize;
+            for (id_index, record_type, payload) in &self.records {
+                let compressed = zlib(payload);
+                push_i32(&mut record_table, *id_index);
+                push_cstr(&mut record_table, record_type);
+                push_i32(&mut record_table, i32::try_from(payload_offset).unwrap());
+                push_i32(&mut record_table, i32::try_from(compressed.len()).unwrap());
+                push_i32(&mut record_table, 0);
+                push_i32(&mut record_table, 0);
+                payload_offset += compressed.len();
+                payloads.extend_from_slice(&compressed);
+            }
+
+            let mut string_table = Vec::new();
+            push_i32(
+                &mut string_table,
+                i32::try_from(self.strings.len()).unwrap(),
+            );
+            for string in &self.strings {
+                push_cstr(&mut string_table, string);
+            }
+
+            let record_table_start = HEADER_SIZE + payloads.len();
+            let string_table_start = record_table_start + record_table.len();
+            let mut file = Vec::new();
+            push_i32(&mut file, 2);
+            push_i32(&mut file, i32::try_from(record_table_start).unwrap());
+            push_i32(&mut file, i32::try_from(record_table.len()).unwrap());
+            push_i32(&mut file, i32::try_from(self.records.len()).unwrap());
+            push_i32(&mut file, i32::try_from(string_table_start).unwrap());
+            push_i32(&mut file, i32::try_from(string_table.len()).unwrap());
+            file.extend_from_slice(&payloads);
+            file.extend_from_slice(&record_table);
+            file.extend_from_slice(&string_table);
+            (file, record_table_start)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixture::{ArzBuilder, Values};
     use super::*;
 
     const SWORD_ID: &str = "records\\item\\equipmentweapon\\sword_01.dbr";
 
-    fn push_i32(buf: &mut Vec<u8>, value: i32) {
-        buf.extend_from_slice(&value.to_le_bytes());
-    }
-
-    fn push_i16(buf: &mut Vec<u8>, value: i16) {
-        buf.extend_from_slice(&value.to_le_bytes());
-    }
-
-    fn push_cstr(buf: &mut Vec<u8>, value: &str) {
-        push_i32(buf, i32::try_from(value.len()).unwrap());
-        buf.extend_from_slice(value.as_bytes());
-    }
-
-    fn zlib(payload: &[u8]) -> Vec<u8> {
-        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-        encoder.write_all(payload).unwrap();
-        encoder.finish().unwrap()
-    }
-
-    fn sword_payload() -> Vec<u8> {
-        let mut payload = Vec::new();
-        // itemLevel = 12
-        push_i16(&mut payload, 0);
-        push_i16(&mut payload, 1);
-        push_i32(&mut payload, 1);
-        push_i32(&mut payload, 12);
-        // attackSpeed = [1.5, 2.0]
-        push_i16(&mut payload, 1);
-        push_i16(&mut payload, 2);
-        push_i32(&mut payload, 2);
-        push_i32(&mut payload, 1.5_f32.to_bits().cast_signed());
-        push_i32(&mut payload, 2.0_f32.to_bits().cast_signed());
-        // description = string 4 (stored with padding, trimmed on read)
-        push_i16(&mut payload, 2);
-        push_i16(&mut payload, 1);
-        push_i32(&mut payload, 3);
-        push_i32(&mut payload, 4);
-        // active = true
-        push_i16(&mut payload, 3);
-        push_i16(&mut payload, 1);
-        push_i32(&mut payload, 5);
-        push_i32(&mut payload, 1);
-        payload
-    }
-
-    fn arz_file(payload: &[u8]) -> Vec<u8> {
-        let strings = [
+    fn sword_arz() -> Vec<u8> {
+        let mut builder = ArzBuilder::default();
+        builder.record(
             SWORD_ID,
-            "itemLevel",
-            "attackSpeed",
-            "description",
-            "  tagSwordName01 ",
-            "active",
-        ];
-        let compressed = zlib(payload);
-
-        let mut record_table = Vec::new();
-        push_i32(&mut record_table, 0);
-        push_cstr(&mut record_table, "WeaponMelee_Sword");
-        push_i32(&mut record_table, 0);
-        push_i32(&mut record_table, i32::try_from(compressed.len()).unwrap());
-        push_i32(&mut record_table, 0);
-        push_i32(&mut record_table, 0);
-
-        let mut string_table = Vec::new();
-        push_i32(&mut string_table, i32::try_from(strings.len()).unwrap());
-        for string in strings {
-            push_cstr(&mut string_table, string);
-        }
-
-        let record_table_start = HEADER_SIZE + compressed.len();
-        let string_table_start = record_table_start + record_table.len();
-        let mut file = Vec::new();
-        push_i32(&mut file, 2);
-        push_i32(&mut file, i32::try_from(record_table_start).unwrap());
-        push_i32(&mut file, i32::try_from(record_table.len()).unwrap());
-        push_i32(&mut file, 1);
-        push_i32(&mut file, i32::try_from(string_table_start).unwrap());
-        push_i32(&mut file, i32::try_from(string_table.len()).unwrap());
-        file.extend_from_slice(&compressed);
-        file.extend_from_slice(&record_table);
-        file.extend_from_slice(&string_table);
-        file
+            "WeaponMelee_Sword",
+            &[
+                ("itemLevel", Values::Ints(&[12])),
+                ("attackSpeed", Values::Floats(&[1.5, 2.0])),
+                ("description", Values::Strings(&["  tagSwordName01 "])),
+                ("active", Values::Bools(&[true])),
+            ],
+        );
+        builder.build()
     }
 
     fn record_id(raw: &str) -> RecordId {
@@ -441,7 +517,7 @@ mod tests {
 
     #[test]
     fn lookup_ignores_case_and_slash_direction() {
-        let arz = ArzFile::parse(arz_file(&sword_payload())).unwrap();
+        let arz = ArzFile::parse(sword_arz()).unwrap();
         let record = arz
             .record(&record_id("RECORDS/ITEM/EQUIPMENTWEAPON/SWORD_01.DBR"))
             .unwrap()
@@ -452,7 +528,7 @@ mod tests {
 
     #[test]
     fn decodes_all_four_value_types() {
-        let arz = ArzFile::parse(arz_file(&sword_payload())).unwrap();
+        let arz = ArzFile::parse(sword_arz()).unwrap();
         let record = arz.record(&record_id(SWORD_ID)).unwrap().unwrap();
         assert_eq!(record.integer("itemLevel"), Some(12));
         assert_eq!(
@@ -468,7 +544,7 @@ mod tests {
 
     #[test]
     fn typed_accessors_refuse_other_types() {
-        let arz = ArzFile::parse(arz_file(&sword_payload())).unwrap();
+        let arz = ArzFile::parse(sword_arz()).unwrap();
         let record = arz.record(&record_id(SWORD_ID)).unwrap().unwrap();
         assert_eq!(record.string("itemLevel"), None);
         assert_eq!(record.integer("description"), None);
@@ -476,25 +552,28 @@ mod tests {
 
     #[test]
     fn unknown_record_is_none() {
-        let arz = ArzFile::parse(arz_file(&sword_payload())).unwrap();
+        let arz = ArzFile::parse(sword_arz()).unwrap();
         assert!(arz.record(&record_id("records\\nothing.dbr")).is_none());
     }
 
     #[test]
     fn record_ids_yields_raw_ids() {
-        let arz = ArzFile::parse(arz_file(&sword_payload())).unwrap();
+        let arz = ArzFile::parse(sword_arz()).unwrap();
         let ids: Vec<&str> = arz.record_ids().map(RecordId::as_str).collect();
         assert_eq!(ids, vec![SWORD_ID]);
     }
 
     #[test]
     fn bad_data_type_is_reported_with_variable_name() {
+        let mut builder = ArzBuilder::default();
+        let name_index = builder.intern("brokenVar");
         let mut payload = Vec::new();
-        push_i16(&mut payload, 7);
-        push_i16(&mut payload, 1);
-        push_i32(&mut payload, 1);
-        push_i32(&mut payload, 0);
-        let arz = ArzFile::parse(arz_file(&payload)).unwrap();
+        payload.extend_from_slice(&7_i16.to_le_bytes());
+        payload.extend_from_slice(&1_i16.to_le_bytes());
+        payload.extend_from_slice(&name_index.to_le_bytes());
+        payload.extend_from_slice(&0_i32.to_le_bytes());
+        builder.record_raw(SWORD_ID, "WeaponMelee_Sword", payload);
+        let arz = ArzFile::parse(builder.build()).unwrap();
         assert!(matches!(
             arz.record(&record_id(SWORD_ID)).unwrap(),
             Err(ArzError::InvalidDataType { data_type: 7, .. })
@@ -503,7 +582,9 @@ mod tests {
 
     #[test]
     fn unaligned_payload_is_rejected() {
-        let arz = ArzFile::parse(arz_file(&[0, 1, 2])).unwrap();
+        let mut builder = ArzBuilder::default();
+        builder.record_raw(SWORD_ID, "WeaponMelee_Sword", vec![0, 1, 2]);
+        let arz = ArzFile::parse(builder.build()).unwrap();
         assert!(matches!(
             arz.record(&record_id(SWORD_ID)).unwrap(),
             Err(ArzError::UnalignedPayload { len: 3, .. })
@@ -512,10 +593,13 @@ mod tests {
 
     #[test]
     fn string_index_out_of_range_fails_at_parse() {
-        let mut file = arz_file(&sword_payload());
-        // Corrupt the record table's id string index (first i32 after
-        // the header-sized prefix + compressed payload).
-        let record_table_start = HEADER_SIZE + zlib(&sword_payload()).len();
+        let mut builder = ArzBuilder::default();
+        builder.record(
+            SWORD_ID,
+            "WeaponMelee_Sword",
+            &[("itemLevel", Values::Ints(&[1]))],
+        );
+        let (mut file, record_table_start) = builder.build_with_layout();
         file[record_table_start..record_table_start + 4].copy_from_slice(&99_i32.to_le_bytes());
         assert!(matches!(
             ArzFile::parse(file),

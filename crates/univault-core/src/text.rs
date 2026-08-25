@@ -42,7 +42,9 @@ impl TextDb {
             if tag.is_empty() {
                 continue;
             }
-            let label = clean_label(label.trim()).trim().to_string();
+            let label = strip_color_tags(clean_label(label.trim()))
+                .trim()
+                .to_string();
             self.entries.insert(tag, label);
         }
     }
@@ -104,6 +106,37 @@ fn clean_label(label: &str) -> &str {
     label
 }
 
+/// Removes the game's inline color codes — `{^X}` and bare `^X` —
+/// matching `TQVaultAE`'s `RegExTQTag` / `RemoveAllTQTags`.
+fn strip_color_tags(label: &str) -> String {
+    let mut out = String::with_capacity(label.len());
+    let mut chars = label.chars().peekable();
+    while let Some(current) = chars.next() {
+        match current {
+            '{' => {
+                let mut lookahead = chars.clone();
+                let is_tag = lookahead.next() == Some('^')
+                    && lookahead.next().is_some_and(is_word)
+                    && lookahead.next() == Some('}');
+                if is_tag {
+                    chars = lookahead;
+                } else {
+                    out.push(current);
+                }
+            }
+            '^' if chars.peek().copied().is_some_and(is_word) => {
+                chars.next();
+            }
+            _ => out.push(current),
+        }
+    }
+    out
+}
+
+fn is_word(character: char) -> bool {
+    character.is_alphanumeric() || character == '_'
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,6 +194,17 @@ mod tests {
         let mut db = TextDb::new();
         db.add_file(&utf16_file("tagEq=first=second\n"));
         assert_eq!(db.get("tagEq"), Some("first"));
+    }
+
+    #[test]
+    fn color_codes_are_stripped_from_labels() {
+        let mut db = TextDb::new();
+        db.add_file(&utf16_file(
+            "tagA={^l}Redfist Battle Guards\ntagB=Ink ^rRed^_ Mix\ntagC={not a tag}\n",
+        ));
+        assert_eq!(db.get("tagA"), Some("Redfist Battle Guards"));
+        assert_eq!(db.get("tagB"), Some("Ink Red Mix"));
+        assert_eq!(db.get("tagC"), Some("{not a tag}"));
     }
 
     #[test]

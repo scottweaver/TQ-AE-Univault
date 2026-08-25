@@ -35,7 +35,7 @@ deferred).
 | `main` | trunk | chr read slice merged; all gates green |
 | `feat/chr-read-slice` | chr parser + read-only inventory GUI | merged into `main`; local deletion pending user confirmation |
 | `feat/vault-files` | vault JSON read/write + legacy import + GUI viewing | done; ready to merge |
-| `feat/arz-reader` | game database readers (ARZ + ARC + text) | validated against real install; name-resolution layer + GUI wiring pending |
+| `feat/arz-reader` | game database readers + name resolution + GUI wiring | done; real-install validated; ready to merge with vault branch |
 
 ## Next up
 
@@ -50,23 +50,34 @@ User re-prioritized 2026-08-24: the game item database comes before
 stash/write work, both for proper item names/descriptions and because
 vault `width`/`height` needs it.
 
-1. Name-resolution layer (item base/affix record → name tag →
-   localized text; note quest items' `description` is flavor text —
-   check TQVaultAE's ItemProvider for the right per-type variables)
-   wired into the GUI, with a game-directory path (CLI arg or
-   setting; per-OS discovery is the platform-module task). ARZ/ARC/
-   text readers themselves are done and real-install-validated.
+1. Merge the stacked `feat/vault-files` + `feat/arz-reader` branches
+   to `main` (user has validated chr against a real save and the DB
+   pipeline against a real install; a real TQVaultAE-written vault
+   file remains untested — nice-to-have, not blocking).
 2. Transfer stash (`winsys.dxb`) parsing — the other item source.
 3. The write path: targeted-splice item-block re-encode for chr and
    stash plus the backup-first infrastructure, enabling actual
    vault ↔ character transfers (vault JSON writing already exists).
 4. Platform module in core: per-OS discovery of the game install and
-   save directories.
+   save directories (removes the need for `--game`).
 5. Stretch (unscheduled): local SQLite index across vaults for
    search — would be additive, vault files stay the source of truth.
 
 ## Most recent meaningful progress
 
+- **2026-08-24 — Name resolution + GUI wiring; items have real
+  names.** `gamedata` module combines ARZ + text: per-type name-tag
+  dispatch ported from TQVaultAE's `Info.AssignVariableNames`
+  (gear → `itemNameTag`, affixes → `lootRandomizerName`,
+  relics/quest/artifacts → `description`), expansion-ordered text
+  loading, color-code stripping (`{^l}`), affix+base+suffix
+  assembly with stem fallback. GUI takes `--game <dir>`, loads the
+  DB once, and precomputes display rows (no per-frame record
+  decompression). Real-install smoke: 18,783 names resolved
+  (up from 11,006 description-only), clean output. 53 tests. Why:
+  the item-DB feature the user asked for is live end-to-end. Risk:
+  quality/style tags ("Ancient", "Fine") not yet part of names;
+  formula items show the generic formula name.
 - **2026-08-24 — ARC + text readers; real-install validation
   passed.** `arc` module (part-table/directory/names parse, stored +
   multi-part zlib extraction) and `text` module (BOM-sniffed
