@@ -93,8 +93,29 @@ struct VaultPane {
 
 enum GameStatus {
     Absent,
+    Importing(ImportJob),
     Loaded(GameCache),
     Failed(String),
+}
+
+/// A game-data import running on a background thread; the window
+/// stays live and shows its progress. The thread finishes with
+/// `Done` or `Failed`.
+struct ImportJob {
+    receiver: std::sync::mpsc::Receiver<ImportEvent>,
+    progress: ImportProgress,
+}
+
+enum ImportEvent {
+    Progress(ImportProgress),
+    Done(Box<GameCache>),
+    Failed(String),
+}
+
+#[derive(Clone)]
+struct ImportProgress {
+    label: String,
+    fraction: Option<f32>,
 }
 
 /// Resolved display names, cached per record path — name resolution
@@ -263,22 +284,17 @@ struct App {
 impl App {
     fn new(args: CliArgs) -> Self {
         // --game forces a (re-)import; otherwise the local cache is
-        // the runtime database, imported automatically from the
-        // remembered game dir the first time.
+        // the runtime database, imported automatically (in the
+        // background) from the remembered game dir when it is
+        // missing or in an older format.
         let mut game_note = None;
-        let game = if let Some(dir) = args.game_dir.as_deref() {
-            match import_game_data(dir) {
-                Ok(cache) => GameStatus::Loaded(cache),
-                Err(message) => GameStatus::Failed(message),
-            }
+        let game = if let Some(dir) = args.game_dir.clone() {
+            GameStatus::Importing(start_import(dir))
         } else if let Some(cache) = load_cached_game_data() {
             game_note = staleness_warning(&cache);
             GameStatus::Loaded(cache)
         } else if let Some(dir) = stored_game_dir() {
-            match import_game_data(&dir) {
-                Ok(cache) => GameStatus::Loaded(cache),
-                Err(message) => GameStatus::Failed(message),
-            }
+            GameStatus::Importing(start_import(dir))
         } else {
             GameStatus::Absent
         };
@@ -383,7 +399,7 @@ impl App {
         let (container, index) = pane.selected.ok_or("select an item on the left")?;
         let db = match &self.game {
             GameStatus::Loaded(data) => Some(data),
-            GameStatus::Absent | GameStatus::Failed(_) => None,
+            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
         };
         let item = match &mut pane.file {
             GameFile::Character(character) => {
@@ -426,7 +442,7 @@ impl App {
         let (tab, index) = vault_pane.selected.ok_or("select an item in the vault")?;
         let db = match &self.game {
             GameStatus::Loaded(data) => Some(data),
-            GameStatus::Absent | GameStatus::Failed(_) => None,
+            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
         };
         let vault_item = transfer::take_from_vault(&mut vault_pane.vault, tab, index)
             .ok_or("selection is stale — pick the item again")?;
@@ -549,13 +565,43 @@ fn stamp_of(path: &Path) -> Option<SourceStamp> {
     })
 }
 
-/// One-time import: reads the game archives, distills the item cache,
-/// and persists it (plus the game dir for later refreshes) under the
-/// config directory.
-fn import_game_data(dir: &Path) -> Result<GameCache, String> {
+/// Kicks off the one-time import on a background thread: the game
+/// archives are read and distilled into the cache while the window
+/// stays responsive and shows progress.
+fn start_import(dir: PathBuf) -> ImportJob {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let outcome = match run_import(&dir, &sender) {
+            Ok(cache) => ImportEvent::Done(Box::new(cache)),
+            Err(message) => ImportEvent::Failed(message),
+        };
+        let _ = sender.send(outcome);
+    });
+    ImportJob {
+        receiver,
+        progress: ImportProgress {
+            label: "Preparing game-data import…".to_string(),
+            fraction: None,
+        },
+    }
+}
+
+/// The import itself: reads the game archives, distills the item
+/// cache, and persists it (plus the game dir for later refreshes)
+/// under the config directory, reporting each phase as it goes.
+fn run_import(
+    dir: &Path,
+    sender: &std::sync::mpsc::Sender<ImportEvent>,
+) -> Result<GameCache, String> {
+    let report = |label: String, fraction: Option<f32>| {
+        let _ = sender.send(ImportEvent::Progress(ImportProgress { label, fraction }));
+    };
+    report("Reading game database (database.arz)…".to_string(), None);
     let (database, database_stamp) = read_stamped(&dir.join("Database/database.arz"))?;
+    report("Reading text archive (Text_EN.arc)…".to_string(), None);
     let (text, text_stamp) = read_stamped(&dir.join("Text/Text_EN.arc"))?;
     let mut stamps = vec![database_stamp, text_stamp];
+    report("Parsing game database…".to_string(), None);
     let mut data = GameData::from_bytes(database, text).map_err(|error| error.to_string())?;
     let candidates = [
         ("", "Resources/Items.arc"),
@@ -565,6 +611,7 @@ fn import_game_data(dir: &Path) -> Result<GameCache, String> {
         ("XPACK4", "Resources/XPack4/Items.arc"),
     ];
     for (label, relative) in candidates {
+        report(format!("Reading item bitmaps ({relative})…"), None);
         let path = dir.join(relative);
         if let Ok((bytes, stamp)) = read_stamped(&path)
             && let Ok(archive) = univault_core::arc::ArcFile::parse(bytes)
@@ -573,7 +620,13 @@ fn import_game_data(dir: &Path) -> Result<GameCache, String> {
             stamps.push(stamp);
         }
     }
-    let cache = data.build_cache(stamps);
+    let cache = data.build_cache_with_progress(stamps, |scanned, total| {
+        report(
+            format!("Distilling item records… {scanned} / {total}"),
+            Some(fraction(scanned, total)),
+        );
+    });
+    report("Writing the local cache…".to_string(), None);
     if let Some(path) = cache_file_path() {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -585,6 +638,16 @@ fn import_game_data(dir: &Path) -> Result<GameCache, String> {
         let _ = std::fs::write(path, dir.display().to_string());
     }
     Ok(cache)
+}
+
+// Record counts sit far below f32's exact-integer range.
+#[allow(clippy::cast_precision_loss)]
+fn fraction(done: usize, total: usize) -> f32 {
+    if total == 0 {
+        0.0
+    } else {
+        done as f32 / total as f32
+    }
 }
 
 /// `Some(warning)` when any imported source file has changed on disk
@@ -616,6 +679,7 @@ const EQUIPMENT_SLOT_NAMES: [&str; chr::EQUIPMENT_SLOTS] = [
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.poll_import();
         if let Some(dropped) = first_dropped_path(ui.ctx()) {
             self.status = Some(self.open(&dropped));
         }
@@ -640,6 +704,51 @@ enum PaneAction {
 }
 
 impl App {
+    /// Applies whatever a running background import has produced:
+    /// progress for the header, or its final cache/failure.
+    fn poll_import(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+        let GameStatus::Importing(job) = &mut self.game else {
+            return;
+        };
+        let mut outcome = None;
+        loop {
+            match job.receiver.try_recv() {
+                Ok(ImportEvent::Progress(progress)) => job.progress = progress,
+                Ok(ImportEvent::Done(cache)) => {
+                    outcome = Some((
+                        GameStatus::Loaded(*cache),
+                        Ok("game data imported".to_string()),
+                    ));
+                    break;
+                }
+                Ok(ImportEvent::Failed(message)) => {
+                    outcome = Some((GameStatus::Failed(message.clone()), Err(message)));
+                    break;
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    let message = "game-data import stopped unexpectedly".to_string();
+                    outcome = Some((GameStatus::Failed(message.clone()), Err(message)));
+                    break;
+                }
+            }
+        }
+        if let Some((game, status)) = outcome {
+            let count = match &game {
+                GameStatus::Loaded(cache) => Some(cache.len()),
+                GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
+            };
+            self.game = game;
+            self.game_note = None;
+            self.caches = Caches::default();
+            self.status = Some(match (status, count) {
+                (Ok(_), Some(count)) => Ok(format!("imported {count} item records")),
+                (status, _) => status,
+            });
+        }
+    }
+
     fn show_header(&mut self, ui: &mut egui::Ui) {
         let mut requested: Option<PathBuf> = None;
         ui.horizontal(|ui| {
@@ -653,26 +762,19 @@ impl App {
             if ui.button("Open vault…").clicked() {
                 requested = pick_file("Vault", &["json", "vault"], self.dialog_start_dir());
             }
-            if ui.button("Import game data…").clicked() {
+            let importing = matches!(self.game, GameStatus::Importing(_));
+            if ui
+                .add_enabled(!importing, egui::Button::new("Import game data…"))
+                .clicked()
+            {
                 let start = stored_game_dir();
                 let mut dialog = rfd::FileDialog::new();
                 if let Some(start) = start {
                     dialog = dialog.set_directory(start);
                 }
                 if let Some(dir) = dialog.pick_folder() {
-                    match import_game_data(&dir) {
-                        Ok(cache) => {
-                            self.status = Some(Ok(format!(
-                                "imported {} item records from {}",
-                                cache.len(),
-                                dir.display()
-                            )));
-                            self.game = GameStatus::Loaded(cache);
-                            self.game_note = None;
-                            self.caches = Caches::default();
-                        }
-                        Err(message) => self.status = Some(Err(message)),
-                    }
+                    self.game = GameStatus::Importing(start_import(dir));
+                    self.game_note = None;
                 }
             }
             ui.menu_button("Recent", |ui| {
@@ -696,6 +798,19 @@ impl App {
         }
         match &self.game {
             GameStatus::Loaded(_) => {}
+            GameStatus::Importing(job) => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(&job.progress.label);
+                });
+                ui.add(
+                    egui::ProgressBar::new(job.progress.fraction.unwrap_or(0.0))
+                        .desired_width(360.0)
+                        .show_percentage(),
+                );
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(100));
+            }
             GameStatus::Absent => {
                 ui.weak(
                     "No game data imported yet — use 'Import game data…' and pick your \
@@ -765,7 +880,7 @@ impl App {
         let caches = &mut self.caches;
         let db = match &self.game {
             GameStatus::Loaded(data) => Some(data),
-            GameStatus::Absent | GameStatus::Failed(_) => None,
+            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
         };
         let mut action = None;
         let can_move = self.left.is_some() && self.right.is_some();

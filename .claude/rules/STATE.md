@@ -76,7 +76,12 @@ transferred-back item in-game and open our vault JSON in TQVaultAE.
   are the validation harness. 115 tests. Risk: granted-skill and
   socketed-relic sections are unit-tested but absent from the real
   saves swept; `attributeScalePercent` deliberately stays
-  record-local (deviation noted in `stats::render` docs).
+  record-local (deviation noted in `stats::render` docs). Follow-up
+  after the user hit two silent slow launches (each format bump
+  forces a re-import): imports now run on a background thread with
+  a startup progress bar (phase labels + record fraction via
+  `build_cache_with_progress`); verified live against the real
+  install — window responsive from launch, cache rewritten.
 - **2026-08-25 — Rarity-colored item tooltips.** New core `style`
   module ports TQVaultAE's `Item.ItemStyle` decision order and the
   game's exact text-palette RGB values (MIT refs fetched from the

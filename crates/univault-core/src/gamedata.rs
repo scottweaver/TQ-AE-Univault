@@ -161,9 +161,23 @@ impl GameData {
     /// freshness checks.
     #[must_use]
     pub fn build_cache(&self, stamps: Vec<crate::cache::SourceStamp>) -> crate::cache::GameCache {
+        self.build_cache_with_progress(stamps, |_, _| {})
+    }
+
+    /// [`Self::build_cache`], reporting `(records scanned, total)` at
+    /// coarse intervals so a shell can drive a progress display.
+    pub fn build_cache_with_progress(
+        &self,
+        stamps: Vec<crate::cache::SourceStamp>,
+        mut progress: impl FnMut(usize, usize),
+    ) -> crate::cache::GameCache {
         let renderer = crate::stats::Renderer { data: self };
+        let total = self.arz.record_ids().count();
         let mut entries = std::collections::HashMap::new();
-        for id in self.arz.record_ids() {
+        for (scanned, id) in self.arz.record_ids().enumerate() {
+            if scanned % 512 == 0 {
+                progress(scanned, total);
+            }
             let Some(Ok(record)) = self.arz.record(id) else {
                 continue;
             };
@@ -195,6 +209,7 @@ impl GameData {
                 },
             );
         }
+        progress(total, total);
         crate::cache::GameCache::from_entries(
             stamps,
             crate::stats::capture_runtime_labels(self),
