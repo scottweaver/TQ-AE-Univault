@@ -96,8 +96,10 @@ eyes-only reference, implementation independent.
   variable-level revert rule. In-game acceptance STARTED
   2026-08-25: the engine loads the composed database — zero summon
   cooldowns verified in play, which also clears the record-table
-  ordering worry. Remaining spot checks: target caps ×3, Earth
-  Enchantment radius, vanilla XP.
+  ordering worry; Earth Enchantment radius verified (5m → 15m at
+  one point — the game's own tooltip reads the merged record).
+  Remaining spot checks: target caps ×3; vanilla XP (predicted:
+  an even-level trash mob on Normal awards level×15).
 
 - **2026-08-25 — Mastery skill-tree export for AI theorycrafting.**
   PR #2 (rotation + respec) merged. New `skilltree` example distills
