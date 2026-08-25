@@ -78,6 +78,13 @@ impl<'a> ByteReader<'a> {
     }
 
     /// # Errors
+    /// [`ReadError::UnexpectedEof`] at the end of the data.
+    pub fn read_u8(&mut self) -> Result<u8, ReadError> {
+        let bytes = self.take(1)?;
+        Ok(bytes[0])
+    }
+
+    /// # Errors
     /// [`ReadError::UnexpectedEof`] if fewer than 4 bytes remain.
     pub fn read_i32(&mut self) -> Result<i32, ReadError> {
         let bytes = self.take(4)?;
@@ -194,7 +201,7 @@ const WINDOWS_1252_C1: [char; 32] = [
     '\u{02DC}', '\u{2122}', '\u{0161}', '\u{203A}', '\u{0153}', '\u{009D}', '\u{017E}', '\u{0178}',
 ];
 
-fn decode_windows_1252(bytes: &[u8]) -> String {
+pub(crate) fn decode_windows_1252(bytes: &[u8]) -> String {
     bytes
         .iter()
         .map(|&byte| match byte {
