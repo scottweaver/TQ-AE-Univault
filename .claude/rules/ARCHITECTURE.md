@@ -112,16 +112,12 @@ cleanup:
 
 - `Cargo.toml` (workspace root) and `crates/*/Cargo.toml` —
   dependency-direction and native-dep constraints
-- `crates/univault-core/src/formats/**` — boundary contracts for
-  save/stash, ARC/ARZ, and vault formats
-- `crates/univault-core/src/platform*` — the platform-confinement
-  rule
+- `crates/univault-core/src/*.rs` format modules (`reader`, `chr`,
+  and future `stash`/`vault`/`arz`/`arc`/`platform`) — boundary
+  contracts and the platform-confinement rule
 - Any module implementing the save/write-back path — the
-  backup-first rule
+  backup-first and targeted-splice rules
 - `crates/univault-gui/src/main.rs` — entry point / framework choice
-
-(Paths are the intended layout; correct them here in the same PR
-that scaffolds the workspace if the real layout differs.)
 
 ## Structural criteria
 

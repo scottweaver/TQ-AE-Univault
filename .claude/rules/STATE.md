@@ -32,21 +32,38 @@ deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | rules layer + workspace scaffold; all gates green (macOS-verified only) |
-| `feat/chr-read-slice` | chr parser + read-only inventory GUI | code + tests complete; awaiting real-save validation before merge |
+| `main` | trunk | chr read slice merged; all gates green |
+| `feat/chr-read-slice` | chr parser + read-only inventory GUI | merged into `main`; local deletion pending user confirmation |
 
 ## Next up
 
-1. Validate the chr parser against a real TQ AE `Player.chr` (none on
-   this machine — needs a save file from the user), then merge
-   `feat/chr-read-slice`.
-2. ARZ/ARC readers so parsed items resolve display names and icons
-   from game data (this is where `flate2` enters).
-3. Platform module in core: per-OS discovery of the game install and
+Product priority set by the user (2026-08-24): the core feature is
+saving items out of a character inventory or transfer stash into
+external vault storage, and transferring/copying them back later.
+Sequence toward that:
+
+1. Vault model + JSON read/write in core — TQVaultAE `VaultDto`
+   schema per ARCHITECTURE.md (plan: adopt `serde`/`serde_json` for
+   this boundary; flag at implementation time).
+2. Transfer stash (`winsys.dxb`) parsing — the other item source.
+3. The write path: targeted-splice item-block re-encode for chr and
+   stash plus the backup-first infrastructure, enabling actual
+   vault ↔ character transfers.
+4. ARZ/ARC readers for display names and icons (demoted below the
+   transfer loop; this is where `flate2` enters).
+5. Platform module in core: per-OS discovery of the game install and
    save directories.
 
 ## Most recent meaningful progress
 
+- **2026-08-24 — Real-save validation passed; slice merged.** The
+  user ran the GUI against their actual TQ AE save and it read the
+  inventory correctly — the synthetic-fixture-only risk is retired.
+  `feat/chr-read-slice` fast-forwarded into `main`. Product
+  priority recorded: external vault storage with transfer-back is
+  the core feature (see "Next up"). Risk: vault work adds the first
+  serde dependency and the first write path — both flagged for
+  design attention.
 - **2026-08-24 — chr read slice implemented
   (`feat/chr-read-slice`).** `univault-core` gained `reader`
   (typed LE reader, Windows-1252/UTF-16 strings, key scan) and `chr`
