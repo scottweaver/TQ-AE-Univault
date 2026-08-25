@@ -28,7 +28,7 @@ only). No issue tracker is bound yet (deliberately deferred).
 | Branch | Purpose | Status |
 |---|---|---|
 | `main` | trunk | read stack + transfers + grids + full item tooltips merged; pushed to the new GitHub origin |
-| `feat/ci-and-test-coverage` | GitHub Actions CI + coverage push (70%→80% lines) | PR open; first CI run validates the 3-OS matrix |
+| `feat/backup-rotation` | cap save backups at 5 newest per file | PR open |
 
 ## Next up
 
@@ -45,6 +45,14 @@ User acceptance PASSED 2026-08-24: the user saved real transfer
 edits through the app on their network-mounted save tree ("It
 worked!"). Residual check whenever convenient: confirm a
 transferred-back item in-game and open our vault JSON in TQVaultAE.
+
+User-inserted priorities (2026-08-25, before drag-and-drop):
+backup rotation (5 newest per file — in PR) and two respec buttons
+("Respec attributes", "Respec skills & masteries"), each behind a
+confirm dialog, refunds computed from deltas. Respec needs new chr
+parsing (attributes, skill list, hotbar) + targeted splices;
+provenance note: TQVaultAE has no respec — tqrespec (GPL) is
+eyes-only reference, implementation independent.
 
 1. Drag-and-drop item movement on the grids (click-select + buttons
    today), including cross-pane drags and an occupied-cell drop
