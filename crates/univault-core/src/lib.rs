@@ -11,6 +11,7 @@ pub mod gamedata;
 pub mod grid;
 pub mod platform;
 pub mod reader;
+pub mod respec;
 pub mod stash;
 pub mod stats;
 pub mod style;

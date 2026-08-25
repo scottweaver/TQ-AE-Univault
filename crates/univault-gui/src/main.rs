@@ -17,6 +17,7 @@ use eframe::egui;
 use univault_core::cache::{GameCache, SourceStamp};
 use univault_core::chr::{self, Item, PlayerCharacter, RecordId};
 use univault_core::gamedata::GameData;
+use univault_core::respec;
 use univault_core::stash::{self, Stash};
 use univault_core::stats;
 use univault_core::style;
@@ -281,6 +282,7 @@ struct App {
     left: Option<FilePane>,
     right: Option<VaultPane>,
     status: Option<Result<String, String>>,
+    pending_respec: Option<PendingRespec>,
     /// Zoom shown by the slider while dragging; applied on release.
     pending_zoom: f32,
 }
@@ -310,6 +312,7 @@ impl App {
             left: None,
             right: None,
             status: None,
+            pending_respec: None,
             pending_zoom: 1.0,
         };
         if let Some(path) = args.vault {
@@ -695,8 +698,10 @@ impl eframe::App for App {
             Some(PaneAction::MoveToFile) => self.status = Some(self.move_vault_to_left()),
             Some(PaneAction::SaveFile) => self.status = Some(self.save_left()),
             Some(PaneAction::SaveVault) => self.status = Some(self.save_vault()),
+            Some(PaneAction::PreviewRespec(kind)) => self.preview_respec(kind),
             None => {}
         }
+        self.show_respec_modal(ui.ctx());
     }
 }
 
@@ -705,6 +710,21 @@ enum PaneAction {
     MoveToFile,
     SaveFile,
     SaveVault,
+    PreviewRespec(RespecKind),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RespecKind {
+    Attributes,
+    Skills,
+}
+
+/// A respec awaiting the user's confirmation, with its previewed
+/// refund.
+struct PendingRespec {
+    kind: RespecKind,
+    points: i32,
+    skills_removed: usize,
 }
 
 impl App {
@@ -869,6 +889,101 @@ impl App {
             }
             ui.weak("(⌘+ / ⌘− / ⌘0 work too)");
         });
+    }
+
+    /// Computes a respec's refund from the pane's baseline bytes and
+    /// opens the confirmation modal.
+    fn preview_respec(&mut self, kind: RespecKind) {
+        let Some(pane) = &self.left else { return };
+        let preview = match kind {
+            RespecKind::Attributes => {
+                respec::attribute_refund(&pane.original).map(|points| (points, 0))
+            }
+            RespecKind::Skills => respec::skill_refund(&pane.original),
+        };
+        match preview {
+            Ok((points, skills_removed)) => {
+                self.pending_respec = Some(PendingRespec {
+                    kind,
+                    points,
+                    skills_removed,
+                });
+            }
+            Err(error) => self.status = Some(Err(format!("respec unavailable: {error}"))),
+        }
+    }
+
+    fn show_respec_modal(&mut self, ctx: &egui::Context) {
+        let Some(pending) = &self.pending_respec else {
+            return;
+        };
+        let (title, body) = match pending.kind {
+            RespecKind::Attributes => (
+                "Respec attributes?",
+                format!(
+                    "Attributes return to base values; {} attribute points will be refunded.",
+                    pending.points
+                ),
+            ),
+            RespecKind::Skills => (
+                "Respec skills & masteries?",
+                format!(
+                    "{} skills and both masteries will be removed; {} skill points will be refunded. \
+                     The class resets so both masteries can be picked again.",
+                    pending.skills_removed, pending.points
+                ),
+            ),
+        };
+        let nothing_to_do = pending.points == 0 && pending.skills_removed == 0;
+        let kind = pending.kind;
+        let mut close = false;
+        let mut confirm = false;
+        let modal = egui::Modal::new(egui::Id::new("respec-modal")).show(ctx, |ui| {
+            ui.set_max_width(340.0);
+            ui.heading(title);
+            if nothing_to_do {
+                ui.label("Nothing to refund — this character is already respecced.");
+            } else {
+                ui.label(body);
+                ui.weak("Applies in memory; nothing is written until you press Save.");
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if nothing_to_do {
+                    close = ui.button("Close").clicked();
+                } else {
+                    close = ui.button("Cancel").clicked();
+                    confirm = ui.button("Respec").clicked();
+                }
+            });
+        });
+        if confirm {
+            self.status = Some(self.apply_respec(kind));
+        }
+        if close || confirm || modal.should_close() {
+            self.pending_respec = None;
+        }
+    }
+
+    fn apply_respec(&mut self, kind: RespecKind) -> Result<String, String> {
+        let pane = self.left.as_mut().ok_or("no character loaded")?;
+        let result = match kind {
+            RespecKind::Attributes => respec::respec_attributes(&pane.original),
+            RespecKind::Skills => respec::respec_skills(&pane.original),
+        }
+        .map_err(|error| error.to_string())?;
+        pane.original = result.bytes;
+        pane.dirty = true;
+        Ok(match kind {
+            RespecKind::Attributes => format!(
+                "refunded {} attribute points — press Save to write",
+                result.refunded_points
+            ),
+            RespecKind::Skills => format!(
+                "removed {} skills, refunded {} skill points — press Save to write",
+                result.skills_removed, result.refunded_points
+            ),
+        })
     }
 
     /// Where file dialogs start: near what the user last touched.
@@ -1142,6 +1257,14 @@ fn show_file_pane(
             .clicked()
         {
             action = Some(PaneAction::MoveToVault);
+        }
+        if matches!(pane.file, GameFile::Character(_)) {
+            if ui.button("Respec attributes").clicked() {
+                action = Some(PaneAction::PreviewRespec(RespecKind::Attributes));
+            }
+            if ui.button("Respec skills & masteries").clicked() {
+                action = Some(PaneAction::PreviewRespec(RespecKind::Skills));
+            }
         }
     });
     ui.monospace(pane.path.display().to_string());
