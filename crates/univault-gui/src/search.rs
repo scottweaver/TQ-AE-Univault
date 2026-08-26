@@ -89,6 +89,28 @@ struct FilterDraft {
     origin: OriginDraft,
 }
 
+impl FilterDraft {
+    /// Nothing is being filtered — inert criterion rows (the bar
+    /// always shows at least one empty row) don't count.
+    fn is_clear(&self) -> bool {
+        let texts = [
+            &self.name,
+            &self.req_level,
+            &self.req_strength,
+            &self.req_dexterity,
+            &self.req_intelligence,
+            &self.set,
+        ];
+        texts.iter().all(|text| text.trim().is_empty())
+            && self.criteria.iter().all(CriterionDraft::is_empty)
+            && !self.set_only
+            && self.style.is_none()
+            && self.category.is_none()
+            && self.socketed.is_none()
+            && self.origin == OriginDraft::Any
+    }
+}
+
 /// One criterion row: what to match, where, and the value window. A
 /// row with nothing filled in is inert.
 #[derive(Default, Clone, PartialEq)]
@@ -97,6 +119,12 @@ struct CriterionDraft {
     text: String,
     min: String,
     max: String,
+}
+
+impl CriterionDraft {
+    fn is_empty(&self) -> bool {
+        self.text.trim().is_empty() && self.min.trim().is_empty() && self.max.trim().is_empty()
+    }
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -674,6 +702,16 @@ impl App {
             {
                 self.rescan_search_docs();
             }
+            let filtering = !self.search.draft.is_clear() || self.search.source_filter.is_some();
+            if ui
+                .add_enabled(filtering, egui::Button::new("Clear all"))
+                .on_hover_text("Reset every filter — show everything")
+                .clicked()
+            {
+                self.search.draft = FilterDraft::default();
+                self.search.source_filter = None;
+                self.search.stale = true;
+            }
             ui.heading("Search all vaults");
             ui.label(format!(
                 "{} of {} items",
@@ -1121,6 +1159,29 @@ mod tests {
                 Filter::HasAffix("of Thorns".into()),
             ]
         );
+    }
+
+    #[test]
+    fn clear_detection_ignores_inert_criterion_rows() {
+        assert!(FilterDraft::default().is_clear());
+        let with_empty_rows = FilterDraft {
+            criteria: vec![
+                criterion(CriterionScope::AffixStat, "", "", ""),
+                criterion(CriterionScope::AffixName, "  ", "", ""),
+            ],
+            ..FilterDraft::default()
+        };
+        assert!(with_empty_rows.is_clear());
+        let filtering = FilterDraft {
+            criteria: vec![criterion(CriterionScope::AnyStat, "", "5", "")],
+            ..FilterDraft::default()
+        };
+        assert!(!filtering.is_clear());
+        let set_only = FilterDraft {
+            set_only: true,
+            ..FilterDraft::default()
+        };
+        assert!(!set_only.is_clear());
     }
 
     #[test]
