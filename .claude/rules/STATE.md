@@ -74,8 +74,11 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#20, #22 merged (latest: MCP full database + mod overlays #22); all gates green |
+| `main` | trunk | PRs #1–#20, #22–#26 merged; all gates green |
 | `feat/auto-refresh` | GUI auto-refresh + conflict prompts (PR #21) | CI green; awaiting user in-app acceptance |
+| `feat/dll-socket-patch` | Game.dll socket-gate patch toggle (PR #27) | awaiting user acceptance (Enable + socket an epic in-game) |
+| `mod/xmax3-single-boss` | both boss-count bundles from one rules file (PR #28) | both installed; awaiting Gorgon rematch on the 1xBoss mod |
+| `feat/paper-doll` | equipment paper doll (PR #29) | CI pending; awaiting user in-app acceptance |
 
 ## Next up
 
@@ -107,6 +110,24 @@ that's better") and merged as PR #7.
 
 ## Most recent meaningful progress
 
+- **2026-08-26 — Equipment paper doll (PR #29).** User ask: the
+  character's worn gear was unreachable — no paper doll. The 12
+  slots now render as an interactive doll (TQVaultAE geometry) on
+  the Inventory tab, wired into every item operation: drag out to
+  unequip anywhere, drag in to equip (cache-driven type rules —
+  legal empty slots glow; any weapon/shield in any hand slot),
+  right-click sends, Shift+Click duplicates, Alt+Click extracts,
+  socket-into-worn-gear in place. Core: `chr::EquipSlot`,
+  `chr::replace_equipment` (per-slot targeted splice — unchanged
+  slots byte-identical incl. the garbage bytes real dummies carry;
+  `itemAttached` mirrors the active weapon set) and
+  `transfer::{take_equipped, can_equip, equip}`; save path splices
+  inventory + equipment + money. Slot naming fixed everywhere: the
+  wielded weapon is the *right* hand (real saves put two-handers at
+  index 8; MCP's old labels were swapped). New `equipdry` example
+  proved both real characters round-trip. 185 tests. Risk: in-app
+  acceptance pending — unequip/equip on the doll, then load the
+  save in-game.
 - **2026-08-26 — Mod: a second bundle with single bosses.** User
   hit an unwinnable tripled Gorgon-sisters fight (three queens
   cross-healing via Regrowth), then refined the ask: keep the
@@ -263,19 +284,6 @@ that's better") and merged as PR #7.
   +25% Physical Damage). 162 tests. ACCEPTED
   2026-08-26: "everything seems to be working" — shard art,
   combining, picker, roll, re-pick, and artifacts verified in use.
-- **2026-08-25 — Stash `.dxg` twin fallback (bug fix).** The user's
-  relic bank failed to reload: the game's save over SMB truncated
-  `miscsys.dxb` mid-item (stored CRC didn't match the shortened
-  bytes). The complete `.dxg` twin sat beside it — the game's own
-  recovery path — so `stash::restore_from_twin` (inverse of
-  `backup_twin`, shared `patched_name_copy` core) now backs
-  `open_stash`: an unreadable `.dxb` loads from its twin, marked
-  dirty so autosave writes the repaired file back through
-  backup-first (the corrupt original becomes the backup). Proven
-  against the real corrupt file: 30 relics recovered, resplice
-  byte-identical. 156 tests. Risk: only the truncated write's
-  newest item is unrecoverable (it existed nowhere but the cut
-  bytes).
 ## Blocked / waiting
 
 - *(nothing)*

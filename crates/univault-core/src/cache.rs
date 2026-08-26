@@ -227,6 +227,15 @@ impl GameCache {
         self.entry(id)?.gear_slot
     }
 
+    /// Whether the record is an artifact — the one equippable that
+    /// carries no [`GearSlot`] family (only the artifact slot takes
+    /// it).
+    #[must_use]
+    pub fn is_artifact(&self, id: &RecordId) -> bool {
+        self.entry(id)
+            .is_some_and(|entry| matches!(entry.kind, ItemKind::Artifact))
+    }
+
     /// Whether the relic/charm record's own allow-flags permit the
     /// given equipment family. Rarity is deliberately not part of
     /// this — only the game's type rules are.

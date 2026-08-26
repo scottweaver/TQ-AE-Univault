@@ -222,7 +222,7 @@ impl Univault {
 
     fn character_json(&self, entry: &CharacterEntry) -> Result<Value, String> {
         let loaded = world::load_character(&entry.path)?;
-        let equipment: Vec<Value> = view::EQUIPMENT_SLOT_NAMES
+        let equipment: Vec<Value> = view::equipment_slot_names()
             .iter()
             .zip(&loaded.player.equipment.slots)
             .map(|(slot, item)| {
@@ -615,7 +615,7 @@ impl Univault {
             let Ok(loaded) = world::load_character(&entry.path) else {
                 continue;
             };
-            for (slot, item) in view::EQUIPMENT_SLOT_NAMES
+            for (slot, item) in view::equipment_slot_names()
                 .iter()
                 .zip(&loaded.player.equipment.slots)
             {

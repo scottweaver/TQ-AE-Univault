@@ -149,6 +149,78 @@ pub struct Sack {
 /// layout: 11 gear slots plus the artifact).
 pub const EQUIPMENT_SLOTS: usize = 12;
 
+/// One worn-equipment slot, in file order. The hand slots pair into
+/// weapon sets (7–8 primary, 9–10 alternate); within a pair the game
+/// keeps the wielded weapon in the *right* hand — two-handers sit in
+/// the right slot with the left empty (`TQVaultAE`'s convention,
+/// confirmed against real saves).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EquipSlot {
+    Head,
+    Neck,
+    Torso,
+    Legs,
+    Arms,
+    Ring1,
+    Ring2,
+    LeftHand,
+    RightHand,
+    LeftHandAlternate,
+    RightHandAlternate,
+    Artifact,
+}
+
+impl EquipSlot {
+    /// File order — the order [`Equipment::slots`] is indexed in.
+    pub const ALL: [Self; EQUIPMENT_SLOTS] = [
+        Self::Head,
+        Self::Neck,
+        Self::Torso,
+        Self::Legs,
+        Self::Arms,
+        Self::Ring1,
+        Self::Ring2,
+        Self::LeftHand,
+        Self::RightHand,
+        Self::LeftHandAlternate,
+        Self::RightHandAlternate,
+        Self::Artifact,
+    ];
+
+    /// Position in [`Equipment::slots`].
+    #[must_use]
+    pub fn index(self) -> usize {
+        self as usize
+    }
+
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Head => "Head",
+            Self::Neck => "Neck",
+            Self::Torso => "Torso",
+            Self::Legs => "Legs",
+            Self::Arms => "Arms",
+            Self::Ring1 => "Ring 1",
+            Self::Ring2 => "Ring 2",
+            Self::LeftHand => "Left Hand",
+            Self::RightHand => "Right Hand",
+            Self::LeftHandAlternate => "Left Hand (alt)",
+            Self::RightHandAlternate => "Right Hand (alt)",
+            Self::Artifact => "Artifact",
+        }
+    }
+
+    /// The four weapon-set slots, which all take any weapon or shield.
+    #[must_use]
+    pub fn is_hand(self) -> bool {
+        matches!(
+            self,
+            Self::LeftHand | Self::RightHand | Self::LeftHandAlternate | Self::RightHandAlternate
+        )
+    }
+}
+
 /// Grid size of inventory sack `index` (`TQVaultAE`'s `PlayerPanel`:
 /// the main sack is 12×5, the extra bags 8×5).
 #[must_use]
@@ -161,6 +233,17 @@ pub fn sack_dimensions(index: usize) -> (i32, i32) {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Equipment {
     pub slots: [Option<Item>; EQUIPMENT_SLOTS],
+}
+
+impl Equipment {
+    #[must_use]
+    pub fn get(&self, slot: EquipSlot) -> Option<&Item> {
+        self.slots[slot.index()].as_ref()
+    }
+
+    pub fn slot_mut(&mut self, slot: EquipSlot) -> &mut Option<Item> {
+        &mut self.slots[slot.index()]
+    }
 }
 
 /// Header facts read for display. `name`/`class_tag` are optional in
@@ -549,6 +632,152 @@ pub fn replace_money(original: &[u8], money: i32) -> Result<Vec<u8>, ParseError>
             wanted: 4,
         }))?
         .copy_from_slice(&money.to_le_bytes());
+    Ok(out)
+}
+
+/// One slot's byte span in the original equipment block — the item
+/// entry through its `itemAttached` flag — plus what the entry held.
+struct EquipmentSlotSpan {
+    start: usize,
+    end: usize,
+    had_atlantis: bool,
+    original: Option<Item>,
+}
+
+struct EquipmentScan {
+    use_alternate: i32,
+    spans: Vec<EquipmentSlotSpan>,
+}
+
+fn scan_equipment(data: &[u8]) -> Result<EquipmentScan, ParseError> {
+    let value_at =
+        find_key(data, "useAlternate", 0).ok_or(ParseError::MissingSection("useAlternate"))?;
+    let mut reader = ByteReader::at(data, value_at);
+    let use_alternate = reader.read_i32()?;
+    reader.expect_key("equipmentCtrlIOStreamVersion")?;
+    reader.read_i32()?;
+
+    let mut spans = Vec::with_capacity(EQUIPMENT_SLOTS);
+    for index in 0..EQUIPMENT_SLOTS {
+        if index == 7 || index == 9 {
+            reader.expect_key("begin_block")?;
+            reader.read_i32()?;
+            reader.expect_key("alternate")?;
+            reader.read_i32()?;
+        }
+        let start = reader.pos();
+        let raw = parse_raw_item(&mut reader, ItemContext::Equipment)?;
+        let had_atlantis = raw.atlantis.is_some();
+        let original = raw.into_item();
+        reader.expect_key("itemAttached")?;
+        reader.read_i32()?;
+        spans.push(EquipmentSlotSpan {
+            start,
+            end: reader.pos(),
+            had_atlantis,
+            original,
+        });
+        if index == 8 || index == 10 {
+            reader.expect_key("end_block")?;
+            reader.read_i32()?;
+        }
+    }
+    Ok(EquipmentScan {
+        use_alternate,
+        spans,
+    })
+}
+
+/// Worn gear is attached except in whichever weapon set is inactive
+/// — mirrored from real saves (the alternate set's occupied slots
+/// store 0) and `TQVaultAE`'s encoder.
+fn slot_attached(use_alternate: i32, index: usize, occupied: bool) -> bool {
+    let set_active = match index {
+        7 | 8 => use_alternate == 0,
+        9 | 10 => use_alternate != 0,
+        _ => true,
+    };
+    occupied && set_active
+}
+
+fn encode_equipment_entry(
+    buf: &mut Vec<u8>,
+    slot: Option<&Item>,
+    atlantis_era: bool,
+    attached: bool,
+) {
+    match slot {
+        Some(item) if atlantis_era && item.atlantis.is_none() => {
+            // Every entry of an Atlantis-era file carries the second
+            // -socket triple, occupied or not; pad it in.
+            let mut padded = item.clone();
+            padded.atlantis = Some(AtlantisRelic {
+                relic: None,
+                bonus: None,
+                var2: 0,
+            });
+            encode_item_body(buf, &padded, padded.seed.value());
+        }
+        Some(item) => encode_item_body(buf, item, item.seed.value()),
+        None => encode_empty_equipment_entry(buf, atlantis_era),
+    }
+    write_keyed_i32(buf, "itemAttached", i32::from(attached));
+}
+
+fn encode_empty_equipment_entry(buf: &mut Vec<u8>, atlantis_era: bool) {
+    write_keyed_i32(buf, "begin_block", BEGIN_BLOCK_VALUE);
+    for key in [
+        "baseName",
+        "prefixName",
+        "suffixName",
+        "relicName",
+        "relicBonus",
+    ] {
+        write_cstring(buf, key);
+        write_cstring(buf, "");
+    }
+    write_keyed_i32(buf, "seed", 0);
+    write_keyed_i32(buf, "var1", 0);
+    if atlantis_era {
+        write_cstring(buf, "relicName2");
+        write_cstring(buf, "");
+        write_cstring(buf, "relicBonus2");
+        write_cstring(buf, "");
+        write_keyed_i32(buf, "var2", 0);
+    }
+    write_keyed_i32(buf, "end_block", END_BLOCK_VALUE);
+}
+
+/// Rebuilds only the equipment slots whose content changed and copies
+/// every other byte of `original` through untouched — the
+/// targeted-splice rule in ARCHITECTURE.md. Unchanged slots stay
+/// byte-identical (real saves fill dummy entries with uninitialized
+/// bytes worth preserving); a rewritten slot is encoded canonically,
+/// padding the Atlantis triple when the original entry carried one.
+/// Stacked items are never worn — callers gate with the transfer
+/// layer, and only the first member of a stack would be encoded.
+///
+/// # Errors
+/// The parse errors of locating and walking the original block.
+pub fn replace_equipment(original: &[u8], equipment: &Equipment) -> Result<Vec<u8>, ParseError> {
+    let scan = scan_equipment(original)?;
+    let mut out = Vec::with_capacity(original.len() + 128);
+    let mut copied_until = 0;
+    for (index, (span, slot)) in scan.spans.iter().zip(&equipment.slots).enumerate() {
+        out.extend_from_slice(&original[copied_until..span.start]);
+        if *slot == span.original {
+            out.extend_from_slice(&original[span.start..span.end]);
+        } else {
+            encode_equipment_entry(
+                &mut out,
+                slot.as_ref(),
+                span.had_atlantis,
+                slot_attached(scan.use_alternate, index, slot.is_some()),
+            );
+        }
+        copied_until = span.end;
+    }
+    out.extend_from_slice(&original[copied_until..]);
     Ok(out)
 }
 
@@ -1021,5 +1250,160 @@ mod tests {
             parse_player(truncated),
             Err(ParseError::Read(ReadError::UnexpectedEof { .. }))
         ));
+    }
+
+    #[test]
+    fn equip_slot_order_matches_the_slots_array() {
+        for (index, slot) in EquipSlot::ALL.iter().enumerate() {
+            assert_eq!(slot.index(), index, "{slot:?}");
+        }
+        assert!(EquipSlot::LeftHand.is_hand());
+        assert!(EquipSlot::RightHandAlternate.is_hand());
+        assert!(!EquipSlot::Artifact.is_hand());
+    }
+
+    #[test]
+    fn unchanged_equipment_resplices_byte_identically() {
+        let original = player_file();
+        let character = parse_player(&original).unwrap();
+        let respliced = replace_equipment(&original, &character.equipment).unwrap();
+        assert!(respliced == original, "unchanged equipment altered bytes");
+    }
+
+    #[test]
+    fn unequipping_writes_a_dummy_and_touches_nothing_else() {
+        let original = player_file();
+        let mut character = parse_player(&original).unwrap();
+        let taken = character.equipment.slots[0].take().expect("helm worn");
+        assert_eq!(taken.base.file_stem(), "helm_01");
+
+        let modified = replace_equipment(&original, &character.equipment).unwrap();
+        let reparsed = parse_player(&modified).unwrap();
+        assert_eq!(reparsed.equipment.slots[0], None);
+        assert_eq!(reparsed.equipment.slots[7], character.equipment.slots[7]);
+        assert_eq!(reparsed.sacks, character.sacks);
+        assert_eq!(reparsed.info, character.info);
+
+        // Everything before the equipment block is the original bytes.
+        let key = crate::reader::find_key(&original, "useAlternate", 0).unwrap();
+        assert_eq!(original[..key], modified[..key]);
+    }
+
+    #[test]
+    fn equipping_into_an_empty_slot_round_trips() {
+        let original = player_file();
+        let mut character = parse_player(&original).unwrap();
+        let mut ring = Item::bare(
+            RecordId::parse("records\\item\\equipmentring\\ring.dbr".to_string()).unwrap(),
+            ItemSeed::new(77),
+        );
+        ring.position = GridPos { x: 3, y: 2 };
+        character.equipment.slots[5] = Some(Item {
+            position: GridPos { x: 0, y: 0 },
+            ..ring
+        });
+
+        let modified = replace_equipment(&original, &character.equipment).unwrap();
+        let reparsed = parse_player(&modified).unwrap();
+        let worn = reparsed.equipment.slots[5].as_ref().unwrap();
+        assert_eq!(worn.base.file_stem(), "ring");
+        assert_eq!(worn.seed.value(), 77);
+        assert_eq!(worn.position, GridPos { x: 0, y: 0 });
+        assert_eq!(reparsed.equipment.slots[0], character.equipment.slots[0]);
+    }
+
+    /// Real Atlantis-era saves pad every equipment entry — dummies
+    /// included — with the second-socket triple, its `var2` holding
+    /// uninitialized bytes.
+    fn atlantis_equipment_block() -> Vec<u8> {
+        let mut fixture = Fixture::default()
+            .begin_block()
+            .keyed_int("useAlternate", 0)
+            .keyed_int("equipmentCtrlIOStreamVersion", 1);
+        for slot in 0..EQUIPMENT_SLOTS {
+            if slot == 7 || slot == 9 {
+                fixture = fixture
+                    .begin_block()
+                    .keyed_int("alternate", i32::from(slot == 9));
+            }
+            let base = if slot == 0 {
+                "records\\item\\equipmenthelm\\helm.dbr"
+            } else {
+                ""
+            };
+            fixture = fixture
+                .begin_block()
+                .cstr("baseName", base)
+                .cstr("prefixName", "")
+                .cstr("suffixName", "")
+                .cstr("relicName", "")
+                .cstr("relicBonus", "")
+                .keyed_int("seed", 5)
+                .keyed_int("var1", 0)
+                .cstr("relicName2", "")
+                .cstr("relicBonus2", "")
+                .keyed_int("var2", 7000 + i32::try_from(slot).unwrap())
+                .end_block()
+                .keyed_int("itemAttached", i32::from(!base.is_empty()));
+            if slot == 8 || slot == 10 {
+                fixture = fixture.end_block();
+            }
+        }
+        fixture.end_block().bytes
+    }
+
+    #[test]
+    fn atlantis_equipment_resplices_byte_identically_and_pads_new_entries() {
+        let original = atlantis_equipment_block();
+        let mut equipment = parse_equipment(&original).unwrap();
+        assert!(
+            replace_equipment(&original, &equipment).unwrap() == original,
+            "unchanged atlantis equipment altered bytes"
+        );
+
+        // Equip a triple-less item: the rewritten entry gains an
+        // empty triple; untouched dummies keep their garbage var2.
+        equipment.slots[2] = Some(Item::bare(
+            RecordId::parse("records\\item\\equipmentarmor\\robe.dbr".to_string()).unwrap(),
+            ItemSeed::new(9),
+        ));
+        let modified = replace_equipment(&original, &equipment).unwrap();
+        let reparsed = parse_equipment(&modified).unwrap();
+        let worn = reparsed.slots[2].as_ref().unwrap();
+        assert_eq!(worn.base.file_stem(), "robe");
+        assert_eq!(
+            worn.atlantis,
+            Some(AtlantisRelic {
+                relic: None,
+                bonus: None,
+                var2: 0
+            })
+        );
+        let scan = scan_equipment(&modified).unwrap();
+        assert!(scan.spans[3].had_atlantis, "dummy slots keep their triple");
+    }
+
+    /// The alternate weapon set's occupied slots store `itemAttached
+    /// = 0` while set 1 is active — the game's own convention.
+    #[test]
+    fn alternate_set_slots_are_written_unattached() {
+        let original = player_file();
+        let mut character = parse_player(&original).unwrap();
+        let axe = Item::bare(
+            RecordId::parse("records\\item\\equipmentweapon\\axe.dbr".to_string()).unwrap(),
+            ItemSeed::new(3),
+        );
+        character.equipment.slots[9] = Some(axe.clone());
+        character.equipment.slots[4] = Some(axe);
+
+        let modified = replace_equipment(&original, &character.equipment).unwrap();
+        let attached_flag = |data: &[u8], slot: usize| {
+            let scanned = scan_equipment(data).unwrap();
+            let end = scanned.spans[slot].end;
+            i32::from_le_bytes(data[end - 4..end].try_into().unwrap())
+        };
+        assert_eq!(attached_flag(&modified, 9), 0, "inactive set stays 0");
+        assert_eq!(attached_flag(&modified, 4), 1, "gear slots attach");
+        assert_eq!(attached_flag(&modified, 5), 0, "empty slots stay 0");
     }
 }

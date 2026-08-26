@@ -7,22 +7,14 @@ use univault_core::chr::{Item, RecordId};
 use univault_core::stats;
 use univault_core::style;
 
-/// Mirrors the game's fixed equipment order (same list the GUI
-/// renders).
-pub const EQUIPMENT_SLOT_NAMES: [&str; univault_core::chr::EQUIPMENT_SLOTS] = [
-    "Head",
-    "Neck",
-    "Torso",
-    "Legs",
-    "Arms",
-    "Ring 1",
-    "Ring 2",
-    "Weapon 1",
-    "Offhand 1",
-    "Weapon 2",
-    "Offhand 2",
-    "Artifact",
-];
+/// The game's fixed equipment order, labeled from core's
+/// [`univault_core::chr::EquipSlot`] — the wielded weapon lives in
+/// the *right* hand (two-handers included); 7/9 are the shield-side
+/// left hands.
+#[must_use]
+pub fn equipment_slot_names() -> [&'static str; univault_core::chr::EQUIPMENT_SLOTS] {
+    univault_core::chr::EquipSlot::ALL.map(univault_core::chr::EquipSlot::label)
+}
 
 #[derive(Serialize)]
 pub struct ShardsView {
