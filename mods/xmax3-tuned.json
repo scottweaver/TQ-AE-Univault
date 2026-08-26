@@ -1,6 +1,9 @@
 {
   "name": "LootPlusXMAX3Tuned",
-  "base": "LootPlusXMAXFTWx3x1 (Steam Workshop 1779344333): monsters x3, named bosses/heroes x1",
+  "builds": [
+    "LootPlusXMAX3Tuned: base LootPlusXMAXFTWx3 (Workshop 1779344333) — monsters x3, bosses x3",
+    "LootPlusXMAX3Tuned1xBoss: base LootPlusXMAXFTWx3x1 (same item) — monsters x3, named bosses/heroes x1; build with the bundle-name override"
+  ],
   "rules": [
     {
       "kind": "multiply_player_skills",
@@ -10,7 +13,9 @@
     {
       "kind": "record",
       "record": "records\\skills\\earth\\fireenchantmentbuff.dbr",
-      "multiply": { "skillTargetRadius": 3.0 }
+      "multiply": {
+        "skillTargetRadius": 3.0
+      }
     },
     {
       "kind": "fill_player_skills",
@@ -21,7 +26,9 @@
     {
       "kind": "revert_variables",
       "record": "records\\xpack\\game\\gameengine.dbr",
-      "variables": ["experienceEquation"]
+      "variables": [
+        "experienceEquation"
+      ]
     },
     {
       "kind": "record",
@@ -47,7 +54,10 @@
         "records\\skills\\earth\\pet\\coredweller_19.dbr",
         "records\\skills\\earth\\pet\\coredweller_20.dbr"
       ],
-      "multiply": { "characterMana": 2.5, "characterManaRegen": 1.75 }
+      "multiply": {
+        "characterMana": 2.5,
+        "characterManaRegen": 1.75
+      }
     },
     {
       "kind": "record",
@@ -73,7 +83,10 @@
         "records\\skills\\nature\\pet\\wolf_19.dbr",
         "records\\skills\\nature\\pet\\wolf_20.dbr"
       ],
-      "multiply": { "characterMana": 2.5, "characterManaRegen": 1.75 }
+      "multiply": {
+        "characterMana": 2.5,
+        "characterManaRegen": 1.75
+      }
     },
     {
       "kind": "record",
@@ -81,8 +94,26 @@
       "set": {
         "skillTargetRadius": 5.0,
         "offensiveTauntMax": [
-          12.0, 12.0, 12.0, 12.0, 12.0, 12.0, 12.0, 12.0, 12.0, 12.0,
-          12.0, 12.0, 13.0, 13.0, 14.0, 15.0, 16.0, 16.0, 17.0, 18.0
+          12.0,
+          12.0,
+          12.0,
+          12.0,
+          12.0,
+          12.0,
+          12.0,
+          12.0,
+          12.0,
+          12.0,
+          12.0,
+          12.0,
+          13.0,
+          13.0,
+          14.0,
+          15.0,
+          16.0,
+          16.0,
+          17.0,
+          18.0
         ]
       }
     },

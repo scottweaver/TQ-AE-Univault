@@ -107,19 +107,23 @@ that's better") and merged as PR #7.
 
 ## Most recent meaningful progress
 
-- **2026-08-26 — Mod: bosses spawn single (rebased onto x3x1).**
-  User hit an unwinnable tripled Gorgon-sisters fight (three queens
-  cross-healing via Regrowth). Root cause mapped via the MCP record
-  tools: the x3 base multiplies named boss/hero *pools* (extra
-  entries, limits stripped) on top of the global 300% spawn
-  modifier. Fix: rebuild `mods/xmax3-tuned.json` (spec unchanged;
-  informational `base` field added) onto the mod author's own
-  `LootPlusXMAXFTWx3x1` Workshop base — named boss/hero pools
-  collapse to one spawn, trash keeps x3. Composed arz dump-verified
-  (Euryale single, spawnModifier 300, vanilla XP, Provoke 5m) and
-  installed over the live bundle. Risk: user replays the Gorgon
-  fight after a game restart — that is the acceptance test; named
-  heroes are single too (the author's x3x1 semantics).
+- **2026-08-26 — Mod: a second bundle with single bosses.** User
+  hit an unwinnable tripled Gorgon-sisters fight (three queens
+  cross-healing via Regrowth), then refined the ask: keep the
+  original 3x-boss mod AND a 1x-boss variant, side by side. Root
+  cause mapped via the MCP record tools: the x3 base multiplies
+  named boss/hero *pools* (extra entries, limits stripped) on top
+  of the global 300% spawn modifier; the author's own x3x1 base
+  keeps trash x3 but collapses those pools to one spawn. Now one
+  rules file builds both: `modforge` gained a bundle-name override,
+  and `mods/xmax3-tuned.json` documents the two builds —
+  `LootPlusXMAX3Tuned` (base x3, unchanged behavior) and
+  `LootPlusXMAX3Tuned1xBoss` (base x3x1). Both composed,
+  dump-verified (Euryale pool 6 entries vs 1; identical tunes:
+  vanilla XP, Provoke 5m, spawnModifier 300), and installed to
+  CustomMaps. Risk: user switches to the 1xBoss mod in-game and
+  replays the Gorgon fight — that is the acceptance test; the x3x1
+  base also singles named heroes.
 - **2026-08-26 — Socket into any rarity (type rules kept).** User
   ask, refined: relics/charms socket into epics, legendaries, and
   set pieces in-app — the game's *type* rules stay (a ring relic
