@@ -108,6 +108,18 @@ that's better") and merged as PR #7.
 
 ## Most recent meaningful progress
 
+- **2026-08-26 — Vault sends land where you look (bug fix).** User
+  report: right-click sent items to the earliest vault tab with
+  room, not the one on screen — and the stacked collapsible tab
+  list let many tabs look "open" at once. The vault pane is now a
+  tab strip like the left pane: exactly one tab visible
+  (`VaultPane::open_tab`, kept across auto-refresh reloads), and
+  every send/copy/duplicate/extract lands in that tab via the new
+  `transfer::place_in_vault_tab` — a full tab reports "no free
+  space" instead of silently spilling elsewhere. Mid-drag, pointing
+  at a tab button switches to it, so drag-into-any-tab still works.
+  192 tests. Risk: in-app acceptance pending — right-click a bank
+  item with tab 3 open and watch it land there.
 - **2026-08-26 — Equipment paper doll (PR #29).** User ask: the
   character's worn gear was unreachable — no paper doll. The 12
   slots now render as an interactive doll (TQVaultAE geometry) on
@@ -259,29 +271,6 @@ that's better") and merged as PR #7.
   duration untouched per the user's clarification). Bundle
   rebuilt + reinstalled, installed arz dump-verified. Risk:
   in-game check pending.
-- **2026-08-26 — Shard icons + in-app charm combining.** Two user
-  asks: partial relics/charms now render the game's `shardBitmap`
-  art (complete pieces keep `relicBitmap`), so partials read at a
-  glance; and dragging a partial onto a matching partial pours
-  shards into it (gold drop-highlight; the game's merge rule — the
-  remainder stays in the source, nothing destroyed). Completing a
-  piece opens a picker modal listing every completion bonus from
-  the record's `bonusTableName` table with stats and odds — the
-  user chooses (their call, over a game-faithful random roll).
-  Cache format `UVC5` (shard icon + bonus tables per relic record;
-  next launch re-imports, ~8s). Real-data gate: Boar's Hide level
-  5, five bonuses w/ correct weights, distinct partial/complete
-  pixels, "+4 Armor" line renders. Same-day follow-up (user
-  request): the picker gained "Roll (game odds)" (weighted pick,
-  wall-clock entropy — deliberately not a statistical RNG), and
-  double-clicking any completed relic/charm re-opens the picker to
-  change or remove its bonus (current one marked); artifacts too —
-  their bonus table lives on the formula record
-  (`artifactBonusTableName`), attached to the artifact entry at
-  import (`UVC6`; probe: Thunderfist 7 bonuses, "of Annihilation"
-  +25% Physical Damage). 162 tests. ACCEPTED
-  2026-08-26: "everything seems to be working" — shard art,
-  combining, picker, roll, re-pick, and artifacts verified in use.
 ## Blocked / waiting
 
 - *(nothing)*
