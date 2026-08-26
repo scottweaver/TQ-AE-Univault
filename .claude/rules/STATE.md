@@ -77,7 +77,7 @@ only). No issue tracker is bound yet (deliberately deferred).
 | `main` | trunk | PRs #1–#20, #22–#26 merged; all gates green |
 | `feat/auto-refresh` | GUI auto-refresh + conflict prompts (PR #21) | CI green; awaiting user in-app acceptance |
 | `feat/dll-socket-patch` | Game.dll socket-gate patch toggle (PR #27) | awaiting user acceptance (Enable + socket an epic in-game) |
-| `mod/xmax3-single-boss` | tuned mod rebased onto x3x1 — single bosses (PR #28) | bundle already installed; awaiting Gorgon rematch |
+| `mod/xmax3-single-boss` | both boss-count bundles from one rules file (PR #28) | both installed; awaiting Gorgon rematch on the 1xBoss mod |
 | `feat/paper-doll` | equipment paper doll (PR #29) | CI pending; awaiting user in-app acceptance |
 
 ## Next up
