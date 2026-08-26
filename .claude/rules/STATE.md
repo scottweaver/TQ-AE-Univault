@@ -91,7 +91,9 @@ and open our vault JSON in TQVaultAE.
   backup-first); right-click sends an item straight to the other
   pane (left → vault, vault → left); Shift+Click duplicates an
   item in place (same seed = exact copy, auto-placed, spilling to
-  sibling sacks/tabs).
+  sibling sacks/tabs); a Reload button re-reads the character and
+  all banks from disk (confirm modal when unsaved edits would be
+  lost).
   Underneath: the left pane became independent documents
   (`CharacterPane` + three `StashPane`s), `GridId` gained
   `Bank`/`Shared`/`Relic`, selection is `(GridId, index)`
