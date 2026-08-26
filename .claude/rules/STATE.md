@@ -160,6 +160,10 @@ and open our vault JSON in TQVaultAE.
   one point — the game's own tooltip reads the merged record).
   Remaining spot checks: target caps ×3; vanilla XP (predicted:
   an even-level trash mob on Normal awards level×15).
+  Follow-up 2026-08-25 (user request): Core Dweller Energy ×2.5 —
+  `characterMana` on all 20 pet levels (327.5 → 875 at 20), via a
+  new list form of the modforge `record` rule; bundle rebuilt +
+  reinstalled, installed arz verified; in-game check pending.
 
 - **2026-08-25 — Mastery skill-tree export for AI theorycrafting.**
   PR #2 (rotation + respec) merged. New `skilltree` example distills

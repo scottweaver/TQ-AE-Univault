@@ -54,14 +54,32 @@ enum Rule {
         record: String,
         variables: Vec<String>,
     },
-    /// Targeted edits on one record.
+    /// Targeted edits on one record or a list of records.
     Record {
-        record: String,
+        #[serde(alias = "records")]
+        record: RecordRefs,
         #[serde(default)]
         multiply: BTreeMap<String, f64>,
         #[serde(default)]
         set: BTreeMap<String, serde_json::Value>,
     },
+}
+
+/// A single record path or a list — `record` rules accept both.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RecordRefs {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl RecordRefs {
+    fn iter(&self) -> std::slice::Iter<'_, String> {
+        match self {
+            Self::One(record) => std::slice::from_ref(record).iter(),
+            Self::Many(records) => records.iter(),
+        }
+    }
 }
 
 #[allow(clippy::too_many_lines)] // linear build script
@@ -185,27 +203,29 @@ fn main() {
                 multiply,
                 set,
             } => {
-                let id = RecordId::parse(record.clone()).expect("record id in patch");
-                let key = normalize(id.as_str());
-                let mut target = patched
-                    .get(&key)
-                    .cloned()
-                    .or_else(|| effective(&id))
-                    .unwrap_or_else(|| panic!("record not found: {record}"));
-                for (variable, factor) in multiply {
-                    if let Some(changed) = multiply_variable(&mut target, variable, *factor) {
-                        report.push(format!("{key}: {variable} {changed}"));
+                for record in record.iter() {
+                    let id = RecordId::parse(record.clone()).expect("record id in patch");
+                    let key = normalize(id.as_str());
+                    let mut target = patched
+                        .get(&key)
+                        .cloned()
+                        .or_else(|| effective(&id))
+                        .unwrap_or_else(|| panic!("record not found: {record}"));
+                    for (variable, factor) in multiply {
+                        if let Some(changed) = multiply_variable(&mut target, variable, *factor) {
+                            report.push(format!("{key}: {variable} {changed}"));
+                        }
                     }
+                    for (variable, value) in set {
+                        let values = json_values(value);
+                        report.push(format!("{key}: {variable} set to {values:?}"));
+                        target.set_variable(DbVariable {
+                            name: variable.clone(),
+                            values,
+                        });
+                    }
+                    patched.insert(key, target);
                 }
-                for (variable, value) in set {
-                    let values = json_values(value);
-                    report.push(format!("{key}: {variable} set to {values:?}"));
-                    target.set_variable(DbVariable {
-                        name: variable.clone(),
-                        values,
-                    });
-                }
-                patched.insert(key, target);
             }
         }
     }
