@@ -101,6 +101,70 @@ pub fn item_details(db: &GameCache, item: &Item) -> ItemDetails {
     assembler.build()
 }
 
+/// The item's effective requirements, typed: explicit values
+/// max-merged across base, affixes, and socketed relics, with the
+/// item-cost equations filling the gaps (`GetRequirementVariables` +
+/// `GetRequirements`). Sorted by requirement tag; zero-valued
+/// entries dropped.
+#[must_use]
+pub fn item_requirements(db: &GameCache, item: &Item) -> Vec<(Requirement, i32)> {
+    fn merge_max(merged: &mut Vec<(Requirement, i32)>, requirements: &[(Requirement, i32)]) {
+        for (key, value) in requirements {
+            match merged.iter_mut().find(|(existing, _)| existing == key) {
+                Some((_, existing_value)) => *existing_value = (*existing_value).max(*value),
+                None => merged.push((*key, *value)),
+            }
+        }
+    }
+    let stats_of = |id: &RecordId| db.entry(id).and_then(|entry| entry.stats.as_ref());
+    let base = stats_of(&item.base);
+    let mut merged: Vec<(Requirement, i32)> = Vec::new();
+    if let Some(stats) = base {
+        merge_max(&mut merged, &stats.requirements);
+        let total_att_count: i32 = [Some(&item.base), item.prefix.as_ref(), item.suffix.as_ref()]
+            .into_iter()
+            .flatten()
+            .filter_map(stats_of)
+            .map(|block| block.attribute_count)
+            .sum();
+        for (key, expression) in &stats.equations {
+            if merged.iter().any(|(existing, _)| existing == key) {
+                continue;
+            }
+            let item_level = f64::from(stats.item_level);
+            let lookup = move |name: &str| match name {
+                "itemLevel" => Some(item_level),
+                "totalAttCount" => Some(f64::from(total_att_count)),
+                _ => None,
+            };
+            if let Some(value) = format::eval_equation(expression, &lookup) {
+                let value = value.ceil();
+                if value.is_finite() {
+                    merged.push((*key, value as i32));
+                }
+            }
+        }
+    }
+    for source in [
+        item.prefix.as_ref(),
+        item.suffix.as_ref(),
+        item.relic.as_ref(),
+        item.atlantis
+            .as_ref()
+            .and_then(|extra| extra.relic.as_ref()),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Some(stats) = stats_of(source) {
+            merge_max(&mut merged, &stats.requirements);
+        }
+    }
+    merged.retain(|(_, value)| *value > 0);
+    merged.sort_by_key(|(key, _)| key.text_tag());
+    merged
+}
+
 struct Assembler<'a> {
     db: &'a GameCache,
     item: &'a Item,
@@ -381,108 +445,15 @@ impl Assembler<'_> {
     }
 
     fn dlc_origin(&self) -> Option<&'static str> {
-        let rank = |id: Option<&RecordId>| -> u8 {
-            let Some(id) = id else { return 0 };
-            let upper = id.as_str().to_uppercase();
-            let head = upper.trim_start_matches(['\\', '/']);
-            let head = head
-                .strip_prefix("RECORDS")
-                .map_or(head, |rest| rest.trim_start_matches(['\\', '/']));
-            if head.starts_with("XPACK4") {
-                4
-            } else if head.starts_with("XPACK3") {
-                3
-            } else if head.starts_with("XPACK2") {
-                2
-            } else {
-                u8::from(head.starts_with("XPACK"))
-            }
-        };
-        let highest = [
-            Some(&self.item.base),
-            self.item.prefix.as_ref(),
-            self.item.suffix.as_ref(),
-        ]
-        .into_iter()
-        .map(rank)
-        .max()
-        .unwrap_or(0);
-        match highest {
-            1 => Some("Immortal Throne"),
-            2 => Some("Ragnarök"),
-            3 => Some("Atlantis"),
-            4 => Some("Eternal Embers"),
-            _ => None,
-        }
+        crate::query::expansion_origin(self.item).map(crate::query::Expansion::label)
     }
 
-    /// `GetRequirementVariables` + `GetRequirements`: explicit values
-    /// max-merged across records, equations filling the gaps.
+    /// `GetRequirementVariables` + `GetRequirements`, formatted.
     fn requirements(&self) -> Vec<StatLine> {
-        fn merge_max(merged: &mut Vec<(Requirement, i32)>, requirements: &[(Requirement, i32)]) {
-            for (key, value) in requirements {
-                match merged.iter_mut().find(|(existing, _)| existing == key) {
-                    Some((_, existing_value)) => *existing_value = (*existing_value).max(*value),
-                    None => merged.push((*key, *value)),
-                }
-            }
-        }
-        let base = self.stats(&self.item.base);
-        let mut merged: Vec<(Requirement, i32)> = Vec::new();
-        if let Some(stats) = base {
-            merge_max(&mut merged, &stats.requirements);
-        }
-        if let Some(stats) = base {
-            let total_att_count: i32 = [
-                Some(&self.item.base),
-                self.item.prefix.as_ref(),
-                self.item.suffix.as_ref(),
-            ]
-            .into_iter()
-            .flatten()
-            .filter_map(|id| self.stats(id))
-            .map(|block| block.attribute_count)
-            .sum();
-            for (key, expression) in &stats.equations {
-                if merged.iter().any(|(existing, _)| existing == key) {
-                    continue;
-                }
-                let item_level = f64::from(stats.item_level);
-                let lookup = move |name: &str| match name {
-                    "itemLevel" => Some(item_level),
-                    "totalAttCount" => Some(f64::from(total_att_count)),
-                    _ => None,
-                };
-                if let Some(value) = format::eval_equation(expression, &lookup) {
-                    let value = value.ceil();
-                    if value.is_finite() {
-                        merged.push((*key, value as i32));
-                    }
-                }
-            }
-        }
-        for source in [
-            self.item.prefix.as_ref(),
-            self.item.suffix.as_ref(),
-            self.item.relic.as_ref(),
-            self.item
-                .atlantis
-                .as_ref()
-                .and_then(|extra| extra.relic.as_ref()),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if let Some(stats) = self.stats(source) {
-                merge_max(&mut merged, &stats.requirements);
-            }
-        }
-        merged.retain(|(_, value)| *value > 0);
-        merged.sort_by_key(|(key, _)| key.text_tag());
         let spec = self
             .label("MeetsRequirement")
             .map_or_else(|| parse_format("?Required? {%s0}: {%.0f1}"), parse_format);
-        merged
+        item_requirements(self.db, self.item)
             .into_iter()
             .map(|(key, value)| {
                 let name = self
@@ -497,7 +468,7 @@ impl Assembler<'_> {
     }
 }
 
-fn attr_slot(stats: &StatBlock, slot: usize) -> &[StatLine] {
+pub(crate) fn attr_slot(stats: &StatBlock, slot: usize) -> &[StatLine] {
     stats
         .attr
         .get(slot.min(stats.attr.len().saturating_sub(1)))
