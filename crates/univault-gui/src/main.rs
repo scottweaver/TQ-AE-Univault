@@ -270,7 +270,11 @@ impl Caches {
         db: Option<&GameCache>,
         item: &Item,
     ) -> Option<egui::TextureHandle> {
-        if let Some(cached) = self.icons.get(item.base.as_str()) {
+        // Partial relics/charms render their shard art, so the key
+        // carries completeness alongside the record.
+        let shard = db.is_some_and(|db| db.is_incomplete_relic(item));
+        let key = format!("{}#{}", item.base.as_str(), u8::from(shard));
+        if let Some(cached) = self.icons.get(&key) {
             return cached.clone();
         }
         let handle = db.and_then(|db| db.item_icon(item)).map(|image| {
@@ -278,14 +282,9 @@ impl Caches {
                 [image.width, image.height],
                 &image.pixels,
             );
-            ctx.load_texture(
-                item.base.as_str().to_string(),
-                pixels,
-                egui::TextureOptions::LINEAR,
-            )
+            ctx.load_texture(key.clone(), pixels, egui::TextureOptions::LINEAR)
         });
-        self.icons
-            .insert(item.base.as_str().to_string(), handle.clone());
+        self.icons.insert(key, handle.clone());
         handle
     }
 }
@@ -383,6 +382,7 @@ struct App {
     autosave_at: Option<Instant>,
     status: Option<Result<String, String>>,
     pending_respec: Option<PendingRespec>,
+    pending_bonus: Option<PendingBonus>,
     /// A requested reload awaiting confirmation because unsaved
     /// edits would be lost.
     pending_reload: bool,
@@ -424,6 +424,7 @@ impl App {
             autosave_at: None,
             status: None,
             pending_respec: None,
+            pending_bonus: None,
             pending_reload: false,
             drag: None,
             pending_zoom: 1.0,
@@ -1432,6 +1433,7 @@ impl eframe::App for App {
         self.drive_autosave(ui.ctx());
         self.show_respec_modal(ui.ctx());
         self.show_reload_modal(ui.ctx());
+        self.show_bonus_modal(ui.ctx());
     }
 }
 
@@ -1453,6 +1455,24 @@ struct PendingRespec {
     kind: RespecKind,
     points: i32,
     skills_removed: usize,
+}
+
+/// A just-completed relic/charm awaiting its completion-bonus pick.
+struct PendingBonus {
+    grid: GridId,
+    index: usize,
+    base: RecordId,
+    name: String,
+    options: Vec<BonusOption>,
+    total_weight: i64,
+}
+
+/// One completion bonus the finished piece can take.
+struct BonusOption {
+    record: RecordId,
+    weight: i32,
+    name: String,
+    lines: Vec<stats::StatLine>,
 }
 
 impl App {
@@ -1693,15 +1713,233 @@ impl App {
         }
 
         if ctx.input(|input| input.pointer.any_released()) {
-            if let Some(candidate) = frame.candidate.filter(|candidate| candidate.fits) {
-                let same_spot =
-                    candidate.grid == state.source && candidate.cell == state.item.position;
-                if !same_spot {
-                    self.status = Some(self.perform_drop(&state, candidate));
+            if let Some(candidate) = frame.candidate {
+                if let Some(target_index) = candidate.combine_with {
+                    self.status = Some(self.perform_combine(&state, candidate.grid, target_index));
+                } else if candidate.fits {
+                    let same_spot =
+                        candidate.grid == state.source && candidate.cell == state.item.position;
+                    if !same_spot {
+                        self.status = Some(self.perform_drop(&state, candidate));
+                    }
                 }
             }
             self.drag = None;
             ctx.request_repaint();
+        }
+    }
+
+    /// Removes the item at `(grid, index)` from any container.
+    fn take_at(&mut self, grid: GridId, index: usize) -> Result<Item, String> {
+        match grid {
+            GridId::Sack(_) | GridId::Bank | GridId::Shared | GridId::Relic => {
+                self.take_from_left(grid, index)
+            }
+            GridId::VaultTab(tab) => {
+                let pane = self.right.as_mut().ok_or("no vault loaded")?;
+                transfer::take_from_vault(&mut pane.vault, tab, index)
+                    .map(|entry| entry.item)
+                    .ok_or_else(|| "item moved under the drag — drop ignored".to_string())
+            }
+        }
+    }
+
+    /// The item at `(grid, index)`, mutable in place.
+    fn grid_item_mut(&mut self, grid: GridId, index: usize) -> Option<&mut Item> {
+        match grid {
+            GridId::Sack(sack) => self
+                .character
+                .as_mut()?
+                .character
+                .sacks
+                .get_mut(sack)?
+                .items
+                .get_mut(index),
+            GridId::Bank => self.bank.as_mut()?.stash.items.get_mut(index),
+            GridId::Shared => self.shared.as_mut()?.stash.items.get_mut(index),
+            GridId::Relic => self.relics.as_mut()?.stash.items.get_mut(index),
+            GridId::VaultTab(tab) => self
+                .right
+                .as_mut()?
+                .vault
+                .sacks
+                .get_mut(tab)?
+                .items
+                .get_mut(index)
+                .map(|entry| &mut entry.item),
+        }
+    }
+
+    /// Drops a partial relic/charm onto a matching partial: shards
+    /// pour into the target up to completion, the remainder stays in
+    /// the source, and a completed piece opens the bonus picker.
+    fn perform_combine(
+        &mut self,
+        state: &DragState,
+        grid: GridId,
+        target_index: usize,
+    ) -> Result<String, String> {
+        let needed = match &self.game {
+            GameStatus::Loaded(db) => db.completed_relic_level(&state.item.base),
+            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
+        }
+        .ok_or("no completion data for this item")?;
+
+        let mut source = self.take_at(state.source, state.index)?;
+        if source.base != state.item.base {
+            let origin = state.item.position;
+            self.restore_dropped(state.source, source, origin)?;
+            return Err("item moved under the drag — drop ignored".to_string());
+        }
+        let origin = source.position;
+        let target_index = if state.source == grid && state.index < target_index {
+            target_index - 1
+        } else {
+            target_index
+        };
+        let outcome = match self.grid_item_mut(grid, target_index) {
+            Some(target) if target.base == source.base => {
+                transfer::combine_shards(target, &mut source, needed)
+            }
+            Some(_) | None => {
+                self.restore_dropped(state.source, source, origin)?;
+                return Err("combine target moved — drop ignored".to_string());
+            }
+        };
+        if !outcome.source_emptied {
+            self.restore_dropped(state.source, source, origin)?;
+        }
+        self.mark_dirty(state.source);
+        self.mark_dirty(grid);
+        self.left_selected = None;
+        if let Some(pane) = &mut self.right {
+            pane.selected = None;
+        }
+        let db = match &self.game {
+            GameStatus::Loaded(data) => Some(data),
+            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
+        };
+        let label = self.caches.names.record_name(db, &state.item.base);
+        if outcome.target_completed {
+            self.begin_bonus_pick(grid, target_index, state.item.base.clone());
+            Ok(format!(
+                "{label} completed ({needed}/{needed}) — choose its bonus"
+            ))
+        } else {
+            Ok(format!(
+                "poured {} shard(s) into {label}",
+                outcome.transferred
+            ))
+        }
+    }
+
+    /// Prepares the completion-bonus picker for the piece at
+    /// `(grid, index)`; silently skipped when the record has no
+    /// bonus table (the piece simply completes bonus-less).
+    fn begin_bonus_pick(&mut self, grid: GridId, index: usize, base: RecordId) {
+        let GameStatus::Loaded(db) = &self.game else {
+            return;
+        };
+        let mut options = Vec::new();
+        let mut total_weight: i64 = 0;
+        for (path, weight) in db.relic_bonuses(&base) {
+            let Some(record) = RecordId::parse(path.clone()) else {
+                continue;
+            };
+            let name = self.caches.names.record_name(Some(db), &record);
+            let lines = stats::record_lines(db, &record);
+            total_weight += i64::from((*weight).max(0));
+            options.push(BonusOption {
+                record,
+                weight: *weight,
+                name,
+                lines,
+            });
+        }
+        if options.is_empty() {
+            return;
+        }
+        let name = self.caches.names.record_name(Some(db), &base);
+        self.pending_bonus = Some(PendingBonus {
+            grid,
+            index,
+            base,
+            name,
+            options,
+            total_weight: total_weight.max(1),
+        });
+    }
+
+    /// Writes the chosen completion bonus (or none) onto the
+    /// completed piece.
+    fn apply_bonus(&mut self, choice: Option<RecordId>) -> Result<String, String> {
+        let pending = self.pending_bonus.take().ok_or("no bonus pending")?;
+        let stale = "the completed piece moved — bonus not applied";
+        match self.grid_item_mut(pending.grid, pending.index) {
+            Some(item) if item.base == pending.base => {
+                item.relic_bonus.clone_from(&choice);
+            }
+            Some(_) | None => return Err(stale.to_string()),
+        }
+        self.mark_dirty(pending.grid);
+        let db = match &self.game {
+            GameStatus::Loaded(data) => Some(data),
+            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
+        };
+        Ok(match choice {
+            Some(record) => {
+                let bonus = self.caches.names.record_name(db, &record);
+                format!("{} completed — bonus: {bonus}", pending.name)
+            }
+            None => format!("{} completed with no bonus", pending.name),
+        })
+    }
+
+    fn show_bonus_modal(&mut self, ctx: &egui::Context) {
+        let Some(pending) = &self.pending_bonus else {
+            return;
+        };
+        let mut choice: Option<Option<RecordId>> = None;
+        let mut close = false;
+        let modal = egui::Modal::new(egui::Id::new("bonus-modal")).show(ctx, |ui| {
+            ui.set_max_width(440.0);
+            ui.heading(format!("Completion bonus — {}", pending.name));
+            ui.weak("The game would roll one of these; pick yours (odds shown).");
+            ui.add_space(6.0);
+            egui::ScrollArea::vertical()
+                .max_height(420.0)
+                .show(ui, |ui| {
+                    for option in &pending.options {
+                        let odds = i64::from(option.weight.max(0)) * 100 / pending.total_weight;
+                        ui.group(|ui| {
+                            if ui.button(format!("{} — {odds}%", option.name)).clicked() {
+                                choice = Some(Some(option.record.clone()));
+                            }
+                            for line in &option.lines {
+                                ui.label(
+                                    egui::RichText::new(&line.text)
+                                        .color(game_color(stats::palette_color(line.color)))
+                                        .size(12.0),
+                                );
+                            }
+                        });
+                    }
+                });
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui.button("No bonus").clicked() {
+                    choice = Some(None);
+                }
+                close = ui.button("Decide later").clicked();
+            });
+        });
+        if let Some(choice) = choice {
+            self.status = Some(self.apply_bonus(choice));
+        } else if close || modal.should_close() {
+            // The piece stays bonus-less; there is no re-open path,
+            // which matches the game (an unpicked roll is forfeited).
+            self.pending_bonus = None;
+            self.status = Some(Ok("completed without a bonus".to_string()));
         }
     }
 
@@ -1714,17 +1952,7 @@ impl App {
         };
         let label = self.caches.names.item_label(db, &state.item);
 
-        let taken = match state.source {
-            GridId::Sack(_) | GridId::Bank | GridId::Shared | GridId::Relic => {
-                self.take_from_left(state.source, state.index)?
-            }
-            GridId::VaultTab(tab) => {
-                let pane = self.right.as_mut().ok_or("no vault loaded")?;
-                transfer::take_from_vault(&mut pane.vault, tab, state.index)
-                    .map(|entry| entry.item)
-                    .ok_or("item moved under the drag — drop ignored")?
-            }
-        };
+        let taken = self.take_at(state.source, state.index)?;
 
         if taken.base != state.item.base {
             let origin = state.item.position;
@@ -2078,6 +2306,9 @@ struct DropCandidate {
     grid: GridId,
     cell: univault_core::chr::GridPos,
     fits: bool,
+    /// A matching partial relic/charm under the pointer: dropping
+    /// combines into the item at this index instead of placing.
+    combine_with: Option<usize>,
 }
 
 /// What the grids reported back this frame.
@@ -2295,6 +2526,45 @@ fn paint_drop_preview(
         x: point_to_cell(relative.x, dims.0, footprint.0),
         y: point_to_cell(relative.y, dims.1, footprint.1),
     };
+    // A matching partial relic/charm under the pointer offers a
+    // combine instead of a placement — highlighted gold.
+    for (index, item) in entries {
+        if state.source == grid && state.index == *index {
+            continue;
+        }
+        if !transfer::can_combine(db, &state.item, item) {
+            continue;
+        }
+        let (width, height) = caches.footprint(db, item);
+        let item_rect = egui::Rect::from_min_size(
+            rect.min
+                + egui::vec2(
+                    cells_to_points(item.position.x),
+                    cells_to_points(item.position.y),
+                ),
+            egui::vec2(cells_to_points(width), cells_to_points(height)),
+        )
+        .shrink(1.0);
+        if item_rect.contains(cursor) {
+            painter.rect_filled(
+                item_rect,
+                2.0,
+                egui::Color32::from_rgba_unmultiplied(255, 200, 40, 60),
+            );
+            painter.rect_stroke(
+                item_rect,
+                2.0,
+                egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 200, 40)),
+                egui::StrokeKind::Inside,
+            );
+            return DropCandidate {
+                grid,
+                cell,
+                fits: false,
+                combine_with: Some(*index),
+            };
+        }
+    }
     let skip = (state.source == grid).then_some(state.index);
     let occupied: Vec<univault_core::grid::CellRect> = entries
         .iter()
@@ -2333,7 +2603,12 @@ fn paint_drop_preview(
         egui::Stroke::new(2.0, stroke),
         egui::StrokeKind::Inside,
     );
-    DropCandidate { grid, cell, fits }
+    DropCandidate {
+        grid,
+        cell,
+        fits,
+        combine_with: None,
+    }
 }
 
 /// The grid cell a point lands in, clamped so the footprint stays

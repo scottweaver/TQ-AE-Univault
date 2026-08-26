@@ -90,6 +90,20 @@ that's better") and merged as PR #7.
 
 ## Most recent meaningful progress
 
+- **2026-08-26 — Shard icons + in-app charm combining.** Two user
+  asks: partial relics/charms now render the game's `shardBitmap`
+  art (complete pieces keep `relicBitmap`), so partials read at a
+  glance; and dragging a partial onto a matching partial pours
+  shards into it (gold drop-highlight; the game's merge rule — the
+  remainder stays in the source, nothing destroyed). Completing a
+  piece opens a picker modal listing every completion bonus from
+  the record's `bonusTableName` table with stats and odds — the
+  user chooses (their call, over a game-faithful random roll).
+  Cache format `UVC5` (shard icon + bonus tables per relic record;
+  next launch re-imports, ~8s). Real-data gate: Boar's Hide level
+  5, five bonuses w/ correct weights, distinct partial/complete
+  pixels, "+4 Armor" line renders. 160 tests. Risk: combine gesture
+  and modal visually unverified until the user drags real shards.
 - **2026-08-25 — Stash `.dxg` twin fallback (bug fix).** The user's
   relic bank failed to reload: the game's save over SMB truncated
   `miscsys.dxb` mid-item (stored CRC didn't match the shortened
@@ -290,20 +304,6 @@ that's better") and merged as PR #7.
   even with no game data. 105 tests. Risk: tooltip visuals
   unverified until the user hovers a real grid; path fallback skips
   TQVaultAE's Eternal Embers special-case relic lists.
-- **2026-08-24 — Local game-data cache: import once, launch from
-  cache.** User-directed pivot: instead of pointing at the game dir
-  every launch, one Import pass distills all 13,188 item records
-  (names, footprints, zlib'd RGBA icons) into a 50MB UTF-8/binary
-  cache under the config dir (`cache` module; ARCHITECTURE gained
-  the derived-cache constraint). `GameCache` replaced `GameData` as
-  the runtime DB everywhere (GameData is now import-time only);
-  launches need no game volume, staleness is fingerprint-detected
-  (size+mtime), `--game` now just forces a re-import, and the GUI
-  gained "Import game data…". Real-data gate caught a 1252-encoding
-  bug: "Jǫrmungandr" doesn't fit Windows-1252 — cache strings are
-  UTF-8. 95+ tests; cache answers verified identical to live data
-  across all real characters. Risk: cache format is versioned only
-  by magic — bump `UVC1` on layout changes.
 ## Blocked / waiting
 
 - *(nothing)*

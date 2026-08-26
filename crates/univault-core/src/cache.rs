@@ -8,11 +8,13 @@
 //!
 //! Format (all little-endian, strings length-prefixed **UTF-8** —
 //! localized names exceed Windows-1252, e.g. Ragnarök's
-//! "Jǫrmungandr"): `UVC4` magic, source-fingerprint list (path, size,
+//! "Jǫrmungandr"): `UVC5` magic, source-fingerprint list (path, size,
 //! mtime seconds), a table of runtime display labels, then entries
 //! keyed by normalized record path: name, footprint, classification
-//! and kind tags, an optional JSON-encoded stat block, and an
-//! optional zlib-compressed RGBA icon.
+//! and kind tags, an optional JSON-encoded stat block, an optional
+//! zlib-compressed RGBA icon, an optional second icon (the relic/
+//! charm shard art shown while incomplete), and the completion-bonus
+//! table (record path + weight pairs) for relics and charms.
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -32,7 +34,7 @@ use crate::writer::{write_i32, write_i64};
 // The magic is the cache's only version: bump it for layout changes
 // AND for content-generation changes (names, stat rendering), so
 // existing caches rebuild automatically.
-const MAGIC: i32 = 0x3443_5655; // "UVC4"
+const MAGIC: i32 = 0x3543_5655; // "UVC5"
 
 /// Identity of one source file at import time; the shell compares
 /// these against the live files to detect a game update.
@@ -56,6 +58,11 @@ pub(crate) struct CacheEntry {
     pub(crate) kind: ItemKind,
     pub(crate) stats: Option<StatBlock>,
     pub(crate) icon: Option<CachedIcon>,
+    /// The shard art a relic/charm shows while incomplete.
+    pub(crate) shard_icon: Option<CachedIcon>,
+    /// Completion bonuses a relic/charm can roll: game-style record
+    /// path + table weight, in table order.
+    pub(crate) bonuses: Vec<(String, i32)>,
 }
 
 /// The runtime item database, loaded from (or about to be saved as)
@@ -133,10 +140,18 @@ impl GameCache {
             .map_or(FALLBACK_FOOTPRINT, |entry| entry.footprint)
     }
 
-    /// Decoded icon for an item, when one was imported.
+    /// Decoded icon for an item, when one was imported. Incomplete
+    /// relics and charms get their shard art so partials read at a
+    /// glance; everything else (and completed pieces) gets the
+    /// record's main icon.
     #[must_use]
     pub fn item_icon(&self, item: &Item) -> Option<RgbaImage> {
-        let icon = self.entry(&item.base)?.icon.as_ref()?;
+        let entry = self.entry(&item.base)?;
+        let icon = if self.is_incomplete_relic(item) {
+            entry.shard_icon.as_ref().or(entry.icon.as_ref())
+        } else {
+            entry.icon.as_ref()
+        }?;
         let mut pixels = Vec::new();
         ZlibDecoder::new(icon.zlib_rgba.as_slice())
             .read_to_end(&mut pixels)
@@ -146,6 +161,38 @@ impl GameCache {
             height: usize::try_from(icon.height).ok()?,
             pixels,
         })
+    }
+
+    /// The shard count that completes a relic/charm record; `None`
+    /// for other kinds (or when the record is unknown).
+    #[must_use]
+    pub fn completed_relic_level(&self, id: &RecordId) -> Option<i32> {
+        match self.entry(id)?.kind {
+            ItemKind::RelicOrCharm {
+                completed_level, ..
+            } => completed_level,
+            ItemKind::Gear
+            | ItemKind::Artifact
+            | ItemKind::Formula
+            | ItemKind::Scroll
+            | ItemKind::Potion
+            | ItemKind::Quest => None,
+        }
+    }
+
+    /// Whether an item is a relic/charm still short of its completion
+    /// level (`var1` is the shard count).
+    #[must_use]
+    pub fn is_incomplete_relic(&self, item: &Item) -> bool {
+        self.completed_relic_level(&item.base)
+            .is_some_and(|needed| item.var1 < needed)
+    }
+
+    /// The completion bonuses a relic/charm can roll, as game-style
+    /// record paths with their table weights; empty for other kinds.
+    #[must_use]
+    pub fn relic_bonuses(&self, id: &RecordId) -> &[(String, i32)] {
+        self.entry(id).map_or(&[], |entry| entry.bonuses.as_slice())
     }
 
     /// Serializes the cache to its file format.
@@ -195,15 +242,22 @@ impl GameCache {
                 }
                 None => write_i32(&mut out, 0),
             }
-            match &entry.icon {
-                Some(icon) => {
-                    write_i32(&mut out, 1);
-                    write_i32(&mut out, icon.width);
-                    write_i32(&mut out, icon.height);
-                    write_i32(&mut out, i32::try_from(icon.zlib_rgba.len()).unwrap_or(0));
-                    out.extend_from_slice(&icon.zlib_rgba);
+            for icon in [&entry.icon, &entry.shard_icon] {
+                match icon {
+                    Some(icon) => {
+                        write_i32(&mut out, 1);
+                        write_i32(&mut out, icon.width);
+                        write_i32(&mut out, icon.height);
+                        write_i32(&mut out, i32::try_from(icon.zlib_rgba.len()).unwrap_or(0));
+                        out.extend_from_slice(&icon.zlib_rgba);
+                    }
+                    None => write_i32(&mut out, 0),
                 }
-                None => write_i32(&mut out, 0),
+            }
+            write_i32(&mut out, i32::try_from(entry.bonuses.len()).unwrap_or(0));
+            for (record, weight) in &entry.bonuses {
+                write_utf8(&mut out, record);
+                write_i32(&mut out, *weight);
             }
         }
         out
@@ -254,20 +308,32 @@ impl GameCache {
             } else {
                 None
             };
-            let icon = if reader.read_i32()? == 1 {
-                let width = reader.read_i32()?;
-                let height = reader.read_i32()?;
-                let length =
-                    usize::try_from(reader.read_i32()?).map_err(|_| CacheError::BadMagic)?;
-                let zlib_rgba = reader.read_bytes(length)?.to_vec();
-                Some(CachedIcon {
-                    width,
-                    height,
-                    zlib_rgba,
-                })
-            } else {
-                None
-            };
+            let read_icon =
+                |reader: &mut ByteReader<'_>| -> Result<Option<CachedIcon>, CacheError> {
+                    if reader.read_i32()? != 1 {
+                        return Ok(None);
+                    }
+                    let width = reader.read_i32()?;
+                    let height = reader.read_i32()?;
+                    let length =
+                        usize::try_from(reader.read_i32()?).map_err(|_| CacheError::BadMagic)?;
+                    let zlib_rgba = reader.read_bytes(length)?.to_vec();
+                    Ok(Some(CachedIcon {
+                        width,
+                        height,
+                        zlib_rgba,
+                    }))
+                };
+            let icon = read_icon(&mut reader)?;
+            let shard_icon = read_icon(&mut reader)?;
+            let bonus_count =
+                usize::try_from(reader.read_i32()?).map_err(|_| CacheError::Corrupt)?;
+            let mut bonuses = Vec::with_capacity(bonus_count);
+            for _ in 0..bonus_count {
+                let record = read_utf8(&mut reader)?;
+                let weight = reader.read_i32()?;
+                bonuses.push((record, weight));
+            }
             entries.insert(
                 path,
                 CacheEntry {
@@ -277,6 +343,8 @@ impl GameCache {
                     kind,
                     stats,
                     icon,
+                    shard_icon,
+                    bonuses,
                 },
             );
         }
