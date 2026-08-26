@@ -10,6 +10,7 @@
 use rmcp::ServiceExt;
 use rmcp::transport::stdio;
 
+mod gamedb;
 mod server;
 mod view;
 mod world;

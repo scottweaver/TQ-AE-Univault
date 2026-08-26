@@ -10,17 +10,15 @@ Last updated: 2026-08-26
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** nothing in flight — PR #17 (Core Dweller
-Provoke/Wildfire mod tune) and PR #18 (read-only MCP server,
-`univault-mcp`) merged 2026-08-26, wrap-up done, main green (167
-tests). The MCP server is user-ACCEPTED same day ("able to use
-just fine") from the user's "Titan Quest AE Buildcrafting" Claude
-project — registered in Claude Desktop's
-`claude_desktop_config.json` and the repo's `.mcp.json` for Claude
-Code; after merges that touch it, refresh the binary with `cargo
-build --release -p univault-mcp` (Cowork can't spawn local
-binaries — HTTP transport would be a structural change). Pick from
-"Next up".
+**Resume here:** PR #22 (MCP full-database + mod overlays, 16
+tools) merged 2026-08-26, wrap-up done, release binary rebuilt from
+main (Claude Desktop/Code serve the new tools after a restart).
+Still open: **PR #21 (GUI auto-refresh + conflict prompts)** —
+awaiting the user's in-app acceptance run (play, save in-game,
+watch panes update; conflict modal on simultaneous edits). Its
+branch `feat/auto-refresh` will conflict with main's STATE.md on
+merge — keep both progress entries, re-trim to 10. Otherwise pick
+from "Next up".
 
 - GitHub Actions event delivery was unreliable all 2026-08-26
   (major outage + slow recovery): push/PR webhook events silently
@@ -76,7 +74,8 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#18 merged (latest: Core Dweller mod tune #17, MCP server #18); all gates green |
+| `main` | trunk | PRs #1–#20, #22 merged (latest: MCP full database + mod overlays #22); all gates green |
+| `feat/auto-refresh` | GUI auto-refresh + conflict prompts (PR #21) | CI green; awaiting user in-app acceptance |
 
 ## Next up
 
@@ -126,6 +125,41 @@ that's better") and merged as PR #7.
   feel unverified against the real SMB tree (poll cost, false
   settles) until the user runs it; a reload that fails mid-conflict
   leaves the pane clean-but-stale (same as manual Reload).
+- **2026-08-26 — Shard encoding fix + Enchanter-free extraction.**
+  User-reported bug: fresh single-shard drops refused to combine —
+  the game encodes one shard as `var1 = 0`, a rule the stats
+  renderer already carried but `can_combine` did not. New
+  `transfer::shard_count` (= `var1.max(1)`) is the one home for the
+  encoding; combine works on effective counts, display (GUI + MCP)
+  now shows 1/N like the game, and completed pieces are no longer
+  valid pour sources (PR #24, diagnosed from live data via the MCP
+  record tools). Then the user ask "keep both at the Enchanter":
+  the database interrogation proved the destroy-one-side rule is
+  engine code (two fixed template slots, no data hook — only
+  `enchanterRecoveryFactor` scales cost), so the app does it
+  instead: Alt+Click an item with a socketed relic/charm extracts
+  the piece — shard count and bonus preserved, Atlantis second
+  socket handled (its var2 stores a completed-sentinel, clamped),
+  piece auto-placed, gear committed only after the piece has a
+  home. 175 tests. Risk: in-app acceptance pending; gesture is
+  Alt+Click (documented in the header hint).
+- **2026-08-26 — MCP: the whole database, mods included.** User
+  ask ("expose ALL internal game file data, monster info, my mod
+  changes"): six new tools — search_records (path or localized-name
+  search over every record, class filter, lazy full-decode index),
+  get_record (any record, template-default noise omitted unless
+  everything: true, tags translated inline), list_mods,
+  diff_record / diff_mod (vanilla vs bundle, per-variable), and
+  translate_tag. The installed CustomMaps bundle (auto-discovered
+  beside the save tree, UNIVAULT_CUSTOMMAPS override) overlays
+  every record tool by default — "what the game actually plays" —
+  with mod: "vanilla" opting out and provenance on every response.
+  Verified live: 58 Ratman monsters with names and per-difficulty
+  arrays; Provoke reads radius 5.0 as mod-override vs 3.0 vanilla;
+  diff_mod sweeps 8,866 bundle records (290 added) in ~2s. 173
+  tests. Risk: none new — read-only reads of already-sanctioned
+  formats; user acceptance from their buildcrafting project
+  pending.
 - **2026-08-26 — MCP server: game data for AI agents.** User ask
   ("a true MCP server, not just exports"), design-dialogued:
   read-only v1, official `rmcp` SDK, stdio-only — ARCHITECTURE
@@ -278,43 +312,6 @@ that's better") and merged as PR #7.
   regen 2.0 → 3.5/s) — via a
   new list form of the modforge `record` rule; bundle rebuilt +
   reinstalled, installed arz verified; in-game check pending.
-
-- **2026-08-25 — Mastery skill-tree export for AI theorycrafting.**
-  PR #2 (rotation + respec) merged. New `skilltree` example distills
-  `database.arz` into one JSON per mastery (all 11 discovered via
-  `Skill_Mastery` records; dev leftovers — `OLD\`/`REV`/dated dirs,
-  the cut Medicine mastery — filtered; skills swept flat per mastery
-  dir): localized names/descriptions, tiers
-  (`skillMasteryLevelRequired`), caps, per-level effect arrays, and
-  transitively the referenced buffs/pets/sub-skills, with cosmetic
-  variables (anim/sound/particle) stripped — 83–462 KB per file
-  plus an index. Output goes to gitignored `exports/` (derived game
-  data stays local per ARCHITECTURE's never-distribute posture);
-  `arz::normalize` and `GameData::tag_text` went public for
-  example use. Spot-checked against known values (Warfare mastery
-  +2 str/level, Onslaught tier 1 max 8/12, Wolf_16 612 life).
-- **2026-08-25 — Backup rotation + full respec.** Two user-requested
-  features before drag-and-drop. Rotation: after each synced backup
-  the oldest `univault-bak` siblings beyond 5 are pruned per file;
-  new backup names floor above the newest existing so rotation
-  (which ages by name) can never eat the newest. Respec: new core
-  `respec` module — attribute reset (five `temp` floats after
-  `skillPoints`, refund from deltas vs 50/50/50/300/300 at
-  4/4/4/40/40 per point) and skill/mastery reset (skill-list splice
-  keeping Default/AllMasteries/quest skills, `playerClassTag`
-  cleared to fresh-character empty, hotbar slots of removed skills
-  emptied to storedType -1, weapon-set selections zeroed, refund
-  into `skillPoints`). Layout mapped from TQVaultAE's MIT
-  TQSaveFilesExplorer + probes of real saves (new `chrprobe`
-  example); `tqrespec` eyes-only. GUI: two buttons on the character
-  pane behind a confirm modal showing the previewed refund; applies
-  to the pane's baseline bytes, Save still explicit +
-  backup-first. Read-only dry run (`respecdry` example) across all
-  6 real saves: previews match hand-computed spend exactly (16 attr
-  / 25 skill pts, 7 skills on Pally Don), reparse identical
-  items/equipment/money, second pass refunds zero. 144 tests.
-  Risk: GUI modal visually unverified; in-game acceptance (load a
-  respecced save, re-pick masteries) still pending.
 
 ## Blocked / waiting
 

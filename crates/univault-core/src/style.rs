@@ -248,8 +248,10 @@ fn classification(db: Option<&GameCache>, id: Option<&RecordId>) -> Classificati
 }
 
 /// Shard progress of a standalone relic or charm (`None` for any
-/// other item): `have` is the item's collected count, `needed` the
-/// record's completion level when the database knows it.
+/// other item): `have` is the item's effective collected count (the
+/// game encodes a single shard as `var1 = 0`, so this is never below
+/// one), `needed` the record's completion level when the database
+/// knows it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RelicShards {
     pub have: i32,
@@ -259,7 +261,7 @@ pub struct RelicShards {
 #[must_use]
 pub fn relic_shards(db: Option<&GameCache>, item: &Item) -> Option<RelicShards> {
     (item_style(db, item) == ItemStyle::Relic).then(|| RelicShards {
-        have: item.var1,
+        have: crate::transfer::shard_count(item),
         needed: db
             .and_then(|db| db.entry(&item.base))
             .and_then(|entry| match entry.kind {
@@ -488,11 +490,13 @@ mod tests {
             relic_shards(db, &item("records\\item\\plainsword.dbr")),
             None
         );
+        // A zero-encoded `var1` is the game's freshly dropped single
+        // shard — one shard, not zero.
         let unknown = item("records\\item\\relics\\mystery.dbr");
         assert_eq!(
             relic_shards(None, &unknown),
             Some(RelicShards {
-                have: 0,
+                have: 1,
                 needed: None
             })
         );

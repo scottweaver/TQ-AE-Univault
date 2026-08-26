@@ -337,29 +337,109 @@ pub struct Combined {
     pub target_completed: bool,
 }
 
+/// A standalone relic/charm's shard count. The game stores a single
+/// freshly dropped shard as `var1 = 0` — one shard and "unset" share
+/// an encoding — so the effective count is never below one (the same
+/// rule the stats renderer ports from `TQVaultAE`).
+#[must_use]
+pub fn shard_count(item: &Item) -> i32 {
+    item.var1.max(1)
+}
+
 /// Whether `source` can pour shards into `target`: the same
-/// relic/charm record, the target still short of completion, and
-/// the completion level known from game data.
+/// relic/charm record, both still short of completion (a completed
+/// piece is a finished item carrying its bonus — never a pour
+/// source), and the completion level known from game data.
 #[must_use]
 pub fn can_combine(db: Option<&GameCache>, source: &Item, target: &Item) -> bool {
     let Some(needed) = db.and_then(|db| db.completed_relic_level(&target.base)) else {
         return false;
     };
-    source.base == target.base && source.var1 > 0 && target.var1 < needed
+    source.base == target.base && shard_count(source) < needed && shard_count(target) < needed
 }
 
 /// Pours shards from `source` into `target` up to `needed` — the
 /// game's merge rule: the remainder stays in the source, so shards
-/// are never destroyed.
+/// are never destroyed. Counts are the effective [`shard_count`]s,
+/// so zero-encoded single shards pour their one shard.
 pub fn combine_shards(target: &mut Item, source: &mut Item, needed: i32) -> Combined {
-    let transferred = source.var1.min(needed - target.var1).max(0);
-    target.var1 += transferred;
-    source.var1 -= transferred;
+    let source_count = shard_count(source);
+    let target_count = shard_count(target);
+    let transferred = source_count.min(needed - target_count).max(0);
+    target.var1 = target_count + transferred;
+    source.var1 = source_count - transferred;
     Combined {
         transferred,
         source_emptied: source.var1 <= 0,
         target_completed: target.var1 >= needed,
     }
+}
+
+/// Which socket of a gear item holds the piece to extract: the
+/// classic relic/charm socket, or the Atlantis-era second socket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelicSlot {
+    First,
+    Second,
+}
+
+/// Why an extraction failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ExtractError {
+    #[error("nothing is socketed in that slot")]
+    NoRelic,
+}
+
+/// The socket an extraction would take from, first socket first;
+/// `None` when nothing is socketed.
+#[must_use]
+pub fn socketed_slot(item: &Item) -> Option<RelicSlot> {
+    if item.relic.is_some() {
+        return Some(RelicSlot::First);
+    }
+    item.atlantis
+        .as_ref()
+        .and_then(|extra| extra.relic.as_ref())
+        .map(|_| RelicSlot::Second)
+}
+
+/// Splits the socketed relic/charm out of `gear` without destroying
+/// either side — the app-side alternative to the Enchanter's
+/// destroy-one-half recovery. The returned standalone piece carries
+/// the socket's shard count (clamped to the record's completion
+/// level — the second socket stores a completed-marker sentinel, not
+/// a count) and the socket's completion bonus; the gear keeps
+/// everything else. On error, `gear` is unchanged.
+///
+/// # Errors
+/// [`ExtractError::NoRelic`] when the requested socket is empty.
+pub fn extract_relic(
+    db: Option<&GameCache>,
+    gear: &mut Item,
+    slot: RelicSlot,
+) -> Result<Item, ExtractError> {
+    let (record, bonus, count) = match slot {
+        RelicSlot::First => {
+            let record = gear.relic.take().ok_or(ExtractError::NoRelic)?;
+            let bonus = gear.relic_bonus.take();
+            let count = gear.var1;
+            gear.var1 = 0;
+            (record, bonus, count)
+        }
+        RelicSlot::Second => {
+            let extra = gear.atlantis.take().ok_or(ExtractError::NoRelic)?;
+            let Some(record) = extra.relic else {
+                gear.atlantis = Some(extra);
+                return Err(ExtractError::NoRelic);
+            };
+            (record, extra.bonus, extra.var2)
+        }
+    };
+    let mut piece = Item::bare(record, gear.seed);
+    let needed = db.and_then(|db| db.completed_relic_level(&piece.base));
+    piece.var1 = needed.map_or_else(|| count.max(1), |needed| count.max(1).min(needed));
+    piece.relic_bonus = bonus;
+    Ok(piece)
 }
 
 #[cfg(test)]
@@ -426,6 +506,110 @@ mod tests {
         let a = shard(r"records\item\animalrelics\boarhide.dbr", 2);
         let b = shard(r"records\item\animalrelics\boarhide.dbr", 2);
         assert!(!can_combine(None, &a, &b));
+    }
+
+    /// The game stores one freshly dropped shard as `var1 = 0`; two
+    /// such singles must merge into a two-shard stack.
+    #[test]
+    fn combine_pours_zero_encoded_single_shards() {
+        let mut target = shard(r"records\item\animalrelics\boarhide.dbr", 0);
+        let mut source = shard(r"records\item\animalrelics\boarhide.dbr", 0);
+        let outcome = combine_shards(&mut target, &mut source, 3);
+        assert_eq!(
+            outcome,
+            Combined {
+                transferred: 1,
+                source_emptied: true,
+                target_completed: false,
+            }
+        );
+        assert_eq!(target.var1, 2);
+        assert_eq!(source.var1, 0);
+    }
+
+    fn charm_db() -> GameCache {
+        use crate::arz::ArzFile;
+        use crate::arz::fixture::{ArzBuilder, Values};
+        use crate::gamedata::GameData;
+        use crate::text::TextDb;
+        let mut builder = ArzBuilder::default();
+        builder.record(
+            "records\\item\\animalrelics\\boarhide.dbr",
+            "ItemCharm",
+            &[("completedRelicLevel", Values::Ints(&[3]))],
+        );
+        let data = GameData::from_parts(ArzFile::parse(builder.build()).unwrap(), TextDb::new());
+        data.build_cache(Vec::new())
+    }
+
+    #[test]
+    fn extract_keeps_gear_and_returns_the_piece_with_its_count_and_bonus() {
+        let db = charm_db();
+        let bonus = RecordId::parse(r"records\item\bonus.dbr".to_string()).unwrap();
+        let mut gear = shard(r"records\item\equipmentweapon\sword.dbr", 0);
+        gear.relic =
+            Some(RecordId::parse(r"records\item\animalrelics\boarhide.dbr".to_string()).unwrap());
+        gear.relic_bonus = Some(bonus.clone());
+        gear.var1 = 2;
+        assert_eq!(socketed_slot(&gear), Some(RelicSlot::First));
+
+        let piece = extract_relic(Some(&db), &mut gear, RelicSlot::First).unwrap();
+        assert_eq!(
+            piece.base.as_str(),
+            r"records\item\animalrelics\boarhide.dbr"
+        );
+        assert_eq!(piece.var1, 2);
+        assert_eq!(piece.relic_bonus, Some(bonus));
+        assert_eq!(gear.relic, None);
+        assert_eq!(gear.relic_bonus, None);
+        assert_eq!(gear.var1, 0);
+        assert_eq!(socketed_slot(&gear), None);
+    }
+
+    #[test]
+    fn extract_second_socket_clamps_the_completed_sentinel() {
+        let db = charm_db();
+        let mut gear = shard(r"records\item\equipmentweapon\sword.dbr", 0);
+        gear.atlantis = Some(crate::chr::AtlantisRelic {
+            relic: RecordId::parse(r"records\item\animalrelics\boarhide.dbr".to_string()),
+            bonus: None,
+            var2: crate::vault::VAR2_DEFAULT,
+        });
+        assert_eq!(socketed_slot(&gear), Some(RelicSlot::Second));
+
+        let piece = extract_relic(Some(&db), &mut gear, RelicSlot::Second).unwrap();
+        // The sentinel means "completed", not a count of two million.
+        assert_eq!(piece.var1, 3);
+        assert!(gear.atlantis.is_none());
+    }
+
+    #[test]
+    fn extract_from_an_empty_socket_changes_nothing() {
+        let mut gear = shard(r"records\item\equipmentweapon\sword.dbr", 0);
+        let before = gear.clone();
+        assert_eq!(
+            extract_relic(None, &mut gear, RelicSlot::First),
+            Err(ExtractError::NoRelic)
+        );
+        assert_eq!(
+            extract_relic(None, &mut gear, RelicSlot::Second),
+            Err(ExtractError::NoRelic)
+        );
+        assert_eq!(gear, before);
+    }
+
+    #[test]
+    fn can_combine_accepts_single_shards_and_rejects_completed_pieces() {
+        let db = charm_db();
+        let single = shard(r"records\item\animalrelics\boarhide.dbr", 0);
+        let partial = shard(r"records\item\animalrelics\boarhide.dbr", 2);
+        let completed = shard(r"records\item\animalrelics\boarhide.dbr", 3);
+        assert!(can_combine(Some(&db), &single, &partial));
+        assert!(can_combine(Some(&db), &partial, &single));
+        // A completed piece is a finished item: never a source and
+        // never a target.
+        assert!(!can_combine(Some(&db), &completed, &partial));
+        assert!(!can_combine(Some(&db), &partial, &completed));
     }
 
     fn player_bytes() -> Vec<u8> {

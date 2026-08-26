@@ -1168,6 +1168,64 @@ impl App {
         }
     }
 
+    /// Alt+Click: splits the socketed relic/charm out of the item at
+    /// `(grid, index)` — the cleaned item stays put and the
+    /// standalone piece (shard count and bonus preserved) is
+    /// auto-placed in the same container. Nothing is destroyed: the
+    /// app-side answer to the Enchanter's destroy-one-half recovery.
+    fn extract_socketed(&mut self, grid: GridId, index: usize) -> Result<String, String> {
+        let gear = self.item_at(grid, index)?;
+        let slot =
+            transfer::socketed_slot(&gear).ok_or("no relic or charm socketed in that item")?;
+        let db = match &self.game {
+            GameStatus::Loaded(data) => Some(data),
+            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
+        };
+        let mut cleaned = gear;
+        let piece =
+            transfer::extract_relic(db, &mut cleaned, slot).map_err(|error| error.to_string())?;
+        let piece_label = self.caches.names.record_name(db, &piece.base);
+        let gear_label = self.caches.names.record_name(db, &cleaned.base);
+        // Place the piece first; the gear is only committed once the
+        // piece has a home, so a full container changes nothing.
+        let placed = match grid {
+            GridId::Sack(sack) => {
+                let pane = self.character.as_mut().ok_or("no character loaded")?;
+                transfer::place_in_character(&mut pane.character, piece, sack, db).map(|_| ())
+            }
+            GridId::Bank => {
+                let pane = self.bank.as_mut().ok_or("no bank loaded")?;
+                transfer::place_in_stash(&mut pane.stash, piece, db)
+            }
+            GridId::Shared => {
+                let pane = self.shared.as_mut().ok_or("no shared bank loaded")?;
+                transfer::place_in_stash(&mut pane.stash, piece, db)
+            }
+            GridId::Relic => {
+                let pane = self.relics.as_mut().ok_or("no relic bank loaded")?;
+                transfer::place_in_stash(&mut pane.stash, piece, db)
+            }
+            GridId::VaultTab(tab) => {
+                let pane = self.right.as_mut().ok_or("no vault loaded")?;
+                transfer::place_in_vault(&mut pane.vault, piece, tab, db).map(|_| ())
+            }
+        };
+        if let Err(rejected) = placed {
+            return Err(format!(
+                "cannot extract: {} (the item is unchanged)",
+                rejected.reason
+            ));
+        }
+        match self.grid_item_mut(grid, index) {
+            Some(slot_item) => *slot_item = cleaned,
+            None => return Err("item moved under the click — extracted piece placed".to_string()),
+        }
+        self.mark_dirty(grid);
+        Ok(format!(
+            "extracted {piece_label} from {gear_label} — both kept"
+        ))
+    }
+
     /// Shift+Right-click: places a copy of the item in the other
     /// pane — the vault for left-side items, the active left tab
     /// for vault items — leaving the original in place.
@@ -1799,6 +1857,9 @@ impl eframe::App for App {
         if let Some((grid, index)) = drag_frame.edit_bonus {
             self.request_bonus_edit(grid, index);
         }
+        if let Some((grid, index)) = drag_frame.extract {
+            self.status = Some(self.extract_socketed(grid, index));
+        }
         self.update_drag(ui.ctx(), drag_frame);
         match action {
             Some(PaneAction::MoveToVault) => self.status = Some(self.move_left_to_vault()),
@@ -2015,7 +2076,8 @@ impl App {
                  .vault) opens alone too. Right-click sends an item to the other pane \
                  (vault items land in the active tab); Shift+Right-click sends a copy; \
                  Shift+Click duplicates in place; double-click a completed relic, \
-                 charm, or artifact to change its completion bonus.",
+                 charm, or artifact to change its completion bonus; Alt+Click an \
+                 item with a socketed relic/charm to extract it — both kept.",
             );
         }
         match &self.status {
@@ -2766,6 +2828,9 @@ struct DragFrame {
     /// A double-click asking to (re)pick the completion bonus of the
     /// completed relic/charm at `(grid, index)`.
     edit_bonus: Option<(GridId, usize)>,
+    /// An Alt+Click asking to split the socketed relic/charm out of
+    /// the item at `(grid, index)` — both survive.
+    extract: Option<(GridId, usize)>,
 }
 
 /// Paints a container as its actual cell grid, with items at their
@@ -2862,8 +2927,11 @@ fn grid_view(
             if response.double_clicked() {
                 frame.edit_bonus = Some((grid, *index));
             } else if response.clicked() {
-                if ui.ctx().input(|input| input.modifiers.shift) {
+                let modifiers = ui.ctx().input(|input| input.modifiers);
+                if modifiers.shift {
                     frame.duplicate = Some((grid, *index));
+                } else if modifiers.alt {
+                    frame.extract = Some((grid, *index));
                 } else {
                     *selected = Some((grid, *index));
                 }

@@ -118,7 +118,8 @@ bootstrap Q&A).
   boundary: an MCP server speaking JSON-RPC over **stdio only** — the
   client spawns it as a child process; no listening sockets, ever.
   It exposes game data (characters, banks, vaults, skill trees, item
-  stats) to AI agents and never writes any file. Adding write tools
+  stats, and the full record database with installed-mod overlays
+  and vanilla diffs) to AI agents and never writes any file. Adding write tools
   or a network transport (HTTP/SSE) is a structural change requiring
   its own design dialog. The "no network services" constraint below
   stands — stdio IPC is not a network service. (2026-08-26, MCP
