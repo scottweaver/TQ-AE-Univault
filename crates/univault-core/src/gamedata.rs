@@ -159,12 +159,14 @@ impl GameData {
         tex::decode(&self.resource(bitmap)?).ok()
     }
 
-    /// The completion-bonus table of a relic/charm record, resolved
-    /// to (game-style record path, weight) pairs in
-    /// `randomizerNameN` order. A missing weight defaults to 1.
-    fn relic_bonus_table(&self, record: &DbRecord) -> Vec<(String, i32)> {
+    /// The completion-bonus table a record points at through
+    /// `table_variable` (`bonusTableName` on relics/charms,
+    /// `artifactBonusTableName` on artifact formulae), resolved to
+    /// (game-style record path, weight) pairs in `randomizerNameN`
+    /// order. A missing weight defaults to 1.
+    fn bonus_table(&self, record: &DbRecord, table_variable: &str) -> Vec<(String, i32)> {
         let Some(table_id) = record
-            .string("bonusTableName")
+            .string(table_variable)
             .filter(|path| !path.is_empty())
             .and_then(|path| RecordId::parse(path.to_string()))
         else {
@@ -225,6 +227,7 @@ impl GameData {
         let renderer = crate::stats::Renderer { data: self };
         let total = self.arz.record_ids().count();
         let mut entries = std::collections::HashMap::new();
+        let mut artifact_bonuses: Vec<(String, Vec<(String, i32)>)> = Vec::new();
         for (scanned, id) in self.arz.record_ids().enumerate() {
             if scanned % 512 == 0 {
                 progress(scanned, total);
@@ -257,10 +260,25 @@ impl GameData {
                 None
             };
             let bonuses = if is_relic {
-                self.relic_bonus_table(&record)
+                self.bonus_table(&record, "bonusTableName")
             } else {
                 Vec::new()
             };
+            // An artifact's bonus table lives on its formula record,
+            // keyed by `artifactName` — remembered here and attached
+            // to the artifact's entry after the sweep.
+            if record
+                .record_type
+                .eq_ignore_ascii_case("ItemArtifactFormula")
+                && let Some(artifact) = record
+                    .string("artifactName")
+                    .filter(|path| !path.is_empty())
+            {
+                let table = self.bonus_table(&record, "artifactBonusTableName");
+                if !table.is_empty() {
+                    artifact_bonuses.push((normalize(artifact), table));
+                }
+            }
             entries.insert(
                 normalize(id.as_str()),
                 crate::cache::CacheEntry {
@@ -274,6 +292,11 @@ impl GameData {
                     bonuses,
                 },
             );
+        }
+        for (artifact, bonuses) in artifact_bonuses {
+            if let Some(entry) = entries.get_mut(&artifact) {
+                entry.bonuses = bonuses;
+            }
         }
         progress(total, total);
         crate::cache::GameCache::from_entries(

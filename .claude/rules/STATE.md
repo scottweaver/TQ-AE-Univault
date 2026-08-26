@@ -106,7 +106,11 @@ that's better") and merged as PR #7.
   request): the picker gained "Roll (game odds)" (weighted pick,
   wall-clock entropy — deliberately not a statistical RNG), and
   double-clicking any completed relic/charm re-opens the picker to
-  change or remove its bonus (current one marked). 162 tests. Risk:
+  change or remove its bonus (current one marked); artifacts too —
+  their bonus table lives on the formula record
+  (`artifactBonusTableName`), attached to the artifact entry at
+  import (`UVC6`; probe: Thunderfist 7 bonuses, "of Annihilation"
+  +25% Physical Damage). 162 tests. Risk:
   combine gesture and modal visually unverified until the user
   drags real shards.
 - **2026-08-25 — Stash `.dxg` twin fallback (bug fix).** The user's
