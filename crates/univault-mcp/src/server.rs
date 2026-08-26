@@ -2,6 +2,7 @@
 //! call and none of them writes anything — the read-only constraint
 //! recorded in ARCHITECTURE.md.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -10,19 +11,26 @@ use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabiliti
 use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use univault_core::arz::{ArzFile, normalize};
 use univault_core::cache::GameCache;
 use univault_core::chr::{self, AtlantisRelic, Item, ItemSeed, RecordId};
 use univault_core::gamedata::GameData;
 use univault_core::respec::Progression;
 use univault_core::{skilltree, stats, style, vault};
 
+use crate::gamedb::{self, IndexEntry, Provenance};
 use crate::view;
-use crate::world::{self, BankKind, CharacterEntry, Paths};
+use crate::world::{self, BankKind, CharacterEntry, ModEntry, Paths};
 
 pub struct Univault {
     paths: Paths,
     cache: Option<GameCache>,
     game_data: Mutex<Option<Arc<GameData>>>,
+    /// Parsed mod bundles by bundle name, loaded on first use.
+    mods: Mutex<HashMap<String, Arc<ArzFile>>>,
+    /// Search indexes by source (empty key = vanilla, else a bundle
+    /// name); each is a one-time full-database decode.
+    indexes: Mutex<HashMap<String, Arc<Vec<IndexEntry>>>>,
 }
 
 impl Univault {
@@ -34,7 +42,89 @@ impl Univault {
             paths,
             cache,
             game_data: Mutex::new(None),
+            mods: Mutex::new(HashMap::new()),
+            indexes: Mutex::new(HashMap::new()),
         }
+    }
+
+    fn mod_entries(&self) -> Vec<ModEntry> {
+        self.paths
+            .custom_maps
+            .as_deref()
+            .map_or_else(Vec::new, world::list_mod_bundles)
+    }
+
+    /// Resolves the `mod` tool parameter to a loaded bundle. Omitted
+    /// means "what the game is playing": the single installed bundle
+    /// when there is exactly one, vanilla when there are none, and
+    /// an error naming the choices when there are several.
+    /// `"vanilla"` always disables the overlay.
+    fn resolve_mod(&self, wanted: Option<&str>) -> Result<Option<(String, Arc<ArzFile>)>, String> {
+        let bundles = self.mod_entries();
+        let entry = match wanted {
+            Some(name) if name.eq_ignore_ascii_case("vanilla") => return Ok(None),
+            Some(name) => bundles
+                .iter()
+                .find(|entry| entry.name.eq_ignore_ascii_case(name))
+                .ok_or_else(|| {
+                    let names: Vec<&str> =
+                        bundles.iter().map(|entry| entry.name.as_str()).collect();
+                    format!(
+                        "no mod bundle named '{name}' (installed: {})",
+                        names.join(", ")
+                    )
+                })?,
+            None => match bundles.len() {
+                0 => return Ok(None),
+                1 => &bundles[0],
+                _ => {
+                    let names: Vec<&str> =
+                        bundles.iter().map(|entry| entry.name.as_str()).collect();
+                    return Err(format!(
+                        "several mod bundles installed ({}); pass mod: <name> or mod: \"vanilla\"",
+                        names.join(", ")
+                    ));
+                }
+            },
+        };
+        let mut loaded = self
+            .mods
+            .lock()
+            .expect("lock poisoned only if a loader panicked");
+        if let Some(db) = loaded.get(&entry.name) {
+            return Ok(Some((entry.name.clone(), Arc::clone(db))));
+        }
+        let db = Arc::new(world::load_mod_db(&entry.arz_path)?);
+        loaded.insert(entry.name.clone(), Arc::clone(&db));
+        Ok(Some((entry.name.clone(), db)))
+    }
+
+    /// The search index for one source, built on first use (a full
+    /// database decode, a few seconds for vanilla).
+    fn index_for(
+        &self,
+        source: Option<&(String, Arc<ArzFile>)>,
+    ) -> Result<Arc<Vec<IndexEntry>>, String> {
+        let key = source.map_or(String::new(), |(name, _)| name.clone());
+        {
+            let indexes = self
+                .indexes
+                .lock()
+                .expect("lock poisoned only if a builder panicked");
+            if let Some(index) = indexes.get(&key) {
+                return Ok(Arc::clone(index));
+            }
+        }
+        let data = self.game_data()?;
+        let built = Arc::new(match source {
+            Some((_, mod_db)) => gamedb::mod_index(&data, mod_db),
+            None => gamedb::vanilla_index(&data),
+        });
+        self.indexes
+            .lock()
+            .expect("lock poisoned only if a builder panicked")
+            .insert(key, Arc::clone(&built));
+        Ok(built)
     }
 
     fn characters(&self) -> Vec<CharacterEntry> {
@@ -298,7 +388,68 @@ pub struct ItemDetailsParams {
     pub seed: Option<i32>,
 }
 
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct RecordParams {
+    /// The record's database path, e.g.
+    /// `records\creature\monster\ratman\ratman_01.dbr`.
+    pub record: String,
+    /// Mod bundle to overlay (omit = the single installed bundle;
+    /// "vanilla" = no overlay).
+    #[serde(rename = "mod")]
+    pub mod_bundle: Option<String>,
+    /// true = byte-faithful dump including template-default
+    /// (all-zero) variables; default omits them.
+    pub everything: Option<bool>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct RecordSearchParams {
+    /// Case-insensitive substring matched against record paths and
+    /// localized display names (monsters, skills, items).
+    pub query: String,
+    /// Optional record class filter, e.g. "Monster",
+    /// `Skill_AttackProjectile`, `LootTableDynWeight`.
+    pub class: Option<String>,
+    /// Mod bundle to overlay (omit = the single installed bundle;
+    /// "vanilla" = no overlay). Overlay search also surfaces
+    /// mod-added records and marks overridden ones.
+    #[serde(rename = "mod")]
+    pub mod_bundle: Option<String>,
+    /// Maximum hits to return (default 50).
+    pub limit: Option<usize>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct DiffRecordParams {
+    /// The record's database path.
+    pub record: String,
+    /// Mod bundle to diff against vanilla (omit = the single
+    /// installed bundle).
+    #[serde(rename = "mod")]
+    pub mod_bundle: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct DiffModParams {
+    /// Mod bundle to sweep (omit = the single installed bundle).
+    #[serde(rename = "mod")]
+    pub mod_bundle: Option<String>,
+    /// Only report records where a changed variable's name contains
+    /// this (case-insensitive), e.g. "cooldown".
+    pub variable: Option<String>,
+    /// Maximum changed records to list (default 100).
+    pub limit: Option<usize>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct TagParams {
+    /// A localization tag, e.g. "tagSkillName115".
+    pub tag: String,
+}
+
 const DEFAULT_SEARCH_LIMIT: usize = 100;
+const DEFAULT_RECORD_SEARCH_LIMIT: usize = 50;
+const DEFAULT_DIFF_LIMIT: usize = 100;
 
 // The rmcp macros generate `async fn`s that only await when a tool
 // is itself async; ours are sync, so the generated bodies trip the
@@ -323,6 +474,11 @@ impl Univault {
             "relic_banks": self.unique_bank_paths(BankKind::Relic).len(),
             "vaults": vaults.iter().map(|v| v.name.clone()).collect::<Vec<_>>(),
             "game_dir": self.paths.game_dir.as_ref().map(|p| p.display().to_string()),
+            "mods": self
+                .mod_entries()
+                .iter()
+                .map(|entry| entry.name.clone())
+                .collect::<Vec<_>>(),
             "read_only": true,
         }))
     }
@@ -611,6 +767,240 @@ impl Univault {
         });
         or_fail(result)
     }
+
+    #[tool(
+        description = "List the mod bundles installed in the game's CustomMaps directory. Record tools overlay the single installed bundle by default, so mod changes are visible everywhere."
+    )]
+    fn list_mods(&self) -> CallToolResult {
+        let bundles = self.mod_entries();
+        ok_json(&json!({
+            "custom_maps": self
+                .paths
+                .custom_maps
+                .as_ref()
+                .map(|dir| dir.display().to_string()),
+            "bundles": bundles
+                .iter()
+                .map(|entry| json!({
+                    "name": entry.name,
+                    "database": entry.arz_path.display().to_string(),
+                }))
+                .collect::<Vec<_>>(),
+            "default": match bundles.len() {
+                0 => "vanilla (no bundles installed)".to_string(),
+                1 => format!("'{}' overlays every record tool unless mod: \"vanilla\"", bundles[0].name),
+                _ => "several bundles — record tools need an explicit mod: <name>".to_string(),
+            },
+        }))
+    }
+
+    #[tool(
+        description = "Search the entire game database (monsters, skills, loot tables, equations — every record) by path substring or localized name, optionally filtered by record class. First call builds an index (a few seconds)."
+    )]
+    fn search_records(&self, Parameters(params): Parameters<RecordSearchParams>) -> CallToolResult {
+        let result = (|| {
+            let overlay = self.resolve_mod(params.mod_bundle.as_deref())?;
+            let vanilla_index = self.index_for(None)?;
+            let mod_index = match &overlay {
+                Some(source) => Some(self.index_for(Some(source))?),
+                None => None,
+            };
+            let query = params.query.to_uppercase();
+            let class = params.class.as_deref();
+            let limit = params.limit.unwrap_or(DEFAULT_RECORD_SEARCH_LIMIT);
+            let matches = |entry: &IndexEntry| {
+                (entry.path.contains(&query)
+                    || entry
+                        .name
+                        .as_ref()
+                        .is_some_and(|name| name.to_uppercase().contains(&query)))
+                    && class.is_none_or(|class| entry.class.eq_ignore_ascii_case(class))
+            };
+            let overridden: std::collections::HashSet<&str> = mod_index
+                .as_deref()
+                .map(|index| index.iter().map(|entry| entry.path.as_str()).collect())
+                .unwrap_or_default();
+            let mut hits = Vec::new();
+            let mut total = 0_usize;
+            let mut push = |entry: &IndexEntry, source: &str| {
+                total += 1;
+                if hits.len() < limit {
+                    let mut hit = json!({
+                        "record": entry.path,
+                        "class": entry.class,
+                        "source": source,
+                    });
+                    if let Some(name) = &entry.name {
+                        hit["name"] = json!(name);
+                    }
+                    hits.push(hit);
+                }
+            };
+            let mod_name = overlay.as_ref().map(|(name, _)| name.as_str());
+            for entry in vanilla_index.iter().filter(|entry| matches(entry)) {
+                let source = if overridden.contains(entry.path.as_str()) {
+                    Provenance::ModOverride.label(mod_name)
+                } else {
+                    Provenance::Vanilla.label(mod_name)
+                };
+                push(entry, &source);
+            }
+            if let Some(index) = mod_index.as_deref() {
+                let vanilla_paths: std::collections::HashSet<&str> = vanilla_index
+                    .iter()
+                    .map(|entry| entry.path.as_str())
+                    .collect();
+                for entry in index
+                    .iter()
+                    .filter(|entry| matches(entry) && !vanilla_paths.contains(entry.path.as_str()))
+                {
+                    push(entry, &Provenance::ModAdded.label(mod_name));
+                }
+            }
+            Ok(json!({
+                "query": params.query,
+                "total_matches": total,
+                "shown": hits.len(),
+                "hits": hits,
+            }))
+        })();
+        or_fail(result)
+    }
+
+    #[tool(
+        description = "One database record in full — every variable with values (per-difficulty arrays included) and translated text where tags resolve. Reflects the installed mod's version by default; source says where the bytes came from."
+    )]
+    fn get_record(&self, Parameters(params): Parameters<RecordParams>) -> CallToolResult {
+        let result = (|| {
+            let overlay = self.resolve_mod(params.mod_bundle.as_deref())?;
+            let data = self.game_data()?;
+            let id = RecordId::parse(params.record.clone())
+                .ok_or_else(|| "record path is empty".to_string())?;
+            let mod_name = overlay.as_ref().map(|(name, _)| name.as_str());
+            let (record, provenance) =
+                gamedb::effective_record(&data, overlay.as_ref().map(|(_, db)| db.as_ref()), &id)
+                    .ok_or_else(|| {
+                    format!(
+                        "no record at '{}' — search_records finds exact paths",
+                        params.record
+                    )
+                })?;
+            Ok(gamedb::record_json(
+                &data,
+                &record,
+                &provenance.label(mod_name),
+                params.everything.unwrap_or(false),
+            ))
+        })();
+        or_fail(result)
+    }
+
+    #[tool(
+        description = "How the installed mod changes one record vs vanilla: changed variables side by side, plus variables only one side has."
+    )]
+    fn diff_record(&self, Parameters(params): Parameters<DiffRecordParams>) -> CallToolResult {
+        let result = (|| {
+            let (mod_name, mod_db) = self
+                .resolve_mod(params.mod_bundle.as_deref())?
+                .ok_or_else(|| "no mod bundle installed — nothing to diff".to_string())?;
+            let data = self.game_data()?;
+            let id = RecordId::parse(params.record.clone())
+                .ok_or_else(|| "record path is empty".to_string())?;
+            let modded = match mod_db.record(&id) {
+                Some(Ok(record)) => record,
+                Some(Err(error)) => return Err(format!("mod record unreadable: {error}")),
+                None => {
+                    return Ok(json!({
+                        "record": normalize(&params.record),
+                        "mod": mod_name,
+                        "verdict": "the mod does not touch this record — the vanilla version is effective",
+                    }));
+                }
+            };
+            let vanilla = match data.record(&id) {
+                Some(Ok(record)) => record,
+                Some(Err(error)) => return Err(format!("vanilla record unreadable: {error}")),
+                None => {
+                    return Ok(json!({
+                        "record": normalize(&params.record),
+                        "mod": mod_name,
+                        "verdict": "mod-added record with no vanilla counterpart — get_record shows it in full",
+                    }));
+                }
+            };
+            let mut out = gamedb::diff_json(vanilla.variables(), modded.variables());
+            out["record"] = json!(normalize(&params.record));
+            out["mod"] = json!(mod_name);
+            Ok(out)
+        })();
+        or_fail(result)
+    }
+
+    #[tool(
+        description = "Everything the installed mod changes vs vanilla: every overridden record with the names of its changed variables, and every mod-added record. Filter by variable name to hunt one kind of change."
+    )]
+    fn diff_mod(&self, Parameters(params): Parameters<DiffModParams>) -> CallToolResult {
+        let result = (|| {
+            let (mod_name, mod_db) = self
+                .resolve_mod(params.mod_bundle.as_deref())?
+                .ok_or_else(|| "no mod bundle installed — nothing to diff".to_string())?;
+            let data = self.game_data()?;
+            let filter = params.variable.map(|variable| variable.to_uppercase());
+            let limit = params.limit.unwrap_or(DEFAULT_DIFF_LIMIT);
+            let mut changed = Vec::new();
+            let mut changed_total = 0_usize;
+            let mut added = Vec::new();
+            let mut identical = 0_usize;
+            for id in mod_db.record_ids() {
+                let Some(Ok(modded)) = mod_db.record(id) else {
+                    continue;
+                };
+                let Some(Ok(vanilla)) = data.record(id) else {
+                    added.push(normalize(id.as_str()));
+                    continue;
+                };
+                let mut names = gamedb::changed_variable_names(&vanilla, &modded);
+                if let Some(filter) = &filter {
+                    names.retain(|name| name.to_uppercase().contains(filter));
+                }
+                if names.is_empty() {
+                    identical += 1;
+                    continue;
+                }
+                changed_total += 1;
+                if changed.len() < limit {
+                    changed.push(json!({
+                        "record": normalize(id.as_str()),
+                        "changed_variables": names,
+                    }));
+                }
+            }
+            Ok(json!({
+                "mod": mod_name,
+                "records_changed": changed_total,
+                "records_added": added.len(),
+                "records_carried_unchanged": identical,
+                "shown": changed.len(),
+                "changes": changed,
+                "added": added,
+                "note": "diff_record shows any record's before/after values",
+            }))
+        })();
+        or_fail(result)
+    }
+
+    #[tool(
+        description = "Translate one localization tag (e.g. tagSkillName115) to its English text."
+    )]
+    fn translate_tag(&self, Parameters(params): Parameters<TagParams>) -> CallToolResult {
+        let result = self.game_data().map(|data| {
+            json!({
+                "tag": params.tag,
+                "text": data.tag_text(&params.tag),
+            })
+        });
+        or_fail(result)
+    }
 }
 
 // Same as above: the generated `call_tool`/`list_tools` are async
@@ -627,11 +1017,14 @@ impl ServerHandler for Univault {
         info.instructions = Some(
             "Read-only access to a Titan Quest Anniversary Edition install: \
              characters (stats, builds, equipment, inventory), the personal/shared/relic \
-             banks, TQVaultAE-compatible vault files, item stat sheets, and mastery \
-             skill trees. Nothing is ever written. Call `overview` first to see what is \
-             configured; paths come from the tq-univault GUI's config and the \
-             UNIVAULT_SAVE_ROOT / UNIVAULT_VAULTS_DIR / UNIVAULT_GAME_DIR environment \
-             variables."
+             banks, TQVaultAE-compatible vault files, item stat sheets, mastery skill \
+             trees, and the entire game database — every record (monsters, skills, loot \
+             tables, equations) via search_records/get_record, with the installed \
+             CustomMaps mod bundle overlaid by default and diffable against vanilla \
+             (diff_record/diff_mod). Nothing is ever written. Call `overview` first to \
+             see what is configured; paths come from the tq-univault GUI's config and \
+             the UNIVAULT_SAVE_ROOT / UNIVAULT_VAULTS_DIR / UNIVAULT_GAME_DIR / \
+             UNIVAULT_CUSTOMMAPS environment variables."
                 .into(),
         );
         info

@@ -22,6 +22,7 @@ pub struct Paths {
     pub vaults_dir: Option<PathBuf>,
     pub cache_file: Option<PathBuf>,
     pub game_dir: Option<PathBuf>,
+    pub custom_maps: Option<PathBuf>,
 }
 
 impl Paths {
@@ -38,13 +39,68 @@ impl Paths {
         let game_dir = std::env::var_os("UNIVAULT_GAME_DIR")
             .map(PathBuf::from)
             .or_else(|| stored_game_dir(config.as_deref()));
+        let custom_maps = std::env::var_os("UNIVAULT_CUSTOMMAPS")
+            .map(PathBuf::from)
+            .or_else(|| custom_maps_near(&save_roots));
         Self {
             save_roots,
             vaults_dir,
             cache_file,
             game_dir,
+            custom_maps,
         }
     }
+}
+
+/// The game's `CustomMaps` directory (installed mod bundles), which
+/// sits beside the `SaveData` tree the save roots point into.
+fn custom_maps_near(save_roots: &[PathBuf]) -> Option<PathBuf> {
+    save_roots.iter().find_map(|root| {
+        root.ancestors()
+            .map(|ancestor| ancestor.join("CustomMaps"))
+            .find(|candidate| candidate.is_dir())
+    })
+}
+
+/// One installed mod bundle: the bundle folder's name and its
+/// database file.
+#[derive(Debug, Clone)]
+pub struct ModEntry {
+    pub name: String,
+    pub arz_path: PathBuf,
+}
+
+pub fn list_mod_bundles(dir: &Path) -> Vec<ModEntry> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut bundles: Vec<ModEntry> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .filter_map(|bundle| {
+            let name = bundle.file_name()?.to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                return None;
+            }
+            let arz_path = std::fs::read_dir(bundle.join("database"))
+                .ok()?
+                .flatten()
+                .map(|entry| entry.path())
+                .find(|path| {
+                    path.extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("arz"))
+                })?;
+            Some(ModEntry { name, arz_path })
+        })
+        .collect();
+    bundles.sort_by(|a, b| a.name.cmp(&b.name));
+    bundles
+}
+
+pub fn load_mod_db(path: &Path) -> Result<univault_core::arz::ArzFile, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    univault_core::arz::ArzFile::parse(bytes).map_err(|e| format!("parse {}: {e}", path.display()))
 }
 
 /// Save roots implied by the GUI's recent-files list: each recent

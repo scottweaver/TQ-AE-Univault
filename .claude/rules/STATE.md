@@ -108,6 +108,23 @@ that's better") and merged as PR #7.
 
 ## Most recent meaningful progress
 
+- **2026-08-26 — MCP: the whole database, mods included.** User
+  ask ("expose ALL internal game file data, monster info, my mod
+  changes"): six new tools — search_records (path or localized-name
+  search over every record, class filter, lazy full-decode index),
+  get_record (any record, template-default noise omitted unless
+  everything: true, tags translated inline), list_mods,
+  diff_record / diff_mod (vanilla vs bundle, per-variable), and
+  translate_tag. The installed CustomMaps bundle (auto-discovered
+  beside the save tree, UNIVAULT_CUSTOMMAPS override) overlays
+  every record tool by default — "what the game actually plays" —
+  with mod: "vanilla" opting out and provenance on every response.
+  Verified live: 58 Ratman monsters with names and per-difficulty
+  arrays; Provoke reads radius 5.0 as mod-override vs 3.0 vanilla;
+  diff_mod sweeps 8,866 bundle records (290 added) in ~2s. 173
+  tests. Risk: none new — read-only reads of already-sanctioned
+  formats; user acceptance from their buildcrafting project
+  pending.
 - **2026-08-26 — MCP server: game data for AI agents.** User ask
   ("a true MCP server, not just exports"), design-dialogued:
   read-only v1, official `rmcp` SDK, stdio-only — ARCHITECTURE
@@ -298,23 +315,6 @@ that's better") and merged as PR #7.
   Risk: GUI modal visually unverified; in-game acceptance (load a
   respecced save, re-pick masteries) still pending.
 
-- **2026-08-25 — GitHub repo + CI + test-coverage push.** The user
-  created the GitHub remote and `main` is pushed. New CI workflow:
-  rustfmt, clippy `-D warnings` + tests across
-  ubuntu/macos/windows (platform independence is now checked, not
-  assumed), and a cargo-llvm-cov job publishing an lcov artifact.
-  Coverage rose 70%→80% of lines: fixture tests now cover the stats
-  engine's dark corners (granted skills incl. triggered levels, pet
-  summons, augments, racial bonuses, global XOR chance groups,
-  damage qualifiers, duration-scaled slow damage, socketed-relic and
-  artifact bonus assembly, expansion origin), cache corrupt-file
-  errors, dictionary/style branches, and the GUI's pure helpers.
-  The origin test caught a real bug: DBR paths start with
-  `records\`, so the XPACK check never matched and expansion lines
-  never rendered. `Item::bare` joined core's public API. Risk:
-  `stats/render.rs` sits at ~71% lines (formula reagents, buff
-  redirects, scroll effects untested); GUI shell logic beyond the
-  helpers is uncovered; CI is unproven until the first Actions run.
 ## Blocked / waiting
 
 - *(nothing)*
