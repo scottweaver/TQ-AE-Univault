@@ -107,6 +107,24 @@ that's better") and merged as PR #7.
 
 ## Most recent meaningful progress
 
+- **2026-08-26 — Shard encoding fix + Enchanter-free extraction.**
+  User-reported bug: fresh single-shard drops refused to combine —
+  the game encodes one shard as `var1 = 0`, a rule the stats
+  renderer already carried but `can_combine` did not. New
+  `transfer::shard_count` (= `var1.max(1)`) is the one home for the
+  encoding; combine works on effective counts, display (GUI + MCP)
+  now shows 1/N like the game, and completed pieces are no longer
+  valid pour sources (PR #24, diagnosed from live data via the MCP
+  record tools). Then the user ask "keep both at the Enchanter":
+  the database interrogation proved the destroy-one-side rule is
+  engine code (two fixed template slots, no data hook — only
+  `enchanterRecoveryFactor` scales cost), so the app does it
+  instead: Alt+Click an item with a socketed relic/charm extracts
+  the piece — shard count and bonus preserved, Atlantis second
+  socket handled (its var2 stores a completed-sentinel, clamped),
+  piece auto-placed, gear committed only after the piece has a
+  home. 175 tests. Risk: in-app acceptance pending; gesture is
+  Alt+Click (documented in the header hint).
 - **2026-08-26 — MCP: the whole database, mods included.** User
   ask ("expose ALL internal game file data, monster info, my mod
   changes"): six new tools — search_records (path or localized-name
@@ -291,29 +309,6 @@ that's better") and merged as PR #7.
   `arz::normalize` and `GameData::tag_text` went public for
   example use. Spot-checked against known values (Warfare mastery
   +2 str/level, Onslaught tier 1 max 8/12, Wolf_16 612 life).
-- **2026-08-25 — Backup rotation + full respec.** Two user-requested
-  features before drag-and-drop. Rotation: after each synced backup
-  the oldest `univault-bak` siblings beyond 5 are pruned per file;
-  new backup names floor above the newest existing so rotation
-  (which ages by name) can never eat the newest. Respec: new core
-  `respec` module — attribute reset (five `temp` floats after
-  `skillPoints`, refund from deltas vs 50/50/50/300/300 at
-  4/4/4/40/40 per point) and skill/mastery reset (skill-list splice
-  keeping Default/AllMasteries/quest skills, `playerClassTag`
-  cleared to fresh-character empty, hotbar slots of removed skills
-  emptied to storedType -1, weapon-set selections zeroed, refund
-  into `skillPoints`). Layout mapped from TQVaultAE's MIT
-  TQSaveFilesExplorer + probes of real saves (new `chrprobe`
-  example); `tqrespec` eyes-only. GUI: two buttons on the character
-  pane behind a confirm modal showing the previewed refund; applies
-  to the pane's baseline bytes, Save still explicit +
-  backup-first. Read-only dry run (`respecdry` example) across all
-  6 real saves: previews match hand-computed spend exactly (16 attr
-  / 25 skill pts, 7 skills on Pally Don), reparse identical
-  items/equipment/money, second pass refunds zero. 144 tests.
-  Risk: GUI modal visually unverified; in-game acceptance (load a
-  respecced save, re-pick masteries) still pending.
-
 ## Blocked / waiting
 
 - *(nothing)*
