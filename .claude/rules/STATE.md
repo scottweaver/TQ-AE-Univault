@@ -32,7 +32,7 @@ green (162 tests). Pick the next item from "Next up".
   ×2.5 / regen ×1.75 on Core Dweller (875 / 5.25 at level 20) and
   Call of the Wild wolves (255 / 3.5); vanilla XP restored
   (even-level trash mob on Normal ≈ level×15); target caps ×3 in
-  dense packs; 2026-08-26 Core Dweller tune — Provoke 8m radius,
+  dense packs; 2026-08-26 Core Dweller tune — Provoke 5m radius,
   taunt-max floored at 12, Wildfire OA/movement debuffs 3s. Older
   residual: open one of our vault JSONs in TQVaultAE.
 - App checks worth a mention next session: autosave against the
@@ -103,13 +103,12 @@ that's better") and merged as PR #7.
 
 - **2026-08-26 — Core Dweller Provoke/Wildfire tune.** Three user
   asks via two new `record` rules in `mods/xmax3-tuned.json`:
-  Provoke `skillTargetRadius` 3 → 8m and `offensiveTauntMax`
-  floored at 12 (user identified the variable; levels already
-  above 12 keep their higher values); Wildfire's OA and
-  movement-slow debuff durations 1s → 3s (burn duration untouched
-  per the user's clarification). Bundle rebuilt + reinstalled,
-  installed arz dump-verified. Risk: "range 5m" read as +5m on the
-  3m base — if the user meant 5m total, one number to change;
+  Provoke `skillTargetRadius` 3 → 5m (user confirmed 5m total)
+  and `offensiveTauntMax` floored at 12 (user identified the
+  variable; levels already above 12 keep their higher values);
+  Wildfire's OA and movement-slow debuff durations 1s → 3s (burn
+  duration untouched per the user's clarification). Bundle
+  rebuilt + reinstalled, installed arz dump-verified. Risk:
   in-game check pending.
 - **2026-08-26 — Shard icons + in-app charm combining.** Two user
   asks: partial relics/charms now render the game's `shardBitmap`
