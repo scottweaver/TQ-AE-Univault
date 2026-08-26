@@ -28,14 +28,31 @@ use crate::chr::{Item, RecordId};
 use crate::gamedata::FALLBACK_FOOTPRINT;
 use crate::reader::{ByteReader, ReadError};
 use crate::stats::StatBlock;
-use crate::style::{Classification, ItemKind};
+use crate::style::{Classification, GearSlot, ItemKind};
 use crate::tex::RgbaImage;
 use crate::writer::{write_i32, write_i64};
 
 // The magic is the cache's only version: bump it for layout changes
 // AND for content-generation changes (names, stat rendering), so
 // existing caches rebuild automatically.
-const MAGIC: i32 = 0x3643_5655; // "UVC6"
+const MAGIC: i32 = 0x3743_5655; // "UVC7"
+
+fn gear_slot_index(slot: Option<GearSlot>) -> i32 {
+    slot.and_then(|slot| GearSlot::ALL.iter().position(|other| *other == slot))
+        .and_then(|index| i32::try_from(index).ok())
+        .unwrap_or(-1)
+}
+
+fn gear_slot_from_index(index: i32) -> Result<Option<GearSlot>, CacheError> {
+    if index == -1 {
+        return Ok(None);
+    }
+    usize::try_from(index)
+        .ok()
+        .and_then(|index| GearSlot::ALL.get(index).copied())
+        .map(Some)
+        .ok_or(CacheError::Corrupt)
+}
 
 /// Identity of one source file at import time; the shell compares
 /// these against the live files to detect a game update.
@@ -64,6 +81,12 @@ pub(crate) struct CacheEntry {
     /// Completion bonuses a relic/charm can roll: game-style record
     /// path + table weight, in table order.
     pub(crate) bonuses: Vec<(String, i32)>,
+    /// The equipment family of a gear record; `None` for everything
+    /// that cannot take a socket.
+    pub(crate) gear_slot: Option<GearSlot>,
+    /// A relic/charm record's allow-flags as a bitmask over
+    /// [`GearSlot::ALL`] order; 0 for non-relics.
+    pub(crate) socket_targets: u16,
 }
 
 /// The runtime item database, loaded from (or about to be saved as)
@@ -197,6 +220,24 @@ impl GameCache {
         self.entry(id).map_or(&[], |entry| entry.bonuses.as_slice())
     }
 
+    /// The equipment family of a gear record; `None` for anything
+    /// that cannot take a socket (relics, potions, artifacts, …).
+    #[must_use]
+    pub fn gear_slot(&self, id: &RecordId) -> Option<GearSlot> {
+        self.entry(id)?.gear_slot
+    }
+
+    /// Whether the relic/charm record's own allow-flags permit the
+    /// given equipment family. Rarity is deliberately not part of
+    /// this — only the game's type rules are.
+    #[must_use]
+    pub fn relic_allows(&self, relic: &RecordId, slot: GearSlot) -> bool {
+        self.entry(relic).is_some_and(|entry| {
+            let index = GearSlot::ALL.iter().position(|other| *other == slot);
+            index.is_some_and(|index| entry.socket_targets & (1 << index) != 0)
+        })
+    }
+
     /// Serializes the cache to its file format.
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -261,6 +302,8 @@ impl GameCache {
                 write_utf8(&mut out, record);
                 write_i32(&mut out, *weight);
             }
+            write_i32(&mut out, gear_slot_index(entry.gear_slot));
+            write_i32(&mut out, i32::from(entry.socket_targets));
         }
         out
     }
@@ -336,6 +379,9 @@ impl GameCache {
                 let weight = reader.read_i32()?;
                 bonuses.push((record, weight));
             }
+            let gear_slot = gear_slot_from_index(reader.read_i32()?)?;
+            let socket_targets =
+                u16::try_from(reader.read_i32()?).map_err(|_| CacheError::Corrupt)?;
             entries.insert(
                 path,
                 CacheEntry {
@@ -347,6 +393,8 @@ impl GameCache {
                     icon,
                     shard_icon,
                     bonuses,
+                    gear_slot,
+                    socket_targets,
                 },
             );
         }

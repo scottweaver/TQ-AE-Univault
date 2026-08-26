@@ -98,6 +98,15 @@ impl DbRecord {
         }
     }
 
+    /// First value of a boolean variable.
+    #[must_use]
+    pub fn boolean(&self, name: &str) -> Option<bool> {
+        match &self.variable(name)?.values {
+            DbValues::Booleans(values) => values.first().copied(),
+            DbValues::Strings(_) | DbValues::Floats(_) | DbValues::Integers(_) => None,
+        }
+    }
+
     /// First value of a float variable.
     #[must_use]
     pub fn float(&self, name: &str) -> Option<f32> {

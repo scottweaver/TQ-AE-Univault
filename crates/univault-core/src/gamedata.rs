@@ -279,6 +279,20 @@ impl GameData {
                     artifact_bonuses.push((normalize(artifact), table));
                 }
             }
+            let socket_targets = if is_relic {
+                crate::style::GearSlot::ALL
+                    .iter()
+                    .enumerate()
+                    .fold(0_u16, |mask, (index, slot)| {
+                        if record.boolean(slot.flag_variable()) == Some(true) {
+                            mask | (1 << index)
+                        } else {
+                            mask
+                        }
+                    })
+            } else {
+                0
+            };
             entries.insert(
                 normalize(id.as_str()),
                 crate::cache::CacheEntry {
@@ -290,6 +304,8 @@ impl GameData {
                     icon,
                     shard_icon,
                     bonuses,
+                    gear_slot: crate::style::GearSlot::of_class(&record.record_type),
+                    socket_targets,
                 },
             );
         }

@@ -107,6 +107,24 @@ that's better") and merged as PR #7.
 
 ## Most recent meaningful progress
 
+- **2026-08-26 — Socket into any rarity (type rules kept).** User
+  ask, refined: relics/charms socket into epics, legendaries, and
+  set pieces in-app — the game's *type* rules stay (a ring relic
+  fits only rings), only the rarity gate is lifted (that gate is
+  Game.dll code, confirmed via the Enchanting Unlimited findings).
+  Cache `UVC7`: entries now carry each gear record's equipment
+  family (15 classes) and each relic's allow-flag bitmask (the 15
+  `helmet`/`bodyArmor`/…/`rangedOneHand` template booleans), so the
+  GUI enforces type rules from the cache alone — next launch
+  re-imports (~8s). New `transfer::can_socket`/`socket_relic`;
+  drag a standalone relic/charm onto allowed gear (violet
+  highlight, vs gold for combining) and it sockets: record, shard
+  count, bonus. Pairs with Alt+Click extraction for full
+  socket/unsocket freedom. Tests cover type-rule enforcement,
+  rarity indifference, and zero-encoded counts. Risk: in-game load
+  of a relic-on-epic item forged here is the acceptance test; a
+  Game.dll patcher (guide-based, backup + toggle) is the agreed
+  next feature.
 - **2026-08-26 — Shard encoding fix + Enchanter-free extraction.**
   User-reported bug: fresh single-shard drops refused to combine —
   the game encodes one shard as `var1 = 0`, a rule the stats
@@ -295,20 +313,6 @@ that's better") and merged as PR #7.
   new list form of the modforge `record` rule; bundle rebuilt +
   reinstalled, installed arz verified; in-game check pending.
 
-- **2026-08-25 — Mastery skill-tree export for AI theorycrafting.**
-  PR #2 (rotation + respec) merged. New `skilltree` example distills
-  `database.arz` into one JSON per mastery (all 11 discovered via
-  `Skill_Mastery` records; dev leftovers — `OLD\`/`REV`/dated dirs,
-  the cut Medicine mastery — filtered; skills swept flat per mastery
-  dir): localized names/descriptions, tiers
-  (`skillMasteryLevelRequired`), caps, per-level effect arrays, and
-  transitively the referenced buffs/pets/sub-skills, with cosmetic
-  variables (anim/sound/particle) stripped — 83–462 KB per file
-  plus an index. Output goes to gitignored `exports/` (derived game
-  data stays local per ARCHITECTURE's never-distribute posture);
-  `arz::normalize` and `GameData::tag_text` went public for
-  example use. Spot-checked against known values (Warfare mastery
-  +2 str/level, Onslaught tier 1 max 8/12, Wolf_16 612 life).
 ## Blocked / waiting
 
 - *(nothing)*
