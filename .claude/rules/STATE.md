@@ -107,6 +107,23 @@ that's better") and merged as PR #7.
 
 ## Most recent meaningful progress
 
+- **2026-08-26 — Mod: a second bundle with single bosses.** User
+  hit an unwinnable tripled Gorgon-sisters fight (three queens
+  cross-healing via Regrowth), then refined the ask: keep the
+  original 3x-boss mod AND a 1x-boss variant, side by side. Root
+  cause mapped via the MCP record tools: the x3 base multiplies
+  named boss/hero *pools* (extra entries, limits stripped) on top
+  of the global 300% spawn modifier; the author's own x3x1 base
+  keeps trash x3 but collapses those pools to one spawn. Now one
+  rules file builds both: `modforge` gained a bundle-name override,
+  and `mods/xmax3-tuned.json` documents the two builds —
+  `LootPlusXMAX3Tuned` (base x3, unchanged behavior) and
+  `LootPlusXMAX3Tuned1xBoss` (base x3x1). Both composed,
+  dump-verified (Euryale pool 6 entries vs 1; identical tunes:
+  vanilla XP, Provoke 5m, spawnModifier 300), and installed to
+  CustomMaps. Risk: user switches to the 1xBoss mod in-game and
+  replays the Gorgon fight — that is the acceptance test; the x3x1
+  base also singles named heroes.
 - **2026-08-26 — Game.dll socket-gate patcher (toggle).** User
   supplied the community guide (Steam 2202151189): NOP the two
   conditional jumps after the Epic/Legendary classification
@@ -259,41 +276,6 @@ that's better") and merged as PR #7.
   byte-identical. 156 tests. Risk: only the truncated write's
   newest item is unrecoverable (it existed nowhere but the cut
   bytes).
-- **2026-08-25 — Default vault + bank/shared/relic panes +
-  Shift+Click duplicate.** The user's prompt asks after real use: a
-  vault file now exists without setup (`<config>/vaults/Main
-  Vault.json`, created and auto-opened at launch; `Open vault…`
-  still swaps in any other file); opening a `Player.chr`
-  auto-discovers and loads its private bank (`winsys.dxb` beside
-  it), the shared bank (`Sys/winsys.dxb`), and the relic bank
-  (`Sys/miscsys.dxb`, Atlantis+) as grid sections in the left pane,
-  each with its own Save (stash splice + `.dxg` twin,
-  backup-first); right-click sends an item straight to the other
-  pane (vault items land in the active left tab); Shift+Right-click
-  sends a copy across (original stays); Shift+Click duplicates an
-  item in place (same seed = exact copy, auto-placed, spilling to
-  sibling sacks/tabs); a Reload button re-reads the character and
-  all banks from disk (confirm modal when unsaved edits would be
-  lost). Same-day UX rework (user request): the left pane became a
-  tab strip — Inventory / Character bank / Shared bank / Relic bank
-  — one document on screen at a time, absent documents greyed out
-  with the reason on hover; cross-bank drags now route via the
-  vault or right-click since only one left grid is visible. Then
-  autosave (user request): all Save buttons removed — edits flush
-  600ms after the interaction quiets (drag/pointer/text focus
-  postpone), with a 5s retry on failure and a "Saving…" header
-  note. Backup policy refined to one-backup-per-load so per-edit
-  writes can't churn the 5-slot rotation; ARCHITECTURE.md's
-  data-flow constraint renegotiated in the same change.
-  Underneath: the left pane became independent documents
-  (`CharacterPane` + three `StashPane`s), `GridId` gained
-  `Bank`/`Shared`/`Relic`, selection is `(GridId, index)`
-  everywhere, and re-discovery never silently reloads a dirty
-  stash pane. 155 tests. Risk: layout and discovery unverified
-  against the real network-mounted save tree until the user runs
-  it; a tree whose Sys stashes live outside any `Sys/` ancestor
-  reports "no shared/relic bank found"; duplication is a deliberate
-  cheat feature — the game has no such operation.
 ## Blocked / waiting
 
 - *(nothing)*
