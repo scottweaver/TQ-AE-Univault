@@ -32,8 +32,9 @@ green (162 tests). Pick the next item from "Next up".
   ×2.5 / regen ×1.75 on Core Dweller (875 / 5.25 at level 20) and
   Call of the Wild wolves (255 / 3.5); vanilla XP restored
   (even-level trash mob on Normal ≈ level×15); target caps ×3 in
-  dense packs. Older residual: open one of our vault JSONs in
-  TQVaultAE.
+  dense packs; 2026-08-26 Core Dweller tune — Provoke 5m radius,
+  taunt-max floored at 12, Wildfire OA/movement debuffs 3s. Older
+  residual: open one of our vault JSONs in TQVaultAE.
 - App checks worth a mention next session: autosave against the
   network mount (one `univault-bak` per file per session). The
   2026-08-25 relic-bank `.dxb` truncation was game-side; the twin
@@ -119,6 +120,15 @@ that's better") and merged as PR #7.
   the live tree: builds/equipment resolve, 45 relic-bank items,
   Hecate hits across bank + vault, Earth tree 34 skills. 167 tests.
   Risk: not yet driven from a real MCP client session.
+- **2026-08-26 — Core Dweller Provoke/Wildfire tune.** Three user
+  asks via two new `record` rules in `mods/xmax3-tuned.json`:
+  Provoke `skillTargetRadius` 3 → 5m (user confirmed 5m total)
+  and `offensiveTauntMax` floored at 12 (user identified the
+  variable; levels already above 12 keep their higher values);
+  Wildfire's OA and movement-slow debuff durations 1s → 3s (burn
+  duration untouched per the user's clarification). Bundle
+  rebuilt + reinstalled, installed arz dump-verified. Risk:
+  in-game check pending.
 - **2026-08-26 — Shard icons + in-app charm combining.** Two user
   asks: partial relics/charms now render the game's `shardBitmap`
   art (complete pieces keep `relicBitmap`), so partials read at a
@@ -298,37 +308,6 @@ that's better") and merged as PR #7.
   `stats/render.rs` sits at ~71% lines (formula reagents, buff
   redirects, scroll effects untested); GUI shell logic beyond the
   helpers is uncovered; CI is unproven until the first Actions run.
-- **2026-08-25 — Full item statistics in tooltips: the attribute
-  engine lands.** User-directed follow-up to the rarity tooltip: a
-  full-fidelity port of TQVaultAE's display engine (~5,900 reference
-  lines studied; `ItemAttributeProvider` dictionary,
-  `ConvertOffenseAttributesToString`, requirements incl. the
-  itemcost.dbr equation evaluator, granted skills/pets, sets,
-  formulae, racial bonuses, global XOR chance groups). Architecture
-  per design dialog: stats pre-render once at import into per-record
-  line blocks in the cache (`UVC3`; 50→56 MB, 8s import);
-  `stats::item_details` assembles per-item tooltips at display time
-  (relic shard slots, max-merged requirements + equations with
-  totalAttCount). Real-data gate: 80 items across the user's save
-  tree render with zero unresolved tags — set lists, XOR chance
-  groups, flavor text (via Info's per-kind `itemText`/`itemStyleTag`
-  dispatch) all correct. New `tooltips`/`dump`/`dumptag` examples
-  are the validation harness. 115 tests. Risk: granted-skill and
-  socketed-relic sections are unit-tested but absent from the real
-  saves swept; `attributeScalePercent` deliberately stays
-  record-local (deviation noted in `stats::render` docs). Follow-up
-  after the user hit two silent slow launches (each format bump
-  forces a re-import): imports now run on a background thread with
-  a startup progress bar (phase labels + record fraction via
-  `build_cache_with_progress`); verified live against the real
-  install — window responsive from launch, cache rewritten. Also
-  fixed after the user spotted "shieldbucklerwood03a_01": TQ's
-  `default\` template records store literal text where others store
-  tags — name resolution now accepts literal descriptions (space =
-  not a tag) and quality/style fall back to the raw word per
-  TQVaultAE, giving "Light Pine Buckler Ornate of Strength"; magic
-  bumped to `UVC4` (content bumps use the magic too) so caches
-  rebuild themselves.
 ## Blocked / waiting
 
 - *(nothing)*
