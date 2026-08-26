@@ -10,14 +10,13 @@ Last updated: 2026-08-25
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** PR #5 (drag-and-drop, `feat/drag-and-drop`) — CI is
-green; the user's drag feel-test is the acceptance gate; merge +
-post-merge cleanup once it passes.
+**Resume here:** `feat/banks-and-default-vault` (PR open) — default
+vault + character/shared-bank panes; the user running the app is
+the acceptance gate; merge + post-merge cleanup once it passes.
 
-- PR #5 CI green at checkpoint time (rustfmt, clippy+test on
-  ubuntu/macos/windows, coverage). All gates green locally (150 tests).
-- PR #5 carries the routine STATE.md refresh (branch table, drag-and-drop
-  progress entry); expect a trivial STATE.md rebase when both PRs are in.
+- PR #5 (drag-and-drop) merged 2026-08-25 with user sign-off on the
+  branch point; its branch is deleted local+remote. Drag feel-test
+  now happens alongside the new panes.
 - Post-merge cleanup debt: merged remote branches feat/ci-and-test-coverage,
   feat/backup-rotation, feat/skill-export, feat/mod-forge still on origin —
   deletion awaits user confirmation.
@@ -47,8 +46,8 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | tooltips + CI + respec + skill export + mod forge merged (PRs #1–#4); all gates green |
-| `feat/drag-and-drop` | drag-and-drop item movement with drop preview | PR opening |
+| `main` | trunk | tooltips + CI + respec + skill export + mod forge + drag-and-drop merged (PRs #1–#5); all gates green |
+| `feat/banks-and-default-vault` | default vault file + character/shared bank panes | PR opening |
 
 ## Next up
 
@@ -68,9 +67,9 @@ it works great!" — both respec buttons verified in-game. Residual
 check whenever convenient: confirm a transferred-back item in-game
 and open our vault JSON in TQVaultAE.
 
-1. Drag-and-drop item movement on the grids — **in flight on
-   `feat/drag-and-drop`** (cross-pane drags + occupied-cell drop
-   preview implemented; awaiting user feel-test and PR merge).
+1. Default vault + bank/shared-bank access — **in flight on
+   `feat/banks-and-default-vault`** (user's three prompt asks after
+   first real use; awaiting the user's app run and PR merge).
 2. Game-install auto-discovery (Steam library paths per OS in
    `platform`) to preseed the one-time Import dialog.
 3. DXT1/3 decode for the ~7 compressed item bitmaps (currently an
@@ -80,6 +79,22 @@ and open our vault JSON in TQVaultAE.
 
 ## Most recent meaningful progress
 
+- **2026-08-25 — Default vault + character/shared bank panes.** The
+  user's three prompt asks after real use: a vault file now exists
+  without setup (`<config>/vaults/Main Vault.json`, created and
+  auto-opened at launch; `Open vault…` still swaps in any other
+  file), and opening a `Player.chr` auto-discovers and loads its
+  private bank (`winsys.dxb` beside it) and the account's shared
+  bank (`Sys/winsys.dxb`, found by walking ancestors) as two extra
+  grid sections in the left pane, each with its own Save (stash
+  splice + `.dxg` twin, backup-first). Underneath: the left pane
+  became three independent documents (`CharacterPane` + two
+  `StashPane`s), `GridId` gained `Bank`/`Shared`, selection is
+  `(GridId, index)` everywhere, and re-discovery never silently
+  reloads a dirty stash pane. 154 tests. Risk: layout and
+  discovery unverified against the real network-mounted save tree
+  until the user runs it; a save tree whose transfer stash lives
+  outside any `Sys/` ancestor would report "no shared bank found".
 - **2026-08-25 — Drag-and-drop item movement.** The top "Next up"
   item: items now drag between cells, sacks, panes, and vault tabs
   with a live drop preview (green = fits, red = blocked), the
@@ -252,18 +267,6 @@ and open our vault JSON in TQVaultAE.
   Risk: rendering is visually unverified until the user runs it;
   egui texture memory grows unbounded with the icon cache (fine at
   item-bitmap sizes).
-- **2026-08-24 — Real item footprints from game textures.** `tex`
-  module reads TEX/DDS headers (magic variants incl. the
-  Atlantis-era pad byte; cells = px ÷ 32 per TQVaultAE);
-  `GameData::resource` resolves bitmap ids across all `Items.arc`
-  archives (XPACK prefix mapping + the records-lie cross-archive
-  fallback); `item_footprint` now returns true grid sizes with the
-  conservative class bounds as fallback. Real-install proof: bow
-  1×4, torso 2×3, rings 1×1 across 4 loaded archives. 90+ tests.
-  Why: dense, game-accurate placement; also unlocks item icons for
-  grid rendering. Risk: footprint lookups are uncached (record +
-  tex decompress per query) — fine for click-driven moves, revisit
-  before drag-and-drop hover previews.
 ## Blocked / waiting
 
 - *(nothing)*
