@@ -10,13 +10,14 @@ Last updated: 2026-08-26
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** `feat/vault-search` is in flight (PR open): the
-all-vaults search view — design-dialogued (full-window mode, all
-vault files, full row actions), implemented, all gates green. Once
-merged, run the wrap-up. In-app acceptance ask: press "Search
-vaults…" (⌘F), filter, right-click/Shift+Click/Alt+Click a row,
-double-click to jump. Older acceptance still open, all
-in-game/in-app: paper doll (drag gear off/onto the doll, then load
+**Resume here:** PR #33 (all-vaults search view) merged 2026-08-26;
+wrap-up done; branch deleted; nothing is in flight. The user already
+steered the feature twice in-session (filter bar reworked to dynamic
+criteria rows + ranges + suggestions, then a Clear-all button —
+"Much nicer!"), so partial acceptance is in hand; the full in-app
+pass is still open: "Search vaults…" (⌘F), stack criteria from the
+suggestions, act on a row, double-click to jump. Older acceptance
+still open, all in-game/in-app: paper doll (drag gear off/onto the doll, then load
 the save in-game), auto-refresh feel on the SMB tree, dll patch
 (Enable, socket an epic in-game), and the Gorgon rematch on the new
 `LootPlusXMAX3Tuned1xBoss` bundle (both bundles installed in
@@ -77,8 +78,7 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#32 all merged; all gates green |
-| `feat/vault-search` | all-vaults search view | PR open; gates green; in-app acceptance pending |
+| `main` | trunk | PRs #1–#33 all merged; all gates green |
 
 ## Next up
 
@@ -110,8 +110,8 @@ that's better") and merged as PR #7.
 
 ## Most recent meaningful progress
 
-- **2026-08-26 — All-vaults search view (feat/vault-search, PR
-  open).** User ask, design-dialogued (full-window mode / all vault
+- **2026-08-26 — All-vaults search view (PR #33).** User ask,
+  design-dialogued (full-window mode / all vault
   files / full row actions): "Search vaults…" (⌘F) swaps the panes
   for one filtered, sortable table over every vault file — icon,
   rarity-colored name, requirement, vault, full colored stat lines.
@@ -128,8 +128,10 @@ that's better") and merged as PR #7.
   refresh/conflict rails (`DocId::SearchVault`), and rows are
   gesture targets via `GridId::SearchDoc` (send/duplicate/copy/
   extract); double-click adopts the vault into the pane by model
-  handoff — no disk round-trip. 211 tests. Risk: table feel
-  (row heights, gestures) unverified until the user runs it.
+  handoff — no disk round-trip. A Clear-all button resets every
+  filter (user ask; "Much nicer!" on the criteria rework). 217
+  tests. Risk: table feel (row heights, gestures, autocomplete
+  popup) unverified until the user runs the full in-app pass.
 - **2026-08-26 — Status messages became toasts (UX fix).** User
   report: the header status line reflowed the panes on every action
   ("jittering" while moving items), and "Saving…" flickered its own
