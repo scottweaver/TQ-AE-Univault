@@ -153,7 +153,7 @@ fn cell_to_offset(cell: i32) -> f32 {
 /// # Errors
 /// The parse errors of locating `fName`.
 pub fn backup_twin(dxb: &[u8]) -> Result<Vec<u8>, StashError> {
-    patched_name_copy(dxb, [b'b', b'B'], b'g')
+    patched_name_copy(dxb, *b"bB", b'g')
 }
 
 /// Rebuilds `.dxb` bytes from a `.dxg` backup twin — the inverse of
@@ -164,7 +164,7 @@ pub fn backup_twin(dxb: &[u8]) -> Result<Vec<u8>, StashError> {
 /// # Errors
 /// The parse errors of locating `fName`.
 pub fn restore_from_twin(dxg: &[u8]) -> Result<Vec<u8>, StashError> {
-    patched_name_copy(dxg, [b'g', b'G'], b'b')
+    patched_name_copy(dxg, *b"gG", b'b')
 }
 
 /// A copy of `data` with the stored `fName`'s trailing byte patched
