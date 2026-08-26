@@ -45,10 +45,25 @@ pub fn personal_stash_path(chr_path: &Path) -> Option<PathBuf> {
 /// walking every ancestor also covers relocated or custom-map save
 /// roots. The shell takes the first candidate that exists on disk.
 pub fn transfer_stash_candidates(chr_path: &Path) -> impl Iterator<Item = PathBuf> + '_ {
+    sys_file_candidates(chr_path, "winsys.dxb")
+}
+
+/// Candidate paths for the account-wide relic bank (Atlantis and
+/// later; `TQVaultAE`'s "relic vault stash"), nearest first. Same
+/// `Sys` folder as the transfer stash, stored as `miscsys.dxb` in
+/// the identical stash format.
+pub fn relic_bank_candidates(chr_path: &Path) -> impl Iterator<Item = PathBuf> + '_ {
+    sys_file_candidates(chr_path, "miscsys.dxb")
+}
+
+fn sys_file_candidates<'p>(
+    chr_path: &'p Path,
+    file_name: &'static str,
+) -> impl Iterator<Item = PathBuf> + 'p {
     chr_path
         .ancestors()
         .skip(1)
-        .map(|dir| dir.join("Sys").join("winsys.dxb"))
+        .map(move |dir| dir.join("Sys").join(file_name))
 }
 
 #[cfg(test)]
@@ -82,6 +97,15 @@ mod tests {
             PathBuf::from("/saves/SaveData/Main/_Pally Don/Sys/winsys.dxb")
         );
         let expected = PathBuf::from("/saves/SaveData/Sys/winsys.dxb");
+        assert!(candidates.contains(&expected), "{candidates:?}");
+    }
+
+    #[test]
+    fn relic_bank_candidates_use_the_miscsys_file() {
+        let candidates: Vec<PathBuf> =
+            relic_bank_candidates(Path::new("/saves/SaveData/Main/_Pally Don/Player.chr"))
+                .collect();
+        let expected = PathBuf::from("/saves/SaveData/Sys/miscsys.dxb");
         assert!(candidates.contains(&expected), "{candidates:?}");
     }
 }

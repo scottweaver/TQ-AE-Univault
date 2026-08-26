@@ -79,22 +79,26 @@ and open our vault JSON in TQVaultAE.
 
 ## Most recent meaningful progress
 
-- **2026-08-25 — Default vault + character/shared bank panes.** The
-  user's three prompt asks after real use: a vault file now exists
-  without setup (`<config>/vaults/Main Vault.json`, created and
-  auto-opened at launch; `Open vault…` still swaps in any other
-  file), and opening a `Player.chr` auto-discovers and loads its
-  private bank (`winsys.dxb` beside it) and the account's shared
-  bank (`Sys/winsys.dxb`, found by walking ancestors) as two extra
-  grid sections in the left pane, each with its own Save (stash
-  splice + `.dxg` twin, backup-first). Underneath: the left pane
-  became three independent documents (`CharacterPane` + two
-  `StashPane`s), `GridId` gained `Bank`/`Shared`, selection is
-  `(GridId, index)` everywhere, and re-discovery never silently
-  reloads a dirty stash pane. 154 tests. Risk: layout and
-  discovery unverified against the real network-mounted save tree
-  until the user runs it; a save tree whose transfer stash lives
-  outside any `Sys/` ancestor would report "no shared bank found".
+- **2026-08-25 — Default vault + bank/shared/relic panes +
+  Shift+Click duplicate.** The user's prompt asks after real use: a
+  vault file now exists without setup (`<config>/vaults/Main
+  Vault.json`, created and auto-opened at launch; `Open vault…`
+  still swaps in any other file); opening a `Player.chr`
+  auto-discovers and loads its private bank (`winsys.dxb` beside
+  it), the shared bank (`Sys/winsys.dxb`), and the relic bank
+  (`Sys/miscsys.dxb`, Atlantis+) as grid sections in the left pane,
+  each with its own Save (stash splice + `.dxg` twin,
+  backup-first); Shift+Click duplicates an item in place (same
+  seed = exact copy, auto-placed, spilling to sibling sacks/tabs).
+  Underneath: the left pane became independent documents
+  (`CharacterPane` + three `StashPane`s), `GridId` gained
+  `Bank`/`Shared`/`Relic`, selection is `(GridId, index)`
+  everywhere, and re-discovery never silently reloads a dirty
+  stash pane. 155 tests. Risk: layout and discovery unverified
+  against the real network-mounted save tree until the user runs
+  it; a tree whose Sys stashes live outside any `Sys/` ancestor
+  reports "no shared/relic bank found"; duplication is a deliberate
+  cheat feature — the game has no such operation.
 - **2026-08-25 — Drag-and-drop item movement.** The top "Next up"
   item: items now drag between cells, sacks, panes, and vault tabs
   with a live drop preview (green = fits, red = blocked), the
