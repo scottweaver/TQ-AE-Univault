@@ -10,17 +10,15 @@ Last updated: 2026-08-26
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** nothing in flight — PR #17 (Core Dweller
-Provoke/Wildfire mod tune) and PR #18 (read-only MCP server,
-`univault-mcp`) merged 2026-08-26, wrap-up done, main green (167
-tests). The MCP server is user-ACCEPTED same day ("able to use
-just fine") from the user's "Titan Quest AE Buildcrafting" Claude
-project — registered in Claude Desktop's
-`claude_desktop_config.json` and the repo's `.mcp.json` for Claude
-Code; after merges that touch it, refresh the binary with `cargo
-build --release -p univault-mcp` (Cowork can't spawn local
-binaries — HTTP transport would be a structural change). Pick from
-"Next up".
+**Resume here:** PR #22 (MCP full-database + mod overlays, 16
+tools) merged 2026-08-26, wrap-up done, release binary rebuilt from
+main (Claude Desktop/Code serve the new tools after a restart).
+Still open: **PR #21 (GUI auto-refresh + conflict prompts)** —
+awaiting the user's in-app acceptance run (play, save in-game,
+watch panes update; conflict modal on simultaneous edits). Its
+branch `feat/auto-refresh` will conflict with main's STATE.md on
+merge — keep both progress entries, re-trim to 10. Otherwise pick
+from "Next up".
 
 - GitHub Actions event delivery was unreliable all 2026-08-26
   (major outage + slow recovery): push/PR webhook events silently
@@ -76,7 +74,8 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#18 merged (latest: Core Dweller mod tune #17, MCP server #18); all gates green |
+| `main` | trunk | PRs #1–#20, #22 merged (latest: MCP full database + mod overlays #22); all gates green |
+| `feat/auto-refresh` | GUI auto-refresh + conflict prompts (PR #21) | CI green; awaiting user in-app acceptance |
 
 ## Next up
 
