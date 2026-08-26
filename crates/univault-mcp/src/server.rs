@@ -300,6 +300,10 @@ pub struct ItemDetailsParams {
 
 const DEFAULT_SEARCH_LIMIT: usize = 100;
 
+// The rmcp macros generate `async fn`s that only await when a tool
+// is itself async; ours are sync, so the generated bodies trip the
+// unused-async lints.
+#[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
 #[tool_router]
 impl Univault {
     #[tool(
@@ -609,6 +613,9 @@ impl Univault {
     }
 }
 
+// Same as above: the generated `call_tool`/`list_tools` are async
+// with nothing to await because every tool here is sync.
+#[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
 #[tool_handler]
 impl ServerHandler for Univault {
     fn get_info(&self) -> ServerInfo {
