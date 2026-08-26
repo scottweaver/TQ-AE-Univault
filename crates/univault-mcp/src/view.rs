@@ -51,35 +51,7 @@ pub struct ItemView {
     pub shards: Option<ShardsView>,
 }
 
-pub fn record_name(db: Option<&GameCache>, id: &RecordId) -> String {
-    db.and_then(|db| db.record_name(id))
-        .unwrap_or_else(|| id.file_stem().to_string())
-}
-
-/// The game's full item name: prefix, quality, base, style word,
-/// suffix, and the stack count — the same assembly the GUI titles
-/// tooltips with.
-pub fn item_name(db: Option<&GameCache>, item: &Item) -> String {
-    let details = db.map(|db| stats::item_details(db, item));
-    let mut parts: Vec<String> = Vec::new();
-    if let Some(prefix) = &item.prefix {
-        parts.push(record_name(db, prefix));
-    }
-    if let Some(quality) = details.as_ref().and_then(|d| d.quality.clone()) {
-        parts.push(quality);
-    }
-    parts.push(record_name(db, &item.base));
-    if let Some(style_word) = details.as_ref().and_then(|d| d.style_word.clone()) {
-        parts.push(style_word);
-    }
-    if let Some(suffix) = &item.suffix {
-        parts.push(record_name(db, suffix));
-    }
-    if item.stack_size > 1 {
-        parts.push(format!("×{}", item.stack_size));
-    }
-    parts.join(" ")
-}
+pub use univault_core::query::item_name;
 
 pub fn item_view(db: Option<&GameCache>, item: &Item) -> ItemView {
     let (width, height) = db.map_or(univault_core::gamedata::FALLBACK_FOOTPRINT, |db| {
