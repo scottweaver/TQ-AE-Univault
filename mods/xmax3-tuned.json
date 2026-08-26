@@ -1,5 +1,6 @@
 {
   "name": "LootPlusXMAX3Tuned",
+  "base": "LootPlusXMAXFTWx3x1 (Steam Workshop 1779344333): monsters x3, named bosses/heroes x1",
   "rules": [
     {
       "kind": "multiply_player_skills",
