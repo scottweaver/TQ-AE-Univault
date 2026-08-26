@@ -49,7 +49,8 @@ green (162 tests). Pick the next item from "Next up".
 tq-univault: a platform-independent (Windows/macOS/Linux)
 reimplementation of TQVaultAE — the item-vault / inventory-manager
 companion app for Titan Quest — in Rust (workspace: `univault-core`
-pure logic, `univault-gui` egui/eframe shell). Working today: full
+pure logic, `univault-gui` egui/eframe shell, `univault-mcp`
+read-only MCP stdio server for AI agents). Working today: full
 read stack (chr, stash, vault JSON + legacy import, ARZ/ARC/text/
 textures) with localized names, real footprints, and icons; grid
 rendering; left tab strip (inventory + character/shared/relic banks,
@@ -101,6 +102,24 @@ that's better") and merged as PR #7.
 
 ## Most recent meaningful progress
 
+- **2026-08-26 — MCP server: game data for AI agents.** User ask
+  ("a true MCP server, not just exports"), design-dialogued:
+  read-only v1, official `rmcp` SDK, stdio-only — ARCHITECTURE
+  amended in the same PR (third workspace member `univault-mcp`, a
+  sanctioned read-only MCP boundary; write tools or network
+  transports need a new dialog). Ten tools: overview,
+  list/get_character (via new core `respec::progression` read API —
+  attributes, unspent pools, per-skill levels), get_bank
+  (personal/shared/relic, `.dxg` twin fallback), list/get_vault,
+  search_items across every possession with location provenance,
+  get_item_details (tooltip blocks), list/get_mastery (skilltree
+  distillation promoted from the example into `core::skilltree`).
+  Paths from the GUI's config (recent-files → save roots,
+  game-dir.txt, vaults/) with `UNIVAULT_*` env overrides; `.mcp.json`
+  registers it for Claude Code. Verified over real JSON-RPC against
+  the live tree: builds/equipment resolve, 45 relic-bank items,
+  Hecate hits across bank + vault, Earth tree 34 skills. 167 tests.
+  Risk: not yet driven from a real MCP client session.
 - **2026-08-26 — Core Dweller Provoke/Wildfire tune.** Three user
   asks via two new `record` rules in `mods/xmax3-tuned.json`:
   Provoke `skillTargetRadius` 3 → 5m (user confirmed 5m total)
@@ -289,37 +308,6 @@ that's better") and merged as PR #7.
   `stats/render.rs` sits at ~71% lines (formula reagents, buff
   redirects, scroll effects untested); GUI shell logic beyond the
   helpers is uncovered; CI is unproven until the first Actions run.
-- **2026-08-25 — Full item statistics in tooltips: the attribute
-  engine lands.** User-directed follow-up to the rarity tooltip: a
-  full-fidelity port of TQVaultAE's display engine (~5,900 reference
-  lines studied; `ItemAttributeProvider` dictionary,
-  `ConvertOffenseAttributesToString`, requirements incl. the
-  itemcost.dbr equation evaluator, granted skills/pets, sets,
-  formulae, racial bonuses, global XOR chance groups). Architecture
-  per design dialog: stats pre-render once at import into per-record
-  line blocks in the cache (`UVC3`; 50→56 MB, 8s import);
-  `stats::item_details` assembles per-item tooltips at display time
-  (relic shard slots, max-merged requirements + equations with
-  totalAttCount). Real-data gate: 80 items across the user's save
-  tree render with zero unresolved tags — set lists, XOR chance
-  groups, flavor text (via Info's per-kind `itemText`/`itemStyleTag`
-  dispatch) all correct. New `tooltips`/`dump`/`dumptag` examples
-  are the validation harness. 115 tests. Risk: granted-skill and
-  socketed-relic sections are unit-tested but absent from the real
-  saves swept; `attributeScalePercent` deliberately stays
-  record-local (deviation noted in `stats::render` docs). Follow-up
-  after the user hit two silent slow launches (each format bump
-  forces a re-import): imports now run on a background thread with
-  a startup progress bar (phase labels + record fraction via
-  `build_cache_with_progress`); verified live against the real
-  install — window responsive from launch, cache rewritten. Also
-  fixed after the user spotted "shieldbucklerwood03a_01": TQ's
-  `default\` template records store literal text where others store
-  tags — name resolution now accepts literal descriptions (space =
-  not a tag) and quality/style fall back to the raw word per
-  TQVaultAE, giving "Light Pine Buckler Ornate of Strength"; magic
-  bumped to `UVC4` (content bumps use the magic too) so caches
-  rebuild themselves.
 ## Blocked / waiting
 
 - *(nothing)*

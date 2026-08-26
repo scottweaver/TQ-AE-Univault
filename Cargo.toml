@@ -1,6 +1,10 @@
 [workspace]
 resolver = "3"
-members = ["crates/univault-core", "crates/univault-gui"]
+members = [
+    "crates/univault-core",
+    "crates/univault-gui",
+    "crates/univault-mcp",
+]
 
 [workspace.package]
 version = "0.1.0"

@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "univault": {
+      "command": "target/release/univault-mcp"
+    }
+  }
+}
