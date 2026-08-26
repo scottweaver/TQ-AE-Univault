@@ -2077,7 +2077,9 @@ impl App {
                  (vault items land in the active tab); Shift+Right-click sends a copy; \
                  Shift+Click duplicates in place; double-click a completed relic, \
                  charm, or artifact to change its completion bonus; Alt+Click an \
-                 item with a socketed relic/charm to extract it — both kept.",
+                 item with a socketed relic/charm to extract it — both kept; drag \
+                 a relic/charm onto gear its type rules allow to socket it — any \
+                 rarity, epics and legendaries included.",
             );
         }
         match &self.status {
@@ -2159,6 +2161,8 @@ impl App {
             if let Some(candidate) = frame.candidate {
                 if let Some(target_index) = candidate.combine_with {
                     self.status = Some(self.perform_combine(&state, candidate.grid, target_index));
+                } else if let Some(target_index) = candidate.socket_into {
+                    self.status = Some(self.perform_socket(&state, candidate.grid, target_index));
                 } else if candidate.fits {
                     let same_spot =
                         candidate.grid == state.source && candidate.cell == state.item.position;
@@ -2274,6 +2278,62 @@ impl App {
                 outcome.transferred
             ))
         }
+    }
+
+    /// Drops a standalone relic/charm onto allowed gear: the piece
+    /// moves into the item's socket — record, shard count, and bonus
+    /// — honoring the game's type rules but not its rarity gate, so
+    /// epics, legendaries, and set pieces all accept it.
+    fn perform_socket(
+        &mut self,
+        state: &DragState,
+        grid: GridId,
+        target_index: usize,
+    ) -> Result<String, String> {
+        let piece = self.take_at(state.source, state.index)?;
+        if piece.base != state.item.base {
+            let origin = state.item.position;
+            self.restore_dropped(state.source, piece, origin)?;
+            return Err("item moved under the drag — drop ignored".to_string());
+        }
+        let origin = piece.position;
+        let target_index = if state.source == grid && state.index < target_index {
+            target_index - 1
+        } else {
+            target_index
+        };
+        let allowed = {
+            let db = match &self.game {
+                GameStatus::Loaded(data) => Some(data),
+                GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
+            };
+            self.item_at(grid, target_index)
+                .is_ok_and(|target| transfer::can_socket(db, &piece, &target))
+        };
+        if !allowed {
+            self.restore_dropped(state.source, piece, origin)?;
+            return Err("socket target moved — drop ignored".to_string());
+        }
+        let db = match &self.game {
+            GameStatus::Loaded(data) => Some(data),
+            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
+        };
+        let piece_label = self.caches.names.record_name(db, &piece.base);
+        let target_label = self.item_at(grid, target_index).map_or_else(
+            |_| "item".to_string(),
+            |t| self.caches.names.record_name(db, &t.base),
+        );
+        match self.grid_item_mut(grid, target_index) {
+            Some(target) => transfer::socket_relic(target, piece),
+            None => return Err("socket target moved — drop ignored".to_string()),
+        }
+        self.mark_dirty(state.source);
+        self.mark_dirty(grid);
+        self.left_selected = None;
+        if let Some(pane) = &mut self.right {
+            pane.selected = None;
+        }
+        Ok(format!("socketed {piece_label} into {target_label}"))
     }
 
     /// Prepares the completion-bonus picker for the piece at
@@ -2809,6 +2869,9 @@ struct DropCandidate {
     /// A matching partial relic/charm under the pointer: dropping
     /// combines into the item at this index instead of placing.
     combine_with: Option<usize>,
+    /// Socketable gear under the pointer: dropping sockets the
+    /// dragged relic/charm into the item at this index.
+    socket_into: Option<usize>,
 }
 
 /// What the grids reported back this frame.
@@ -3038,12 +3101,15 @@ fn paint_drop_preview(
         y: point_to_cell(relative.y, dims.1, footprint.1),
     };
     // A matching partial relic/charm under the pointer offers a
-    // combine instead of a placement — highlighted gold.
+    // combine instead of a placement (gold); gear whose family the
+    // dragged relic/charm allows offers a socket instead (violet).
     for (index, item) in entries {
         if state.source == grid && state.index == *index {
             continue;
         }
-        if !transfer::can_combine(db, &state.item, item) {
+        let combine = transfer::can_combine(db, &state.item, item);
+        let socket = !combine && transfer::can_socket(db, &state.item, item);
+        if !combine && !socket {
             continue;
         }
         let (width, height) = caches.footprint(db, item);
@@ -3057,22 +3123,28 @@ fn paint_drop_preview(
         )
         .shrink(1.0);
         if item_rect.contains(cursor) {
+            let color = if combine {
+                egui::Color32::from_rgb(255, 200, 40)
+            } else {
+                egui::Color32::from_rgb(190, 120, 255)
+            };
             painter.rect_filled(
                 item_rect,
                 2.0,
-                egui::Color32::from_rgba_unmultiplied(255, 200, 40, 60),
+                egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 60),
             );
             painter.rect_stroke(
                 item_rect,
                 2.0,
-                egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 200, 40)),
+                egui::Stroke::new(2.0, color),
                 egui::StrokeKind::Inside,
             );
             return DropCandidate {
                 grid,
                 cell,
                 fits: false,
-                combine_with: Some(*index),
+                combine_with: combine.then_some(*index),
+                socket_into: socket.then_some(*index),
             };
         }
     }
@@ -3119,6 +3191,7 @@ fn paint_drop_preview(
         cell,
         fits,
         combine_with: None,
+        socket_into: None,
     }
 }
 

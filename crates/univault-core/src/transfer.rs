@@ -442,6 +442,34 @@ pub fn extract_relic(
     Ok(piece)
 }
 
+/// Whether the standalone relic/charm `piece` may be socketed into
+/// `target`: the target's socket is empty, the target is equipment
+/// of a family the piece's record allows (the game's own type
+/// rules), and game data is loaded. Rarity is deliberately not
+/// checked — that gate lives in the game's socketing UI, not its
+/// item model, so epics, legendaries, and set pieces are all fair
+/// targets here.
+#[must_use]
+pub fn can_socket(db: Option<&GameCache>, piece: &Item, target: &Item) -> bool {
+    let Some(db) = db else {
+        return false;
+    };
+    if db.completed_relic_level(&piece.base).is_none() || target.relic.is_some() {
+        return false;
+    }
+    db.gear_slot(&target.base)
+        .is_some_and(|slot| db.relic_allows(&piece.base, slot))
+}
+
+/// Sockets `piece` into `target`'s first socket — record, shard
+/// count, and completion bonus move onto the gear; the standalone
+/// piece ceases to exist. Callers gate with [`can_socket`].
+pub fn socket_relic(target: &mut Item, piece: Item) {
+    target.var1 = shard_count(&piece);
+    target.relic_bonus = piece.relic_bonus;
+    target.relic = Some(piece.base);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -533,13 +561,64 @@ mod tests {
         use crate::gamedata::GameData;
         use crate::text::TextDb;
         let mut builder = ArzBuilder::default();
+        // A charm that only enchants head and torso armor.
         builder.record(
             "records\\item\\animalrelics\\boarhide.dbr",
             "ItemCharm",
-            &[("completedRelicLevel", Values::Ints(&[3]))],
+            &[
+                ("completedRelicLevel", Values::Ints(&[3])),
+                ("helmet", Values::Bools(&[true])),
+                ("bodyArmor", Values::Bools(&[true])),
+                ("sword", Values::Bools(&[false])),
+            ],
+        );
+        builder.record(
+            "records\\item\\equipmenthelm\\bronzehelm.dbr",
+            "ArmorProtective_Head",
+            &[("itemClassification", Values::Strings(&["Legendary"]))],
+        );
+        builder.record(
+            "records\\item\\equipmentweapon\\gladius.dbr",
+            "WeaponMelee_Sword",
+            &[("itemClassification", Values::Strings(&["Epic"]))],
         );
         let data = GameData::from_parts(ArzFile::parse(builder.build()).unwrap(), TextDb::new());
         data.build_cache(Vec::new())
+    }
+
+    #[test]
+    fn socketing_honors_type_rules_and_ignores_rarity() {
+        let db = charm_db();
+        let charm = shard(r"records\item\animalrelics\boarhide.dbr", 2);
+        let legendary_helm = shard(r"records\item\equipmenthelm\bronzehelm.dbr", 0);
+        let epic_sword = shard(r"records\item\equipmentweapon\gladius.dbr", 0);
+        // A head charm fits a legendary helm (rarity never gates)…
+        assert!(can_socket(Some(&db), &charm, &legendary_helm));
+        // …but never a sword (the game's type rules stand)…
+        assert!(!can_socket(Some(&db), &charm, &epic_sword));
+        // …and gear can't be socketed into gear, nor without data.
+        assert!(!can_socket(Some(&db), &legendary_helm, &epic_sword));
+        assert!(!can_socket(None, &charm, &legendary_helm));
+        // An occupied socket refuses.
+        let mut socketed = legendary_helm.clone();
+        socketed.relic = Some(RecordId::parse("records\\x.dbr".to_string()).unwrap());
+        assert!(!can_socket(Some(&db), &charm, &socketed));
+    }
+
+    #[test]
+    fn socket_moves_record_count_and_bonus_onto_the_gear() {
+        let bonus = RecordId::parse(r"records\item\bonus.dbr".to_string()).unwrap();
+        let mut charm = shard(r"records\item\animalrelics\boarhide.dbr", 0);
+        charm.relic_bonus = Some(bonus.clone());
+        let mut helm = shard(r"records\item\equipmenthelm\bronzehelm.dbr", 0);
+        socket_relic(&mut helm, charm);
+        assert_eq!(
+            helm.relic.as_ref().map(crate::chr::RecordId::as_str),
+            Some(r"records\item\animalrelics\boarhide.dbr")
+        );
+        // The zero-encoded single shard sockets as one shard.
+        assert_eq!(helm.var1, 1);
+        assert_eq!(helm.relic_bonus, Some(bonus));
     }
 
     #[test]

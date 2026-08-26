@@ -123,6 +123,109 @@ impl Classification {
     }
 }
 
+/// The fifteen equipment families a relic/charm record carries
+/// allow-flags for, mapped from equipment record classes. Socketing
+/// rules are per family (a ring relic fits any ring); rarity never
+/// enters into it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GearSlot {
+    Head,
+    UpperBody,
+    Forearm,
+    LowerBody,
+    Shield,
+    Amulet,
+    Ring,
+    Bracelet,
+    Sword,
+    Axe,
+    Mace,
+    Spear,
+    Bow,
+    Thrown,
+    Staff,
+}
+
+impl GearSlot {
+    /// Serialization / bitmask order — append-only.
+    pub(crate) const ALL: [Self; 15] = [
+        Self::Head,
+        Self::UpperBody,
+        Self::Forearm,
+        Self::LowerBody,
+        Self::Shield,
+        Self::Amulet,
+        Self::Ring,
+        Self::Bracelet,
+        Self::Sword,
+        Self::Axe,
+        Self::Mace,
+        Self::Spear,
+        Self::Bow,
+        Self::Thrown,
+        Self::Staff,
+    ];
+
+    pub(crate) fn of_class(class: &str) -> Option<Self> {
+        let matches = |wanted: &str| class.eq_ignore_ascii_case(wanted);
+        if matches("ArmorProtective_Head") {
+            Some(Self::Head)
+        } else if matches("ArmorProtective_UpperBody") {
+            Some(Self::UpperBody)
+        } else if matches("ArmorProtective_Forearm") {
+            Some(Self::Forearm)
+        } else if matches("ArmorProtective_LowerBody") {
+            Some(Self::LowerBody)
+        } else if matches("WeaponArmor_Shield") {
+            Some(Self::Shield)
+        } else if matches("ArmorJewelry_Amulet") {
+            Some(Self::Amulet)
+        } else if matches("ArmorJewelry_Ring") {
+            Some(Self::Ring)
+        } else if matches("ArmorJewelry_Bracelet") {
+            Some(Self::Bracelet)
+        } else if matches("WeaponMelee_Sword") {
+            Some(Self::Sword)
+        } else if matches("WeaponMelee_Axe") {
+            Some(Self::Axe)
+        } else if matches("WeaponMelee_Mace") {
+            Some(Self::Mace)
+        } else if matches("WeaponHunting_Spear") {
+            Some(Self::Spear)
+        } else if matches("WeaponHunting_Bow") {
+            Some(Self::Bow)
+        } else if matches("WeaponHunting_RangedOneHand") {
+            Some(Self::Thrown)
+        } else if matches("WeaponMagical_Staff") {
+            Some(Self::Staff)
+        } else {
+            None
+        }
+    }
+
+    /// The allow-flag variable on relic/charm records for this
+    /// family.
+    pub(crate) fn flag_variable(self) -> &'static str {
+        match self {
+            Self::Head => "helmet",
+            Self::UpperBody => "bodyArmor",
+            Self::Forearm => "armband",
+            Self::LowerBody => "greaves",
+            Self::Shield => "shield",
+            Self::Amulet => "amulet",
+            Self::Ring => "ring",
+            Self::Bracelet => "bracelet",
+            Self::Sword => "sword",
+            Self::Axe => "axe",
+            Self::Mace => "mace",
+            Self::Spear => "spear",
+            Self::Bow => "bow",
+            Self::Thrown => "rangedOneHand",
+            Self::Staff => "staff",
+        }
+    }
+}
+
 /// Coarse kind of a base record, derived from its class at import —
 /// the class-based half of `TQVaultAE`'s `Is*` predicates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
