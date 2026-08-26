@@ -12,11 +12,22 @@ Last updated: 2026-08-25
 
 **Resume here:** nothing in flight — the 2026-08-26 batch (PR #12
 shard icons + combining, #13 workflow_dispatch, #14 bonus
-roll/re-pick + artifacts) merged and user-ACCEPTED ("everything
-seems to be working"); post-merge cleanup done, main green (162
-tests, CI validated via manual dispatch during the Actions
-outage). Pick the next item from "Next up".
+roll/re-pick + artifacts, #15 docs) merged and user-ACCEPTED
+("everything seems to be working"); post-merge cleanup done, main
+green (162 tests). Pick the next item from "Next up".
 
+- GitHub Actions event delivery was unreliable all 2026-08-26
+  (major outage + slow recovery): push/PR webhook events silently
+  dropped several times. The lever: `gh workflow run CI --ref
+  <branch>` (workflow_dispatch, added in PR #13), then
+  `gh run watch <id> --exit-status`.
+- A stale **Travis CI GitHub App** is installed on the repo and
+  attaches permanently-queued phantom check suites to commits —
+  uninstall advised (repo Settings → Integrations → GitHub Apps),
+  not yet confirmed done.
+- Cache format is `UVC6` (PRs #12/#14): the first app launch after
+  pulling re-imports game data (~8s, background; game volume must
+  be mounted). The user's acceptance suggests this already ran.
 - User in-game checks outstanding (mod acceptance): pet Energy
   ×2.5 / regen ×1.75 on Core Dweller (875 / 5.25 at level 20) and
   Call of the Wild wolves (255 / 3.5); vanilla XP restored
@@ -24,14 +35,13 @@ outage). Pick the next item from "Next up".
   dense packs. Older residual: open one of our vault JSONs in
   TQVaultAE.
 - App checks worth a mention next session: autosave against the
-  network mount (one `univault-bak` per file per session), TQVaultAE
-  opening the default vault JSON. Relic-bank `.dxb` truncation
-  (game-side partial write over SMB) hit 2026-08-25; recovered via
-  the new twin fallback — the truncated write's newest relic (a
-  Hecate's Crescent shard) was lost with it and can be re-duplicated
-  in-app if wanted.
-- PROJECT.md bootstrap still deferred (user re-confirmed 2026-08-25);
-  answers saved in agent memory (bootstrap-project-deferred).
+  network mount (one `univault-bak` per file per session). The
+  2026-08-25 relic-bank `.dxb` truncation was game-side; the twin
+  fallback (PR #10) recovers it — the lost Hecate's Crescent shard
+  can be re-duplicated in-app if wanted.
+- PROJECT.md bootstrap still deferred (user re-confirmed
+  2026-08-25); answers saved in agent memory
+  (bootstrap-project-deferred).
 
 ## Active workstream
 
