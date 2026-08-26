@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Manual re-runs for commits whose event delivery was dropped
+  # (e.g. during an Actions outage).
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
