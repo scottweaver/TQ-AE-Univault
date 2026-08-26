@@ -159,6 +159,44 @@ impl GameData {
         tex::decode(&self.resource(bitmap)?).ok()
     }
 
+    /// The completion-bonus table of a relic/charm record, resolved
+    /// to (game-style record path, weight) pairs in
+    /// `randomizerNameN` order. A missing weight defaults to 1.
+    fn relic_bonus_table(&self, record: &DbRecord) -> Vec<(String, i32)> {
+        let Some(table_id) = record
+            .string("bonusTableName")
+            .filter(|path| !path.is_empty())
+            .and_then(|path| RecordId::parse(path.to_string()))
+        else {
+            return Vec::new();
+        };
+        let Some(Ok(table)) = self.arz.record(&table_id) else {
+            return Vec::new();
+        };
+        let mut numbered: Vec<(u32, String, i32)> = Vec::new();
+        for variable in table.variables() {
+            let Some(number) = variable
+                .name
+                .strip_prefix("randomizerName")
+                .and_then(|suffix| suffix.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            let Some(path) = table.string(&variable.name).filter(|path| !path.is_empty()) else {
+                continue;
+            };
+            let weight = table
+                .integer(&format!("randomizerWeight{number}"))
+                .unwrap_or(1);
+            numbered.push((number, path.to_string(), weight));
+        }
+        numbered.sort_by_key(|(number, _, _)| *number);
+        numbered
+            .into_iter()
+            .map(|(_, path, weight)| (path, weight))
+            .collect()
+    }
+
     fn texture_footprint(&self, record: &DbRecord) -> Option<(i32, i32)> {
         let bitmap = record
             .string(bitmap_variable(&record.record_type))
@@ -201,22 +239,39 @@ impl GameData {
             let footprint = self
                 .texture_footprint(&record)
                 .unwrap_or_else(|| class_upper_bound(Some(&record)));
-            let icon = record
-                .string(bitmap_variable(&record.record_type))
-                .filter(|path| !path.is_empty())
-                .and_then(|bitmap| self.resource(bitmap))
-                .and_then(|bytes| tex::decode(&bytes).ok())
-                .as_ref()
-                .and_then(crate::cache::compress_icon);
+            let compressed = |variable: &str| {
+                record
+                    .string(variable)
+                    .filter(|path| !path.is_empty())
+                    .and_then(|bitmap| self.resource(bitmap))
+                    .and_then(|bytes| tex::decode(&bytes).ok())
+                    .as_ref()
+                    .and_then(crate::cache::compress_icon)
+            };
+            let icon = compressed(bitmap_variable(&record.record_type));
+            let kind = crate::style::ItemKind::of(&record);
+            let is_relic = matches!(kind, crate::style::ItemKind::RelicOrCharm { .. });
+            let shard_icon = if is_relic {
+                compressed("shardBitmap")
+            } else {
+                None
+            };
+            let bonuses = if is_relic {
+                self.relic_bonus_table(&record)
+            } else {
+                Vec::new()
+            };
             entries.insert(
                 normalize(id.as_str()),
                 crate::cache::CacheEntry {
                     name,
                     footprint,
                     classification: crate::style::Classification::of(&record),
-                    kind: crate::style::ItemKind::of(&record),
+                    kind,
                     stats: Some(renderer.stat_block(&record)),
                     icon,
+                    shard_icon,
+                    bonuses,
                 },
             );
         }

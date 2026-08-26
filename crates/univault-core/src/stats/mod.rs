@@ -83,6 +83,17 @@ pub fn palette_color(tag: char) -> style::Rgb {
     style::palette_color(tag)
 }
 
+/// The display lines of one record's own attribute block (its first
+/// shard slot) — lets shells preview a relic completion bonus.
+#[must_use]
+pub fn record_lines(db: &GameCache, id: &RecordId) -> Vec<StatLine> {
+    db.entry(id)
+        .and_then(|entry| entry.stats.as_ref())
+        .and_then(|stats| stats.attr.first())
+        .cloned()
+        .unwrap_or_default()
+}
+
 /// Assembles the tooltip body from cached stat blocks.
 #[must_use]
 pub fn item_details(db: &GameCache, item: &Item) -> ItemDetails {

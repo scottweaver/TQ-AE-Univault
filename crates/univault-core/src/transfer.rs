@@ -328,12 +328,105 @@ pub fn placement_footprint(db: Option<&GameCache>, item: &Item) -> (i32, i32) {
     footprint(db, item)
 }
 
+/// Result of pouring shards from one partial relic/charm into
+/// another of the same record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Combined {
+    pub transferred: i32,
+    pub source_emptied: bool,
+    pub target_completed: bool,
+}
+
+/// Whether `source` can pour shards into `target`: the same
+/// relic/charm record, the target still short of completion, and
+/// the completion level known from game data.
+#[must_use]
+pub fn can_combine(db: Option<&GameCache>, source: &Item, target: &Item) -> bool {
+    let Some(needed) = db.and_then(|db| db.completed_relic_level(&target.base)) else {
+        return false;
+    };
+    source.base == target.base && source.var1 > 0 && target.var1 < needed
+}
+
+/// Pours shards from `source` into `target` up to `needed` — the
+/// game's merge rule: the remainder stays in the source, so shards
+/// are never destroyed.
+pub fn combine_shards(target: &mut Item, source: &mut Item, needed: i32) -> Combined {
+    let transferred = source.var1.min(needed - target.var1).max(0);
+    target.var1 += transferred;
+    source.var1 -= transferred;
+    Combined {
+        transferred,
+        source_emptied: source.var1 <= 0,
+        target_completed: target.var1 >= needed,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::chr::fixture::Fixture;
     use crate::chr::{ItemSeed, RecordId, parse_player};
     use crate::vault::TAB_HEIGHT;
+
+    fn shard(record: &str, count: i32) -> Item {
+        let mut item = Item::bare(
+            RecordId::parse(record.to_string()).unwrap(),
+            ItemSeed::new(7),
+        );
+        item.var1 = count;
+        item
+    }
+
+    #[test]
+    fn combine_pours_shards_and_keeps_the_remainder() {
+        let mut target = shard(r"records\item\animalrelics\boarhide.dbr", 4);
+        let mut source = shard(r"records\item\animalrelics\boarhide.dbr", 3);
+        let outcome = combine_shards(&mut target, &mut source, 5);
+        assert_eq!(
+            outcome,
+            Combined {
+                transferred: 1,
+                source_emptied: false,
+                target_completed: true,
+            }
+        );
+        assert_eq!(target.var1, 5);
+        assert_eq!(source.var1, 2);
+    }
+
+    #[test]
+    fn combine_empties_the_source_when_it_all_fits() {
+        let mut target = shard(r"records\item\animalrelics\boarhide.dbr", 1);
+        let mut source = shard(r"records\item\animalrelics\boarhide.dbr", 2);
+        let outcome = combine_shards(&mut target, &mut source, 5);
+        assert_eq!(
+            outcome,
+            Combined {
+                transferred: 2,
+                source_emptied: true,
+                target_completed: false,
+            }
+        );
+        assert_eq!(target.var1, 3);
+        assert_eq!(source.var1, 0);
+    }
+
+    #[test]
+    fn combine_moves_nothing_into_a_complete_target() {
+        let mut target = shard(r"records\item\animalrelics\boarhide.dbr", 5);
+        let mut source = shard(r"records\item\animalrelics\boarhide.dbr", 2);
+        let outcome = combine_shards(&mut target, &mut source, 5);
+        assert_eq!(outcome.transferred, 0);
+        assert!(!outcome.source_emptied);
+    }
+
+    #[test]
+    fn can_combine_needs_game_data_and_matching_partials() {
+        let a = shard(r"records\item\animalrelics\boarhide.dbr", 2);
+        let b = shard(r"records\item\animalrelics\boarhide.dbr", 2);
+        assert!(!can_combine(None, &a, &b));
+    }
 
     fn player_bytes() -> Vec<u8> {
         let mut fixture = Fixture::default()
