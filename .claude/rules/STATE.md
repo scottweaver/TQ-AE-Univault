@@ -108,6 +108,18 @@ that's better") and merged as PR #7.
 
 ## Most recent meaningful progress
 
+- **2026-08-26 — Status messages became toasts (UX fix).** User
+  report: the header status line reflowed the panes on every action
+  ("jittering" while moving items), and "Saving…" flickered its own
+  line. Outcomes now surface as bottom-right toasts — an egui
+  `Area` overlay, `interactable(false)` so it is click-through,
+  auto-expiring (4s, errors 8s, stack capped at 6) — and "Saving…"
+  rides the fixed-height zoom row. The `status` channel is
+  unchanged (every set-site untouched); it drains into the toast
+  stack at frame end. Hand-rolled (~70 lines) over `egui-notify`
+  deliberately: its toasts are clickable widgets, which would
+  obstruct drops underneath. Risk: in-app feel — drop an item and
+  watch nothing move but the toast.
 - **2026-08-26 — Vault sends land where you look (bug fix).** User
   report: right-click sent items to the earliest vault tab with
   room, not the one on screen — and the stacked collapsible tab
@@ -262,15 +274,6 @@ that's better") and merged as PR #7.
   Hecate hits across bank + vault, Earth tree 34 skills. 167 tests.
   ACCEPTED 2026-08-26: driven from the user's "Titan Quest AE
   Buildcrafting" Claude project — "able to use just fine".
-- **2026-08-26 — Core Dweller Provoke/Wildfire tune.** Three user
-  asks via two new `record` rules in `mods/xmax3-tuned.json`:
-  Provoke `skillTargetRadius` 3 → 5m (user confirmed 5m total)
-  and `offensiveTauntMax` floored at 12 (user identified the
-  variable; levels already above 12 keep their higher values);
-  Wildfire's OA and movement-slow debuff durations 1s → 3s (burn
-  duration untouched per the user's clarification). Bundle
-  rebuilt + reinstalled, installed arz dump-verified. Risk:
-  in-game check pending.
 ## Blocked / waiting
 
 - *(nothing)*

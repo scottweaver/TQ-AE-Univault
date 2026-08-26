@@ -494,7 +494,10 @@ struct App {
     /// When the pending autosave fires; pushed forward while the
     /// user is still interacting.
     autosave_at: Option<Instant>,
+    /// The last action's outcome for this frame; drained into a
+    /// toast at the end of the frame, never laid out in the panes.
     status: Option<Result<String, String>>,
+    toasts: Vec<Toast>,
     pending_respec: Option<PendingRespec>,
     pending_bonus: Option<PendingBonus>,
     /// A requested reload awaiting confirmation because unsaved
@@ -552,6 +555,7 @@ impl App {
             backed_up: HashSet::new(),
             autosave_at: None,
             status: None,
+            toasts: Vec::new(),
             pending_respec: None,
             pending_bonus: None,
             pending_reload: false,
@@ -1676,6 +1680,29 @@ impl App {
     }
 }
 
+/// One transient outcome notification; errors differ in color and
+/// linger longer.
+struct Toast {
+    text: String,
+    error: bool,
+    born: Instant,
+}
+
+impl Toast {
+    fn lifetime(&self) -> Duration {
+        if self.error {
+            TOAST_ERROR_LIFETIME
+        } else {
+            TOAST_LIFETIME
+        }
+    }
+}
+
+const TOAST_LIFETIME: Duration = Duration::from_secs(4);
+const TOAST_ERROR_LIFETIME: Duration = Duration::from_secs(8);
+/// Older toasts beyond this many are dropped immediately.
+const TOAST_STACK: usize = 6;
+
 /// Quiet period between the last edit and its autosave.
 const AUTOSAVE_DELAY: Duration = Duration::from_millis(600);
 /// Backoff before an autosave that failed (e.g. an unreachable
@@ -1917,6 +1944,7 @@ impl eframe::App for App {
         self.show_bonus_modal(ui.ctx());
         self.show_dll_patch_modal(ui.ctx());
         self.show_conflict_modal(ui.ctx());
+        self.show_toasts(ui.ctx());
     }
 }
 
@@ -2140,18 +2168,62 @@ impl App {
                  it or onto a glowing slot to equip them.",
             );
         }
-        match &self.status {
-            Some(Ok(message)) => {
-                ui.label(message);
+    }
+
+    /// Outcome messages as toasts: bottom-right overlay, oldest on
+    /// top, auto-expiring, and — deliberately — not interactable, so
+    /// the panes underneath never reflow and never lose the pointer
+    /// to a message.
+    fn show_toasts(&mut self, ctx: &egui::Context) {
+        if let Some(outcome) = self.status.take() {
+            let (text, error) = match outcome {
+                Ok(text) => (text, false),
+                Err(text) => (text, true),
+            };
+            self.toasts.push(Toast {
+                text,
+                error,
+                born: Instant::now(),
+            });
+            if self.toasts.len() > TOAST_STACK {
+                let excess = self.toasts.len() - TOAST_STACK;
+                self.toasts.drain(..excess);
             }
-            Some(Err(message)) => {
-                ui.colored_label(ui.visuals().error_fg_color, message);
-            }
-            None => {}
         }
-        if self.any_dirty() {
-            ui.weak("Saving…");
-        }
+        let now = Instant::now();
+        self.toasts
+            .retain(|toast| now.duration_since(toast.born) < toast.lifetime());
+        let Some(soonest) = self
+            .toasts
+            .iter()
+            .map(|toast| {
+                toast
+                    .lifetime()
+                    .saturating_sub(now.duration_since(toast.born))
+            })
+            .min()
+        else {
+            return;
+        };
+        egui::Area::new(egui::Id::new("status-toasts"))
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-12.0, -12.0))
+            .order(egui::Order::Foreground)
+            .interactable(false)
+            .show(ctx, |ui| {
+                for toast in &self.toasts {
+                    let color = if toast.error {
+                        ui.visuals().error_fg_color
+                    } else {
+                        ui.visuals().strong_text_color()
+                    };
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.set_max_width(360.0);
+                        ui.colored_label(color, &toast.text);
+                    });
+                }
+            });
+        // Expiry must repaint even while the app is otherwise idle.
+        ctx.request_repaint_after(soonest);
     }
 
     /// Applying zoom mid-drag rescales the slider out from under the
@@ -2176,6 +2248,9 @@ impl App {
                 self.pending_zoom = ui.ctx().zoom_factor();
             }
             ui.weak("(⌘+ / ⌘− / ⌘0 work too)");
+            if self.any_dirty() {
+                ui.weak("Saving…");
+            }
         });
     }
 
