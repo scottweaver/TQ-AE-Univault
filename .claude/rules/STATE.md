@@ -89,11 +89,16 @@ and open our vault JSON in TQVaultAE.
   (`Sys/miscsys.dxb`, Atlantis+) as grid sections in the left pane,
   each with its own Save (stash splice + `.dxg` twin,
   backup-first); right-click sends an item straight to the other
-  pane (left → vault, vault → left); Shift+Click duplicates an
+  pane (vault items land in the active left tab); Shift+Right-click
+  sends a copy across (original stays); Shift+Click duplicates an
   item in place (same seed = exact copy, auto-placed, spilling to
   sibling sacks/tabs); a Reload button re-reads the character and
   all banks from disk (confirm modal when unsaved edits would be
-  lost).
+  lost). Same-day UX rework (user request): the left pane became a
+  tab strip — Inventory / Character bank / Shared bank / Relic bank
+  — one document on screen at a time, absent documents greyed out
+  with the reason on hover; cross-bank drags now route via the
+  vault or right-click since only one left grid is visible.
   Underneath: the left pane became independent documents
   (`CharacterPane` + three `StashPane`s), `GridId` gained
   `Bank`/`Shared`/`Relic`, selection is `(GridId, index)`

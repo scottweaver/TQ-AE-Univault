@@ -2,16 +2,18 @@
 //!
 //! Usage: `univault-gui [--game <TQ install dir>] [--vault <vault.json>] [file]`
 //!
-//! Left pane: the character (`Player.chr`) with, discovered
-//! automatically beside it, the character's bank (its `winsys.dxb`)
-//! and the account's shared and relic banks (`SaveData/Sys/
-//! winsys.dxb` and `miscsys.dxb`). Right pane: a vault — the
-//! default vault under the config directory opens (and is created)
-//! at launch; `Open vault…` swaps in any other vault file. Click or
-//! drag items across, right-click to send an item straight to the
-//! other pane, Shift+Click to duplicate, save per file; `Reload`
-//! re-reads the character and all banks from disk (confirmed when
-//! unsaved edits would be lost).
+//! Left pane: one tab per document — the character's inventory
+//! (`Player.chr`) with, discovered automatically beside it, the
+//! character's bank (its `winsys.dxb`) and the account's shared and
+//! relic banks (`SaveData/Sys/winsys.dxb` and `miscsys.dxb`). Right
+//! pane: a vault — the default vault under the config directory
+//! opens (and is created) at launch; `Open vault…` swaps in any
+//! other vault file. Click or drag items across; right-click sends
+//! an item straight to the other pane (vault items land in the
+//! active tab); Shift+Right-click sends a copy; Shift+Click
+//! duplicates in place; save per file. `Reload` re-reads the
+//! character and all banks from disk (confirmed when unsaved edits
+//! would be lost).
 //! Saves splice only the item region and go through the backup-first
 //! write path; stashes also get their `.dxg` twin rewritten.
 //! Drag-and-drop routes files by extension.
@@ -114,6 +116,44 @@ impl StashSlot {
             Self::Bank => "bank",
             Self::Shared => "shared bank",
             Self::Relic => "relic bank",
+        }
+    }
+}
+
+/// The left pane's tab strip: which document is on screen.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LeftTab {
+    Inventory,
+    Bank,
+    Shared,
+    Relic,
+}
+
+impl LeftTab {
+    const ALL: [Self; 4] = [Self::Inventory, Self::Bank, Self::Shared, Self::Relic];
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::Inventory => "Inventory",
+            Self::Bank => "Character bank",
+            Self::Shared => "Shared bank",
+            Self::Relic => "Relic bank",
+        }
+    }
+
+    /// Hover hint on a greyed-out tab: why its document is absent.
+    fn missing_hint(self) -> &'static str {
+        match self {
+            Self::Inventory => "No character loaded — open a Player.chr.",
+            Self::Bank => {
+                "No bank file yet — the game creates winsys.dxb the first time \
+                 this character opens the caravan stash."
+            }
+            Self::Shared => "No shared bank found — expected Sys/winsys.dxb up the save tree.",
+            Self::Relic => {
+                "No relic bank found — the game (Atlantis and later) keeps it as \
+                 Sys/miscsys.dxb next to the shared bank."
+            }
         }
     }
 }
@@ -314,9 +354,12 @@ struct App {
     relics: Option<StashPane>,
     right: Option<VaultPane>,
     /// The one selected item across all left-side grids (sacks and
-    /// both banks); the vault keeps its own so cross-pane moves can
+    /// the banks); the vault keeps its own so cross-pane moves can
     /// aim at the other pane's last selection.
     left_selected: Option<(GridId, usize)>,
+    /// Which left-side document the tab strip is showing — also the
+    /// destination of vault → left sends.
+    active_tab: LeftTab,
     status: Option<Result<String, String>>,
     pending_respec: Option<PendingRespec>,
     /// A requested reload awaiting confirmation because unsaved
@@ -355,6 +398,7 @@ impl App {
             relics: None,
             right: None,
             left_selected: None,
+            active_tab: LeftTab::Inventory,
             status: None,
             pending_respec: None,
             pending_reload: false,
@@ -634,26 +678,21 @@ impl App {
         }
     }
 
-    /// The left-side document a vault item lands in: the current
-    /// selection's document, else the first loaded one.
-    fn left_destination(&self) -> Option<GridId> {
-        match self.left_selected {
-            Some((grid @ (GridId::Sack(_) | GridId::Bank | GridId::Shared | GridId::Relic), _)) => {
-                Some(grid)
-            }
-            Some((GridId::VaultTab(_), _)) | None => {
-                if self.character.is_some() {
-                    Some(GridId::Sack(0))
-                } else if self.bank.is_some() {
-                    Some(GridId::Bank)
-                } else if self.shared.is_some() {
-                    Some(GridId::Shared)
-                } else if self.relics.is_some() {
-                    Some(GridId::Relic)
+    /// The grid the active left tab addresses — where vault → left
+    /// sends land. The inventory tab prefers the selected sack.
+    /// `None` when the tab's document isn't loaded.
+    fn active_tab_grid(&self) -> Option<GridId> {
+        match self.active_tab {
+            LeftTab::Inventory => self.character.as_ref().map(|_| {
+                if let Some((GridId::Sack(sack), _)) = self.left_selected {
+                    GridId::Sack(sack)
                 } else {
-                    None
+                    GridId::Sack(0)
                 }
-            }
+            }),
+            LeftTab::Bank => self.bank.is_some().then_some(GridId::Bank),
+            LeftTab::Shared => self.shared.is_some().then_some(GridId::Shared),
+            LeftTab::Relic => self.relics.is_some().then_some(GridId::Relic),
         }
     }
 
@@ -667,8 +706,8 @@ impl App {
 
     fn send_vault_to_left(&mut self, tab: usize, index: usize) -> Result<String, String> {
         let destination = self
-            .left_destination()
-            .ok_or("load a character or bank first")?;
+            .active_tab_grid()
+            .ok_or("the active left tab has nothing loaded")?;
         let vault_pane = self.right.as_mut().ok_or("load a vault first")?;
         let db = match &self.game {
             GameStatus::Loaded(data) => Some(data),
@@ -840,69 +879,163 @@ impl App {
         }
     }
 
+    /// A clone of the item at `(grid, index)`.
+    fn item_at(&self, grid: GridId, index: usize) -> Result<Item, String> {
+        let stale = "item changed under the click — try again";
+        match grid {
+            GridId::Sack(sack) => self
+                .character
+                .as_ref()
+                .ok_or("no character loaded")?
+                .character
+                .sacks
+                .get(sack)
+                .and_then(|sack| sack.items.get(index))
+                .cloned()
+                .ok_or_else(|| stale.to_string()),
+            GridId::Bank => self
+                .bank
+                .as_ref()
+                .ok_or("no bank loaded")?
+                .stash
+                .items
+                .get(index)
+                .cloned()
+                .ok_or_else(|| stale.to_string()),
+            GridId::Shared => self
+                .shared
+                .as_ref()
+                .ok_or("no shared bank loaded")?
+                .stash
+                .items
+                .get(index)
+                .cloned()
+                .ok_or_else(|| stale.to_string()),
+            GridId::Relic => self
+                .relics
+                .as_ref()
+                .ok_or("no relic bank loaded")?
+                .stash
+                .items
+                .get(index)
+                .cloned()
+                .ok_or_else(|| stale.to_string()),
+            GridId::VaultTab(tab) => self
+                .right
+                .as_ref()
+                .ok_or("no vault loaded")?
+                .vault
+                .sacks
+                .get(tab)
+                .and_then(|sack| sack.items.get(index))
+                .map(|entry| entry.item.clone())
+                .ok_or_else(|| stale.to_string()),
+        }
+    }
+
     /// Shift+Click: clones the item at `(grid, index)` — same seed,
     /// so an exact copy — and auto-places it in its own container,
     /// spilling to sibling sacks/tabs when the source grid is full.
     fn duplicate_item(&mut self, grid: GridId, index: usize) -> Result<String, String> {
+        let item = self.item_at(grid, index)?;
         let db = match &self.game {
             GameStatus::Loaded(data) => Some(data),
             GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
         };
-        let stale = "item changed under the click — try again";
-        let (copy, placed) = match grid {
+        let label = self.caches.names.item_label(db, &item);
+        let placed = match grid {
             GridId::Sack(sack) => {
                 let pane = self.character.as_mut().ok_or("no character loaded")?;
-                let item = pane
-                    .character
-                    .sacks
-                    .get(sack)
-                    .and_then(|sack| sack.items.get(index))
-                    .cloned()
-                    .ok_or(stale)?;
-                let copy = item.clone();
-                let placed =
-                    transfer::place_in_character(&mut pane.character, item, sack, db).map(|_| ());
-                (copy, placed)
+                transfer::place_in_character(&mut pane.character, item, sack, db).map(|_| ())
             }
             GridId::Bank => {
                 let pane = self.bank.as_mut().ok_or("no bank loaded")?;
-                let item = pane.stash.items.get(index).cloned().ok_or(stale)?;
-                let copy = item.clone();
-                (copy, transfer::place_in_stash(&mut pane.stash, item, db))
+                transfer::place_in_stash(&mut pane.stash, item, db)
             }
             GridId::Shared => {
                 let pane = self.shared.as_mut().ok_or("no shared bank loaded")?;
-                let item = pane.stash.items.get(index).cloned().ok_or(stale)?;
-                let copy = item.clone();
-                (copy, transfer::place_in_stash(&mut pane.stash, item, db))
+                transfer::place_in_stash(&mut pane.stash, item, db)
             }
             GridId::Relic => {
                 let pane = self.relics.as_mut().ok_or("no relic bank loaded")?;
-                let item = pane.stash.items.get(index).cloned().ok_or(stale)?;
-                let copy = item.clone();
-                (copy, transfer::place_in_stash(&mut pane.stash, item, db))
+                transfer::place_in_stash(&mut pane.stash, item, db)
             }
             GridId::VaultTab(tab) => {
                 let pane = self.right.as_mut().ok_or("no vault loaded")?;
-                let item = pane
-                    .vault
-                    .sacks
-                    .get(tab)
-                    .and_then(|sack| sack.items.get(index))
-                    .map(|entry| entry.item.clone())
-                    .ok_or(stale)?;
-                let copy = item.clone();
-                let placed = transfer::place_in_vault(&mut pane.vault, item, tab, db).map(|_| ());
-                (copy, placed)
+                transfer::place_in_vault(&mut pane.vault, item, tab, db).map(|_| ())
             }
         };
         match placed {
             Ok(()) => {
-                let label = self.caches.names.item_label(db, &copy);
                 self.mark_dirty(grid);
                 Ok(format!("duplicated {label}"))
             }
             Err(rejected) => Err(format!("cannot duplicate: {}", rejected.reason)),
+        }
+    }
+
+    /// Shift+Right-click: places a copy of the item in the other
+    /// pane — the vault for left-side items, the active left tab
+    /// for vault items — leaving the original in place.
+    fn copy_across(&mut self, grid: GridId, index: usize) -> Result<String, String> {
+        let item = self.item_at(grid, index)?;
+        let db = match &self.game {
+            GameStatus::Loaded(data) => Some(data),
+            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
+        };
+        let label = self.caches.names.item_label(db, &item);
+        match grid {
+            GridId::Sack(_) | GridId::Bank | GridId::Shared | GridId::Relic => {
+                let vault_pane = self.right.as_mut().ok_or("load a vault first")?;
+                let preferred = vault_pane.selected.map_or(0, |(target, _)| match target {
+                    GridId::VaultTab(tab) => tab,
+                    GridId::Sack(_) | GridId::Bank | GridId::Shared | GridId::Relic => 0,
+                });
+                match transfer::place_in_vault(&mut vault_pane.vault, item, preferred, db) {
+                    Ok(tab) => {
+                        vault_pane.dirty = true;
+                        Ok(format!("copy of {label} → vault tab {}", tab + 1))
+                    }
+                    Err(rejected) => Err(format!("cannot copy: {}", rejected.reason)),
+                }
+            }
+            GridId::VaultTab(_) => {
+                let destination = self
+                    .active_tab_grid()
+                    .ok_or("the active left tab has nothing loaded")?;
+                let placed = match destination {
+                    GridId::Sack(preferred) => {
+                        let pane = self.character.as_mut().ok_or("no character loaded")?;
+                        transfer::place_in_character(&mut pane.character, item, preferred, db)
+                            .map(|sack| format!("copy of {label} → sack {}", sack + 1))
+                    }
+                    GridId::Bank => {
+                        let pane = self.bank.as_mut().ok_or("no bank loaded")?;
+                        transfer::place_in_stash(&mut pane.stash, item, db)
+                            .map(|()| format!("copy of {label} → bank"))
+                    }
+                    GridId::Shared => {
+                        let pane = self.shared.as_mut().ok_or("no shared bank loaded")?;
+                        transfer::place_in_stash(&mut pane.stash, item, db)
+                            .map(|()| format!("copy of {label} → shared bank"))
+                    }
+                    GridId::Relic => {
+                        let pane = self.relics.as_mut().ok_or("no relic bank loaded")?;
+                        transfer::place_in_stash(&mut pane.stash, item, db)
+                            .map(|()| format!("copy of {label} → relic bank"))
+                    }
+                    GridId::VaultTab(_) => {
+                        return Err("the active left tab has nothing loaded".to_string());
+                    }
+                };
+                match placed {
+                    Ok(message) => {
+                        self.mark_dirty(destination);
+                        Ok(message)
+                    }
+                    Err(rejected) => Err(format!("cannot copy: {}", rejected.reason)),
+                }
+            }
         }
     }
 
@@ -1151,6 +1284,9 @@ impl eframe::App for App {
         if let Some((grid, index)) = drag_frame.quick_move {
             self.status = Some(self.quick_move(grid, index));
         }
+        if let Some((grid, index)) = drag_frame.copy_across {
+            self.status = Some(self.copy_across(grid, index));
+        }
         self.update_drag(ui.ctx(), drag_frame);
         match action {
             Some(PaneAction::MoveToVault) => self.status = Some(self.move_left_to_vault()),
@@ -1345,9 +1481,10 @@ impl App {
             ui.heading("TQ UniVault");
             ui.label(
                 "Open (or drop) a Player.chr — its bank and the shared and relic banks load \
-                 with it. A stash (.dxb/.dxg) or another vault (.json / legacy .vault) opens \
-                 alone too. Right-click an item to send it across; Shift+Click to duplicate \
-                 it.",
+                 with it as tabs. A stash (.dxb/.dxg) or another vault (.json / legacy \
+                 .vault) opens alone too. Right-click sends an item to the other pane \
+                 (vault items land in the active tab); Shift+Right-click sends a copy; \
+                 Shift+Click duplicates in place.",
             );
         }
         match &self.status {
@@ -1723,48 +1860,27 @@ impl App {
         let can_move = has_left && self.right.is_some();
         ui.columns(2, |columns| {
             if has_left {
-                let character = &mut self.character;
-                let bank = &mut self.bank;
-                let shared = &mut self.shared;
-                let relics = &mut self.relics;
-                let selected = &mut self.left_selected;
+                let mut view = LeftView {
+                    character: &mut self.character,
+                    bank: &mut self.bank,
+                    shared: &mut self.shared,
+                    relics: &mut self.relics,
+                    active_tab: &mut self.active_tab,
+                    selected: &mut self.left_selected,
+                };
                 egui::ScrollArea::vertical()
                     .id_salt("file-pane")
                     .show(&mut columns[0], |ui| {
-                        if let Some(pane) = character
-                            && let Some(chosen) = show_character_section(
-                                ui,
-                                pane,
-                                db,
-                                caches,
-                                can_move,
-                                selected,
-                                drag.as_ref(),
-                                &mut frame,
-                            )
-                        {
+                        if let Some(chosen) = show_left_column(
+                            ui,
+                            &mut view,
+                            db,
+                            caches,
+                            can_move,
+                            drag.as_ref(),
+                            &mut frame,
+                        ) {
                             action = Some(chosen);
-                        }
-                        let has_character = character.is_some();
-                        for (pane, slot) in [
-                            (bank, StashSlot::Bank),
-                            (shared, StashSlot::Shared),
-                            (relics, StashSlot::Relic),
-                        ] {
-                            if let Some(chosen) = show_stash_slot(
-                                ui,
-                                pane,
-                                slot,
-                                has_character,
-                                db,
-                                caches,
-                                can_move,
-                                selected,
-                                drag.as_ref(),
-                                &mut frame,
-                            ) {
-                                action = Some(chosen);
-                            }
                         }
                     });
             } else {
@@ -1843,6 +1959,9 @@ struct DragFrame {
     /// A right-click asking for the item at `(grid, index)` to be
     /// sent straight to the other pane.
     quick_move: Option<(GridId, usize)>,
+    /// A Shift+Right-click asking for a copy of the item at
+    /// `(grid, index)` to be placed in the other pane.
+    copy_across: Option<(GridId, usize)>,
 }
 
 /// Paints a container as its actual cell grid, with items at their
@@ -1944,7 +2063,11 @@ fn grid_view(
                 }
             }
             if response.secondary_clicked() {
-                frame.quick_move = Some((grid, *index));
+                if ui.ctx().input(|input| input.modifiers.shift) {
+                    frame.copy_across = Some((grid, *index));
+                } else {
+                    frame.quick_move = Some((grid, *index));
+                }
             }
         }
     }
@@ -2250,46 +2373,105 @@ fn show_character_section(
     action
 }
 
-/// One stash slot in the left column: the section when loaded, a
-/// placeholder explaining where the file was expected when not.
-#[allow(clippy::too_many_arguments)] // one call surface, shell-internal
-fn show_stash_slot(
+/// Mutable view of the left column's documents and UI state, so the
+/// tab strip and the active section render from one place.
+struct LeftView<'a> {
+    character: &'a mut Option<CharacterPane>,
+    bank: &'a mut Option<StashPane>,
+    shared: &'a mut Option<StashPane>,
+    relics: &'a mut Option<StashPane>,
+    active_tab: &'a mut LeftTab,
+    selected: &'a mut Option<(GridId, usize)>,
+}
+
+impl LeftView<'_> {
+    fn loaded(&self, tab: LeftTab) -> bool {
+        match tab {
+            LeftTab::Inventory => self.character.is_some(),
+            LeftTab::Bank => self.bank.is_some(),
+            LeftTab::Shared => self.shared.is_some(),
+            LeftTab::Relic => self.relics.is_some(),
+        }
+    }
+}
+
+/// The left column: one tab per document (greyed out while its file
+/// is absent, with the reason on hover) above the active document's
+/// section.
+fn show_left_column(
     ui: &mut egui::Ui,
-    pane: &mut Option<StashPane>,
-    slot: StashSlot,
-    has_character: bool,
+    view: &mut LeftView<'_>,
     db: Option<&GameCache>,
     caches: &mut Caches,
     can_move: bool,
-    selected: &mut Option<(GridId, usize)>,
     drag: Option<&DragState>,
     frame: &mut DragFrame,
 ) -> Option<PaneAction> {
-    if let Some(pane) = pane {
-        return show_stash_section(ui, pane, slot, db, caches, can_move, selected, drag, frame);
+    if !view.loaded(*view.active_tab)
+        && let Some(fallback) = LeftTab::ALL.into_iter().find(|tab| view.loaded(*tab))
+    {
+        *view.active_tab = fallback;
+        *view.selected = None;
     }
-    if has_character {
-        let (title, hint) = match slot {
-            StashSlot::Bank => (
-                "Character bank",
-                "No bank file yet — the game creates winsys.dxb the first time \
-                 this character opens the caravan stash.",
-            ),
-            StashSlot::Shared => (
-                "Shared bank",
-                "No shared bank found — expected Sys/winsys.dxb up the save tree.",
-            ),
-            StashSlot::Relic => (
-                "Relic bank",
-                "No relic bank found — the game (Atlantis and later) keeps it as \
-                 Sys/miscsys.dxb next to the shared bank.",
-            ),
-        };
-        ui.separator();
-        ui.heading(title);
-        ui.weak(hint);
+    ui.horizontal(|ui| {
+        for tab in LeftTab::ALL {
+            let response = ui
+                .add_enabled(
+                    view.loaded(tab),
+                    egui::Button::selectable(*view.active_tab == tab, tab.title()),
+                )
+                .on_disabled_hover_text(tab.missing_hint());
+            if response.clicked() && *view.active_tab != tab {
+                *view.active_tab = tab;
+                *view.selected = None;
+            }
+        }
+    });
+    ui.separator();
+    match *view.active_tab {
+        LeftTab::Inventory => view.character.as_mut().and_then(|pane| {
+            show_character_section(ui, pane, db, caches, can_move, view.selected, drag, frame)
+        }),
+        LeftTab::Bank => view.bank.as_mut().and_then(|pane| {
+            show_stash_section(
+                ui,
+                pane,
+                StashSlot::Bank,
+                db,
+                caches,
+                can_move,
+                view.selected,
+                drag,
+                frame,
+            )
+        }),
+        LeftTab::Shared => view.shared.as_mut().and_then(|pane| {
+            show_stash_section(
+                ui,
+                pane,
+                StashSlot::Shared,
+                db,
+                caches,
+                can_move,
+                view.selected,
+                drag,
+                frame,
+            )
+        }),
+        LeftTab::Relic => view.relics.as_mut().and_then(|pane| {
+            show_stash_section(
+                ui,
+                pane,
+                StashSlot::Relic,
+                db,
+                caches,
+                can_move,
+                view.selected,
+                drag,
+                frame,
+            )
+        }),
     }
-    None
 }
 
 #[allow(clippy::too_many_arguments)] // one call surface, shell-internal
@@ -2310,7 +2492,6 @@ fn show_stash_section(
         StashSlot::Shared => ("Shared bank", GridId::Shared),
         StashSlot::Relic => ("Relic bank", GridId::Relic),
     };
-    ui.separator();
     ui.horizontal(|ui| {
         ui.heading(format!(
             "{title} {}×{}",
