@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui;
 use univault_core::cache::{GameCache, SourceStamp};
-use univault_core::chr::{self, Item, PlayerCharacter, RecordId};
+use univault_core::chr::{self, EquipSlot, Item, PlayerCharacter, RecordId};
 use univault_core::gamedata::GameData;
 use univault_core::respec;
 use univault_core::stash::{self, Stash};
@@ -661,6 +661,10 @@ impl App {
                 let pane = self.character.as_mut().ok_or("no character loaded")?;
                 transfer::take_from_character(&mut pane.character, sack, index)
             }
+            GridId::Equipment(slot) => {
+                let pane = self.character.as_mut().ok_or("no character loaded")?;
+                transfer::take_equipped(&mut pane.character, slot)
+            }
             GridId::Bank => {
                 let pane = self.bank.as_mut().ok_or("no bank loaded")?;
                 transfer::take_from_stash(&mut pane.stash, index)
@@ -688,6 +692,14 @@ impl App {
         match grid {
             GridId::Sack(sack) => self.character.as_mut().is_some_and(|pane| {
                 transfer::place_in_character(&mut pane.character, item, sack, db).is_ok()
+            }),
+            GridId::Equipment(slot) => self.character.as_mut().is_some_and(|pane| {
+                transfer::equip(&mut pane.character, item, slot)
+                    .or_else(|rejected| {
+                        transfer::place_in_character(&mut pane.character, *rejected.item, 0, db)
+                            .map(|_| ())
+                    })
+                    .is_ok()
             }),
             GridId::Bank => self
                 .bank
@@ -723,7 +735,11 @@ impl App {
         let vault_pane = self.right.as_mut().expect("checked above");
         let preferred = vault_pane.selected.map_or(0, |(target, _)| match target {
             GridId::VaultTab(tab) => tab,
-            GridId::Sack(_) | GridId::Bank | GridId::Shared | GridId::Relic => 0,
+            GridId::Sack(_)
+            | GridId::Equipment(_)
+            | GridId::Bank
+            | GridId::Shared
+            | GridId::Relic => 0,
         });
         match transfer::place_in_vault(&mut vault_pane.vault, item, preferred, db) {
             Ok(tab) => {
@@ -820,7 +836,7 @@ impl App {
                     reason: transfer::TransferError::BadIndex,
                 }),
             },
-            GridId::VaultTab(_) => Err(transfer::Rejected {
+            GridId::Equipment(_) | GridId::VaultTab(_) => Err(transfer::Rejected {
                 item: Box::new(vault_item.item),
                 reason: transfer::TransferError::BadIndex,
             }),
@@ -938,9 +954,11 @@ impl App {
     /// a vault item back to the left side.
     fn quick_move(&mut self, grid: GridId, index: usize) -> Result<String, String> {
         match grid {
-            GridId::Sack(_) | GridId::Bank | GridId::Shared | GridId::Relic => {
-                self.send_left_to_vault(grid, index)
-            }
+            GridId::Sack(_)
+            | GridId::Equipment(_)
+            | GridId::Bank
+            | GridId::Shared
+            | GridId::Relic => self.send_left_to_vault(grid, index),
             GridId::VaultTab(tab) => self.send_vault_to_left(tab, index),
         }
     }
@@ -957,6 +975,15 @@ impl App {
                 .sacks
                 .get(sack)
                 .and_then(|sack| sack.items.get(index))
+                .cloned()
+                .ok_or_else(|| stale.to_string()),
+            GridId::Equipment(slot) => self
+                .character
+                .as_ref()
+                .ok_or("no character loaded")?
+                .character
+                .equipment
+                .get(slot)
                 .cloned()
                 .ok_or_else(|| stale.to_string()),
             GridId::Bank => self
@@ -1014,6 +1041,11 @@ impl App {
                 let pane = self.character.as_mut().ok_or("no character loaded")?;
                 transfer::place_in_character(&mut pane.character, item, sack, db).map(|_| ())
             }
+            // A worn item's copy lands in the inventory sacks.
+            GridId::Equipment(_) => {
+                let pane = self.character.as_mut().ok_or("no character loaded")?;
+                transfer::place_in_character(&mut pane.character, item, 0, db).map(|_| ())
+            }
             GridId::Bank => {
                 let pane = self.bank.as_mut().ok_or("no bank loaded")?;
                 transfer::place_in_stash(&mut pane.stash, item, db)
@@ -1065,6 +1097,12 @@ impl App {
                 let pane = self.character.as_mut().ok_or("no character loaded")?;
                 transfer::place_in_character(&mut pane.character, piece, sack, db).map(|_| ())
             }
+            // A piece pulled out of worn gear lands in the sacks;
+            // the gear itself stays equipped.
+            GridId::Equipment(_) => {
+                let pane = self.character.as_mut().ok_or("no character loaded")?;
+                transfer::place_in_character(&mut pane.character, piece, 0, db).map(|_| ())
+            }
             GridId::Bank => {
                 let pane = self.bank.as_mut().ok_or("no bank loaded")?;
                 transfer::place_in_stash(&mut pane.stash, piece, db)
@@ -1109,11 +1147,19 @@ impl App {
         };
         let label = self.caches.names.item_label(db, &item);
         match grid {
-            GridId::Sack(_) | GridId::Bank | GridId::Shared | GridId::Relic => {
+            GridId::Sack(_)
+            | GridId::Equipment(_)
+            | GridId::Bank
+            | GridId::Shared
+            | GridId::Relic => {
                 let vault_pane = self.right.as_mut().ok_or("load a vault first")?;
                 let preferred = vault_pane.selected.map_or(0, |(target, _)| match target {
                     GridId::VaultTab(tab) => tab,
-                    GridId::Sack(_) | GridId::Bank | GridId::Shared | GridId::Relic => 0,
+                    GridId::Sack(_)
+                    | GridId::Equipment(_)
+                    | GridId::Bank
+                    | GridId::Shared
+                    | GridId::Relic => 0,
                 });
                 match transfer::place_in_vault(&mut vault_pane.vault, item, preferred, db) {
                     Ok(tab) => {
@@ -1148,7 +1194,7 @@ impl App {
                         transfer::place_in_stash(&mut pane.stash, item, db)
                             .map(|()| format!("copy of {label} → relic bank"))
                     }
-                    GridId::VaultTab(_) => {
+                    GridId::Equipment(_) | GridId::VaultTab(_) => {
                         return Err("the active left tab has nothing loaded".to_string());
                     }
                 };
@@ -1166,6 +1212,8 @@ impl App {
     fn save_character(&mut self) -> Result<(), String> {
         let pane = self.character.as_mut().ok_or("nothing to save")?;
         let spliced = chr::replace_inventory(&pane.original, &pane.character.sacks)
+            .map_err(|error| error.to_string())?;
+        let spliced = chr::replace_equipment(&spliced, &pane.character.equipment)
             .map_err(|error| error.to_string())?;
         let bytes = chr::replace_money(&spliced, pane.character.info.money)
             .map_err(|error| error.to_string())?;
@@ -1450,21 +1498,6 @@ fn staleness_warning(cache: &GameCache) -> Option<String> {
     })
 }
 
-const EQUIPMENT_SLOT_NAMES: [&str; chr::EQUIPMENT_SLOTS] = [
-    "Head",
-    "Neck",
-    "Torso",
-    "Legs",
-    "Arms",
-    "Ring 1",
-    "Ring 2",
-    "Weapon 1",
-    "Offhand 1",
-    "Weapon 2",
-    "Offhand 2",
-    "Artifact",
-];
-
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll_import();
@@ -1706,7 +1739,9 @@ impl App {
                  charm, or artifact to change its completion bonus; Alt+Click an \
                  item with a socketed relic/charm to extract it — both kept; drag \
                  a relic/charm onto gear its type rules allow to socket it — any \
-                 rarity, epics and legendaries included.",
+                 rarity, epics and legendaries included. The character's worn \
+                 equipment is the paper doll on the Inventory tab: drag items off \
+                 it or onto a glowing slot to equip them.",
             );
         }
         match &self.status {
@@ -1790,6 +1825,8 @@ impl App {
                     self.status = Some(self.perform_combine(&state, candidate.grid, target_index));
                 } else if let Some(target_index) = candidate.socket_into {
                     self.status = Some(self.perform_socket(&state, candidate.grid, target_index));
+                } else if candidate.equips {
+                    self.status = Some(self.perform_equip(&state, candidate.grid));
                 } else if candidate.fits {
                     let same_spot =
                         candidate.grid == state.source && candidate.cell == state.item.position;
@@ -1806,9 +1843,11 @@ impl App {
     /// Removes the item at `(grid, index)` from any container.
     fn take_at(&mut self, grid: GridId, index: usize) -> Result<Item, String> {
         match grid {
-            GridId::Sack(_) | GridId::Bank | GridId::Shared | GridId::Relic => {
-                self.take_from_left(grid, index)
-            }
+            GridId::Sack(_)
+            | GridId::Equipment(_)
+            | GridId::Bank
+            | GridId::Shared
+            | GridId::Relic => self.take_from_left(grid, index),
             GridId::VaultTab(tab) => {
                 let pane = self.right.as_mut().ok_or("no vault loaded")?;
                 transfer::take_from_vault(&mut pane.vault, tab, index)
@@ -1829,6 +1868,13 @@ impl App {
                 .get_mut(sack)?
                 .items
                 .get_mut(index),
+            GridId::Equipment(slot) => self
+                .character
+                .as_mut()?
+                .character
+                .equipment
+                .slot_mut(slot)
+                .as_mut(),
             GridId::Bank => self.bank.as_mut()?.stash.items.get_mut(index),
             GridId::Shared => self.shared.as_mut()?.stash.items.get_mut(index),
             GridId::Relic => self.relics.as_mut()?.stash.items.get_mut(index),
@@ -1961,6 +2007,47 @@ impl App {
             pane.selected = None;
         }
         Ok(format!("socketed {piece_label} into {target_label}"))
+    }
+
+    /// Drops the dragged item into an empty, type-matching paper-doll
+    /// slot: it comes off its container and onto the character.
+    fn perform_equip(&mut self, state: &DragState, grid: GridId) -> Result<String, String> {
+        let GridId::Equipment(slot) = grid else {
+            return Err("not an equipment slot".to_string());
+        };
+        let item = self.take_at(state.source, state.index)?;
+        if item.base != state.item.base {
+            let origin = state.item.position;
+            self.restore_dropped(state.source, item, origin)?;
+            return Err("item moved under the drag — drop ignored".to_string());
+        }
+        let origin = item.position;
+        let db = match &self.game {
+            GameStatus::Loaded(data) => Some(data),
+            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
+        };
+        if !transfer::can_equip(db, &item, slot) {
+            self.restore_dropped(state.source, item, origin)?;
+            return Err("that item cannot be worn there".to_string());
+        }
+        let label = self.caches.names.item_label(db, &item);
+        let pane = self.character.as_mut().ok_or("no character loaded")?;
+        match transfer::equip(&mut pane.character, item, slot) {
+            Ok(()) => {
+                self.mark_dirty(state.source);
+                self.mark_dirty(grid);
+                self.left_selected = None;
+                if let Some(pane) = &mut self.right {
+                    pane.selected = None;
+                }
+                Ok(format!("{label} equipped — {}", slot.label()))
+            }
+            Err(rejected) => {
+                let reason = rejected.reason;
+                self.restore_dropped(state.source, *rejected.item, origin)?;
+                Err(format!("{reason}; item returned"))
+            }
+        }
     }
 
     /// Prepares the completion-bonus picker for the piece at
@@ -2159,6 +2246,11 @@ impl App {
                 };
                 transfer::place_in_character_at(&mut pane.character, taken, sack, target.cell, db)
             }
+            // Equipment drops travel the equip path, never this one.
+            GridId::Equipment(_) => {
+                self.restore_dropped(state.source, taken, origin)?;
+                return Err("drop onto a highlighted slot to equip".to_string());
+            }
             GridId::Bank => {
                 let Some(pane) = self.bank.as_mut() else {
                     return Err("no bank loaded".to_string());
@@ -2195,6 +2287,7 @@ impl App {
                 }
                 let destination = match target.grid {
                     GridId::Sack(sack) => format!("sack {}", sack + 1),
+                    GridId::Equipment(slot) => slot.label().to_string(),
                     GridId::Bank => "bank".to_string(),
                     GridId::Shared => "shared bank".to_string(),
                     GridId::Relic => "relic bank".to_string(),
@@ -2232,6 +2325,15 @@ impl App {
                 transfer::place_in_character_at(&mut pane.character, item, sack, position, db)
                     .or_else(|rejected| {
                         transfer::place_in_character(&mut pane.character, *rejected.item, sack, db)
+                            .map(|_| ())
+                    })
+                    .map_err(|_| lost)
+            }
+            GridId::Equipment(slot) => {
+                let pane = self.character.as_mut().ok_or_else(|| lost.clone())?;
+                transfer::equip(&mut pane.character, item, slot)
+                    .or_else(|rejected| {
+                        transfer::place_in_character(&mut pane.character, *rejected.item, 0, db)
                             .map(|_| ())
                     })
                     .map_err(|_| lost)
@@ -2274,7 +2376,9 @@ impl App {
 
     fn mark_dirty(&mut self, grid: GridId) {
         let dirty = match grid {
-            GridId::Sack(_) => self.character.as_mut().map(|pane| &mut pane.dirty),
+            GridId::Sack(_) | GridId::Equipment(_) => {
+                self.character.as_mut().map(|pane| &mut pane.dirty)
+            }
             GridId::Bank => self.bank.as_mut().map(|pane| &mut pane.dirty),
             GridId::Shared => self.shared.as_mut().map(|pane| &mut pane.dirty),
             GridId::Relic => self.relics.as_mut().map(|pane| &mut pane.dirty),
@@ -2463,10 +2567,13 @@ fn cells_to_points(cells: i32) -> f32 {
 }
 
 /// Which on-screen grid an item lives in — the address space of
-/// selection and drag-and-drop.
+/// selection and drag-and-drop. Equipment carries its slot in the
+/// id (the paper doll has no cell grid); the index half of an
+/// `(GridId, usize)` address is 0 there.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum GridId {
     Sack(usize),
+    Equipment(EquipSlot),
     Bank,
     Shared,
     Relic,
@@ -2499,6 +2606,9 @@ struct DropCandidate {
     /// Socketable gear under the pointer: dropping sockets the
     /// dragged relic/charm into the item at this index.
     socket_into: Option<usize>,
+    /// An empty paper-doll slot the dragged item may be worn in
+    /// (`grid` is the `Equipment` slot): dropping equips.
+    equips: bool,
 }
 
 /// What the grids reported back this frame.
@@ -2614,25 +2724,7 @@ fn grid_view(
             && item_rect.contains(pointer)
         {
             hovered = Some(item);
-            if response.double_clicked() {
-                frame.edit_bonus = Some((grid, *index));
-            } else if response.clicked() {
-                let modifiers = ui.ctx().input(|input| input.modifiers);
-                if modifiers.shift {
-                    frame.duplicate = Some((grid, *index));
-                } else if modifiers.alt {
-                    frame.extract = Some((grid, *index));
-                } else {
-                    *selected = Some((grid, *index));
-                }
-            }
-            if response.secondary_clicked() {
-                if ui.ctx().input(|input| input.modifiers.shift) {
-                    frame.copy_across = Some((grid, *index));
-                } else {
-                    frame.quick_move = Some((grid, *index));
-                }
-            }
+            item_gestures(ui, &response, (grid, *index), selected, frame);
         }
     }
     if let Some(item) = hovered {
@@ -2772,6 +2864,7 @@ fn paint_drop_preview(
                 fits: false,
                 combine_with: combine.then_some(*index),
                 socket_into: socket.then_some(*index),
+                equips: false,
             };
         }
     }
@@ -2819,6 +2912,7 @@ fn paint_drop_preview(
         fits,
         combine_with: None,
         socket_into: None,
+        equips: false,
     }
 }
 
@@ -2932,20 +3026,239 @@ fn game_color(rgb: style::Rgb) -> egui::Color32 {
     egui::Color32::from_rgb(rgb.r, rgb.g, rgb.b)
 }
 
-fn show_equipment(
+/// The paper doll's canvas in grid cells.
+const DOLL_CELLS: (i32, i32) = (9, 14);
+
+/// `TQVaultAE`'s paper-doll geometry (MIT, `SackCollection.cs`): a
+/// slot's top-left cell and size on the doll canvas.
+fn doll_geometry(slot: EquipSlot) -> (i32, i32, i32, i32) {
+    match slot {
+        EquipSlot::Head => (4, 0, 2, 2),
+        EquipSlot::Neck => (4, 3, 2, 1),
+        EquipSlot::Torso => (4, 5, 2, 3),
+        EquipSlot::Legs => (4, 9, 2, 2),
+        EquipSlot::Arms => (7, 6, 2, 2),
+        EquipSlot::Ring1 => (4, 12, 1, 1),
+        EquipSlot::Ring2 => (5, 12, 1, 1),
+        EquipSlot::LeftHand => (1, 0, 2, 5),
+        EquipSlot::RightHand => (7, 0, 2, 5),
+        EquipSlot::LeftHandAlternate => (1, 9, 2, 5),
+        EquipSlot::RightHandAlternate => (7, 9, 2, 5),
+        EquipSlot::Artifact => (1, 6, 2, 2),
+    }
+}
+
+/// The worn item's tile inside its slot box: native cell size,
+/// centered, downscaled only when it outgrows the box.
+fn doll_item_rect(box_rect: egui::Rect, footprint: (i32, i32)) -> egui::Rect {
+    let native = egui::vec2(cells_to_points(footprint.0), cells_to_points(footprint.1));
+    let scale = (box_rect.width() / native.x)
+        .min(box_rect.height() / native.y)
+        .min(1.0);
+    egui::Rect::from_center_size(box_rect.center(), native * scale).shrink(1.0)
+}
+
+/// Routes the pointer gestures every item surface shares — click
+/// select, Shift/Alt clicks, double-click bonus edit, right-click
+/// sends — into the frame. Callers confirm the hover first.
+fn item_gestures(
+    ui: &egui::Ui,
+    response: &egui::Response,
+    address: (GridId, usize),
+    selected: &mut Option<(GridId, usize)>,
+    frame: &mut DragFrame,
+) {
+    if response.double_clicked() {
+        frame.edit_bonus = Some(address);
+    } else if response.clicked() {
+        let modifiers = ui.ctx().input(|input| input.modifiers);
+        if modifiers.shift {
+            frame.duplicate = Some(address);
+        } else if modifiers.alt {
+            frame.extract = Some(address);
+        } else {
+            *selected = Some(address);
+        }
+    }
+    if response.secondary_clicked() {
+        if ui.ctx().input(|input| input.modifiers.shift) {
+            frame.copy_across = Some(address);
+        } else {
+            frame.quick_move = Some(address);
+        }
+    }
+}
+
+/// Drop feedback for one doll slot while a drag is in flight: every
+/// legal empty slot glows, and the slot under the cursor shows equip
+/// (green), socket-into-worn-gear (violet), or refusal (red),
+/// recording the drop candidate for the release.
+#[allow(clippy::too_many_arguments)] // one call surface, shell-internal
+fn doll_drop_feedback(
+    painter: &egui::Painter,
+    box_rect: egui::Rect,
+    slot: EquipSlot,
+    worn: Option<&Item>,
+    state: &DragState,
+    cursor: Option<egui::Pos2>,
+    db: Option<&GameCache>,
+    frame: &mut DragFrame,
+) {
+    let can_wear = worn.is_none() && transfer::can_equip(db, &state.item, slot);
+    if can_wear {
+        painter.rect_stroke(
+            box_rect,
+            2.0,
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(64, 255, 64)),
+            egui::StrokeKind::Inside,
+        );
+    }
+    if !cursor.is_some_and(|cursor| box_rect.contains(cursor)) {
+        return;
+    }
+    let sockets = worn.is_some_and(|item| transfer::can_socket(db, &state.item, item));
+    let color = if sockets {
+        egui::Color32::from_rgb(190, 120, 255)
+    } else if can_wear {
+        egui::Color32::from_rgb(64, 255, 64)
+    } else {
+        egui::Color32::from_rgb(255, 64, 64)
+    };
+    painter.rect_filled(
+        box_rect,
+        2.0,
+        egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 60),
+    );
+    painter.rect_stroke(
+        box_rect,
+        2.0,
+        egui::Stroke::new(2.0, color),
+        egui::StrokeKind::Inside,
+    );
+    if sockets || can_wear {
+        frame.candidate = Some(DropCandidate {
+            grid: GridId::Equipment(slot),
+            cell: univault_core::chr::GridPos { x: 0, y: 0 },
+            fits: false,
+            combine_with: None,
+            socket_into: sockets.then_some(0),
+            equips: !sockets,
+        });
+    }
+}
+
+/// The character's worn equipment as an interactive paper doll: slot
+/// boxes at `TQVaultAE`'s positions, the same click/drag surface as
+/// the grids (select, tooltip, drag out, right-click send, Shift/Alt
+/// clicks), plus equipping — while a drag is in flight every legal
+/// empty slot glows, and dropping there wears the item. Dropping a
+/// relic/charm on worn gear sockets it in place (violet), exactly as
+/// in the grids.
+#[allow(clippy::too_many_arguments)] // one call surface, shell-internal
+fn show_equipment_doll(
     ui: &mut egui::Ui,
-    character: &PlayerCharacter,
+    equipment: &univault_core::chr::Equipment,
+    selected: &mut Option<(GridId, usize)>,
     db: Option<&GameCache>,
     caches: &mut Caches,
+    drag: Option<&DragState>,
+    frame: &mut DragFrame,
 ) {
-    ui.collapsing("Equipment (read-only)", |ui| {
-        for (name, slot) in EQUIPMENT_SLOT_NAMES.iter().zip(&character.equipment.slots) {
-            match slot {
-                Some(item) => ui.label(format!("{name}: {}", caches.names.item_label(db, item))),
-                None => ui.weak(format!("{name}: —")),
-            };
+    let size = egui::vec2(cells_to_points(DOLL_CELLS.0), cells_to_points(DOLL_CELLS.1));
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let painter = ui.painter_at(rect);
+    let visuals = ui.visuals().clone();
+    painter.rect_filled(rect, 2.0, visuals.extreme_bg_color);
+
+    let press_origin = ui.ctx().input(|input| input.pointer.press_origin());
+    let cursor = ui.ctx().pointer_latest_pos();
+    let mut hovered: Option<&Item> = None;
+
+    for slot in EquipSlot::ALL {
+        let (x, y, w, h) = doll_geometry(slot);
+        let box_rect = egui::Rect::from_min_size(
+            rect.min + egui::vec2(cells_to_points(x), cells_to_points(y)),
+            egui::vec2(cells_to_points(w), cells_to_points(h)),
+        )
+        .shrink(1.0);
+        let grid = GridId::Equipment(slot);
+        painter.rect_stroke(
+            box_rect,
+            2.0,
+            egui::Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color),
+            egui::StrokeKind::Inside,
+        );
+
+        match equipment.get(slot) {
+            Some(item) => {
+                let item_rect = doll_item_rect(box_rect, caches.footprint(db, item));
+                let is_selected = *selected == Some((grid, 0));
+                paint_item_tile(
+                    ui,
+                    &painter,
+                    item_rect,
+                    item,
+                    is_selected,
+                    &visuals,
+                    db,
+                    caches,
+                );
+                if drag.is_some_and(|state| state.source == grid) {
+                    painter.rect_filled(item_rect, 2.0, egui::Color32::from_black_alpha(140));
+                }
+                if response.drag_started()
+                    && drag.is_none()
+                    && frame.begin.is_none()
+                    && press_origin.is_some_and(|origin| box_rect.contains(origin))
+                {
+                    frame.begin = Some(DragState {
+                        source: grid,
+                        index: 0,
+                        item: item.clone(),
+                        grab: press_origin
+                            .map_or(egui::Vec2::ZERO, |origin| origin - item_rect.min),
+                    });
+                }
+                if drag.is_none()
+                    && let Some(cursor) = response.hover_pos()
+                    && box_rect.contains(cursor)
+                {
+                    hovered = Some(item);
+                    item_gestures(ui, &response, (grid, 0), selected, frame);
+                }
+            }
+            None => {
+                painter.text(
+                    box_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    slot.label(),
+                    egui::FontId::proportional(9.0),
+                    visuals.weak_text_color(),
+                );
+            }
         }
-    });
+
+        if let Some(state) = drag
+            && state.source != grid
+        {
+            doll_drop_feedback(
+                &painter,
+                box_rect,
+                slot,
+                equipment.get(slot),
+                state,
+                cursor,
+                db,
+                frame,
+            );
+        }
+    }
+    if let Some(item) = hovered {
+        response.on_hover_ui(|ui| item_tooltip(ui, item, db, caches));
+    }
 }
 
 #[allow(clippy::too_many_arguments)] // one call surface, shell-internal
@@ -2976,7 +3289,7 @@ fn show_character_section(
         if gold.changed() {
             pane.dirty = true;
         }
-        let selection_here = matches!(*selected, Some((GridId::Sack(_), _)));
+        let selection_here = matches!(*selected, Some((GridId::Sack(_) | GridId::Equipment(_), _)));
         if ui
             .add_enabled(can_move && selection_here, egui::Button::new("→ Vault"))
             .clicked()
@@ -2991,7 +3304,19 @@ fn show_character_section(
         }
     });
     ui.monospace(pane.path.display().to_string());
-    show_equipment(ui, &pane.character, db, caches);
+    egui::CollapsingHeader::new("Equipment")
+        .default_open(true)
+        .show(ui, |ui| {
+            show_equipment_doll(
+                ui,
+                &pane.character.equipment,
+                selected,
+                db,
+                caches,
+                drag,
+                frame,
+            );
+        });
     for (index, sack) in pane.character.sacks.iter().enumerate() {
         let title = format!("Sack {} ({} items)", index + 1, sack.items.len());
         egui::CollapsingHeader::new(title)

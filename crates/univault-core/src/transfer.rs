@@ -9,10 +9,11 @@
 //! placement returns the item to the caller instead of dropping it.
 
 use crate::cache::GameCache;
-use crate::chr::{GridPos, Item, PlayerCharacter, sack_dimensions};
+use crate::chr::{EquipSlot, GridPos, Item, PlayerCharacter, sack_dimensions};
 use crate::gamedata::FALLBACK_FOOTPRINT;
 use crate::grid::{CellRect, find_open_cells, fits as grid_fits};
 use crate::stash::Stash;
+use crate::style::GearSlot;
 use crate::vault::{TAB_HEIGHT, TAB_WIDTH, Vault, VaultItem};
 
 /// Why a placement failed; the item itself travels back separately.
@@ -67,6 +68,70 @@ pub fn take_from_character(
 /// Removes an item from a stash. `None` on a stale index.
 pub fn take_from_stash(stash: &mut Stash, index: usize) -> Option<Item> {
     (index < stash.items.len()).then(|| stash.items.remove(index))
+}
+
+/// Removes the item worn in `slot`. `None` when the slot is empty.
+pub fn take_equipped(character: &mut PlayerCharacter, slot: EquipSlot) -> Option<Item> {
+    character.equipment.slot_mut(slot).take()
+}
+
+/// Whether `item` may be worn in `slot` — the game's own type rules:
+/// armor and jewelry to their matching slots, any weapon or shield in
+/// any hand slot (the reference implementation's rule; the game
+/// resolves wielding on load), artifacts only in the artifact slot.
+/// Needs game data; stacks are never wearable.
+#[must_use]
+pub fn can_equip(db: Option<&GameCache>, item: &Item, slot: EquipSlot) -> bool {
+    let Some(db) = db else {
+        return false;
+    };
+    if item.stack_size > 1 {
+        return false;
+    }
+    if db.is_artifact(&item.base) {
+        return slot == EquipSlot::Artifact;
+    }
+    db.gear_slot(&item.base)
+        .is_some_and(|family| family_allows(family, slot))
+}
+
+fn family_allows(family: GearSlot, slot: EquipSlot) -> bool {
+    match family {
+        GearSlot::Head => slot == EquipSlot::Head,
+        GearSlot::Amulet => slot == EquipSlot::Neck,
+        GearSlot::UpperBody => slot == EquipSlot::Torso,
+        GearSlot::LowerBody => slot == EquipSlot::Legs,
+        GearSlot::Forearm => slot == EquipSlot::Arms,
+        GearSlot::Ring => matches!(slot, EquipSlot::Ring1 | EquipSlot::Ring2),
+        GearSlot::Shield
+        | GearSlot::Sword
+        | GearSlot::Axe
+        | GearSlot::Mace
+        | GearSlot::Spear
+        | GearSlot::Bow
+        | GearSlot::Thrown
+        | GearSlot::Staff => slot.is_hand(),
+        // A relic allow-flag family with no equipment slot behind it.
+        GearSlot::Bracelet => false,
+    }
+}
+
+/// Wears `item` in `slot`, normalizing its grid position away. The
+/// slot must be empty — swapping is the caller's affair — and the
+/// caller gates type rules with [`can_equip`].
+///
+/// # Errors
+/// [`TransferError::Occupied`] when something is already worn there.
+pub fn equip(character: &mut PlayerCharacter, item: Item, slot: EquipSlot) -> Result<(), Rejected> {
+    let target = character.equipment.slot_mut(slot);
+    if target.is_some() {
+        return Err(Rejected::because(item, TransferError::Occupied));
+    }
+    *target = Some(Item {
+        position: GridPos { x: 0, y: 0 },
+        ..item
+    });
+    Ok(())
 }
 
 /// Removes an item from a vault tab. `None` on a stale index.
@@ -582,6 +647,21 @@ mod tests {
             "WeaponMelee_Sword",
             &[("itemClassification", Values::Strings(&["Epic"]))],
         );
+        builder.record(
+            "records\\item\\equipmentring\\loop.dbr",
+            "ArmorJewelry_Ring",
+            &[],
+        );
+        builder.record(
+            "records\\item\\equipmentshield\\tower.dbr",
+            "WeaponArmor_Shield",
+            &[],
+        );
+        builder.record(
+            "records\\xpack\\item\\artifacts\\fool.dbr",
+            "ItemArtifact",
+            &[],
+        );
         let data = GameData::from_parts(ArzFile::parse(builder.build()).unwrap(), TextDb::new());
         data.build_cache(Vec::new())
     }
@@ -742,6 +822,62 @@ mod tests {
             stack_size: 1,
             folded_members: Vec::new(),
         }
+    }
+
+    #[test]
+    fn can_equip_maps_families_to_slots() {
+        let db = charm_db();
+        let helm = item(r"records\item\equipmenthelm\bronzehelm.dbr");
+        let sword = item(r"records\item\equipmentweapon\gladius.dbr");
+        let ring = item(r"records\item\equipmentring\loop.dbr");
+        let shield = item(r"records\item\equipmentshield\tower.dbr");
+        let artifact = item(r"records\xpack\item\artifacts\fool.dbr");
+        let charm = shard(r"records\item\animalrelics\boarhide.dbr", 2);
+
+        assert!(can_equip(Some(&db), &helm, EquipSlot::Head));
+        assert!(!can_equip(Some(&db), &helm, EquipSlot::Torso));
+        assert!(!can_equip(Some(&db), &helm, EquipSlot::Artifact));
+        for hand in [
+            EquipSlot::LeftHand,
+            EquipSlot::RightHand,
+            EquipSlot::LeftHandAlternate,
+            EquipSlot::RightHandAlternate,
+        ] {
+            assert!(can_equip(Some(&db), &sword, hand));
+            assert!(can_equip(Some(&db), &shield, hand));
+        }
+        assert!(!can_equip(Some(&db), &sword, EquipSlot::Head));
+        assert!(can_equip(Some(&db), &ring, EquipSlot::Ring1));
+        assert!(can_equip(Some(&db), &ring, EquipSlot::Ring2));
+        assert!(!can_equip(Some(&db), &ring, EquipSlot::Neck));
+        assert!(can_equip(Some(&db), &artifact, EquipSlot::Artifact));
+        assert!(!can_equip(Some(&db), &artifact, EquipSlot::RightHand));
+        assert!(!can_equip(Some(&db), &charm, EquipSlot::Head));
+        assert!(!can_equip(None, &helm, EquipSlot::Head));
+
+        let mut stack = sword;
+        stack.stack_size = 2;
+        assert!(!can_equip(Some(&db), &stack, EquipSlot::RightHand));
+    }
+
+    #[test]
+    fn equip_takes_the_empty_slot_and_refuses_an_occupied_one() {
+        let bytes = player_bytes();
+        let mut character = parse_player(&bytes).unwrap();
+        let mut sword = item(r"records\item\equipmentweapon\gladius.dbr");
+        sword.position = GridPos { x: 4, y: 1 };
+
+        equip(&mut character, sword.clone(), EquipSlot::RightHand).unwrap();
+        let worn = character.equipment.get(EquipSlot::RightHand).unwrap();
+        assert_eq!(worn.position, GridPos { x: 0, y: 0 });
+
+        let rejected = equip(&mut character, sword, EquipSlot::RightHand).unwrap_err();
+        assert_eq!(rejected.reason, TransferError::Occupied);
+
+        let taken = take_equipped(&mut character, EquipSlot::RightHand).unwrap();
+        assert_eq!(taken.base.file_stem(), "gladius");
+        assert!(character.equipment.get(EquipSlot::RightHand).is_none());
+        assert!(take_equipped(&mut character, EquipSlot::RightHand).is_none());
     }
 
     #[test]
