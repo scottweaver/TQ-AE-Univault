@@ -65,14 +65,24 @@ bootstrap Q&A).
 ## Data flow
 
 - Load: core parses game/vault files into a typed model. Edit: the
-  UI mutates the model only. Save: core serializes and writes on an
-  explicit user action. The GUI never reads or writes file bytes
-  directly — all format knowledge lives in core. (2026-08-24)
+  UI mutates the model only. Save: core serializes and the shell
+  writes **automatically** once an edit has been quiet briefly
+  (autosave); there are no manual save buttons. All format knowledge
+  still lives in core — the shell only decides *when* to write.
+  Renegotiated 2026-08-25 (user request: multiple per-pane save
+  buttons were error-prone) from the original explicit-save rule.
+  (2026-08-25)
 - Every write to a game-owned file (save, stash) goes through a
-  backup-first write path: the backup exists on disk before the
-  original is touched. Mirrors TQVaultAE's `TQVaultData\Backup`
-  behavior. This app mutates people's save files; this constraint is
-  non-negotiable. (2026-08-24)
+  backup-first write path: a backup of the file exists on disk
+  before the original is touched. Under autosave this is **one
+  backup per load**: the first write since the file was last loaded
+  takes the backup; subsequent autosaves of the same loaded baseline
+  reuse it, so per-edit writes cannot churn the rotation into
+  discarding the pre-session state. (Re)loading a file — including
+  via Reload — re-arms the backup. Mirrors TQVaultAE's
+  `TQVaultData\Backup` behavior. This app mutates people's save
+  files; this constraint is non-negotiable. (2026-08-24, autosave
+  refinement 2026-08-25)
 - Writes to game-owned files are targeted splices: parsing locates
   the blocks being edited and only those bytes change; every other
   byte is copied through untouched. Full-file re-serialization of a

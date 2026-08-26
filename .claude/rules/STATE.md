@@ -98,7 +98,13 @@ and open our vault JSON in TQVaultAE.
   tab strip — Inventory / Character bank / Shared bank / Relic bank
   — one document on screen at a time, absent documents greyed out
   with the reason on hover; cross-bank drags now route via the
-  vault or right-click since only one left grid is visible.
+  vault or right-click since only one left grid is visible. Then
+  autosave (user request): all Save buttons removed — edits flush
+  600ms after the interaction quiets (drag/pointer/text focus
+  postpone), with a 5s retry on failure and a "Saving…" header
+  note. Backup policy refined to one-backup-per-load so per-edit
+  writes can't churn the 5-slot rotation; ARCHITECTURE.md's
+  data-flow constraint renegotiated in the same change.
   Underneath: the left pane became independent documents
   (`CharacterPane` + three `StashPane`s), `GridId` gained
   `Bank`/`Shared`/`Relic`, selection is `(GridId, index)`

@@ -32,6 +32,14 @@ pub fn backup_first_write(path: &Path, bytes: &[u8]) -> io::Result<Option<PathBu
     Ok(backup)
 }
 
+/// Overwrites `path` without taking a fresh backup, still syncing —
+/// the autosave path for files already backed up since they were
+/// last loaded.
+pub fn write_synced(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    fs::write(path, bytes).map_err(|error| step("writing file", &error))?;
+    best_effort_sync(path)
+}
+
 /// Deletes the oldest backups of `path` beyond [`MAX_BACKUPS`].
 /// Best-effort: a failed prune never fails the save that a fresh,
 /// synced backup already protects.
