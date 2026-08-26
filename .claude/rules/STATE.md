@@ -13,12 +13,14 @@ Last updated: 2026-08-26
 **Resume here:** nothing in flight — PR #17 (Core Dweller
 Provoke/Wildfire mod tune) and PR #18 (read-only MCP server,
 `univault-mcp`) merged 2026-08-26, wrap-up done, main green (167
-tests). First candidates: drive the MCP server from a real Claude
-client (Claude Code picks it up via the repo's `.mcp.json` after
-`cargo build --release -p univault-mcp`; Claude Desktop needs a
-`claude_desktop_config.json` entry; Cowork can't spawn local
-binaries — would need an HTTP transport, a structural change).
-Otherwise pick from "Next up".
+tests). The MCP server is user-ACCEPTED same day ("able to use
+just fine") from the user's "Titan Quest AE Buildcrafting" Claude
+project — registered in Claude Desktop's
+`claude_desktop_config.json` and the repo's `.mcp.json` for Claude
+Code; after merges that touch it, refresh the binary with `cargo
+build --release -p univault-mcp` (Cowork can't spawn local
+binaries — HTTP transport would be a structural change). Pick from
+"Next up".
 
 - GitHub Actions event delivery was unreliable all 2026-08-26
   (major outage + slow recovery): push/PR webhook events silently
@@ -123,7 +125,8 @@ that's better") and merged as PR #7.
   registers it for Claude Code. Verified over real JSON-RPC against
   the live tree: builds/equipment resolve, 45 relic-bank items,
   Hecate hits across bank + vault, Earth tree 34 skills. 167 tests.
-  Risk: not yet driven from a real MCP client session.
+  ACCEPTED 2026-08-26: driven from the user's "Titan Quest AE
+  Buildcrafting" Claude project — "able to use just fine".
 - **2026-08-26 — Core Dweller Provoke/Wildfire tune.** Three user
   asks via two new `record` rules in `mods/xmax3-tuned.json`:
   Provoke `skillTargetRadius` 3 → 5m (user confirmed 5m total)
