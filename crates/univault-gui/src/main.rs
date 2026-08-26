@@ -771,6 +771,8 @@ impl App {
             disk_stamp,
             open_tab,
         });
+        // The pane's rows in the search table point at the old model.
+        self.search.stale = true;
         Ok(if created {
             format!(
                 "new vault (12 tabs) — will be created at {}",
@@ -795,6 +797,7 @@ impl App {
             disk_stamp: stamp_of(&json_path),
             open_tab: 0,
         });
+        self.search.stale = true;
         Ok(format!(
             "imported legacy vault; saving writes {}",
             json_path.display()
