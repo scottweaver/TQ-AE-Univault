@@ -10,11 +10,15 @@ Last updated: 2026-08-26
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** nothing in flight — the 2026-08-26 batch (PR #12
-shard icons + combining, #13 workflow_dispatch, #14 bonus
-roll/re-pick + artifacts, #15 docs) merged and user-ACCEPTED
-("everything seems to be working"); post-merge cleanup done, main
-green (162 tests). Pick the next item from "Next up".
+**Resume here:** nothing in flight — PR #17 (Core Dweller
+Provoke/Wildfire mod tune) and PR #18 (read-only MCP server,
+`univault-mcp`) merged 2026-08-26, wrap-up done, main green (167
+tests). First candidates: drive the MCP server from a real Claude
+client (Claude Code picks it up via the repo's `.mcp.json` after
+`cargo build --release -p univault-mcp`; Claude Desktop needs a
+`claude_desktop_config.json` entry; Cowork can't spawn local
+binaries — would need an HTTP transport, a structural change).
+Otherwise pick from "Next up".
 
 - GitHub Actions event delivery was unreliable all 2026-08-26
   (major outage + slow recovery): push/PR webhook events silently
@@ -70,7 +74,7 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#8 merged (latest: bank tabs + default vault + autosave #7, pet Energy mod tuning #8); all gates green |
+| `main` | trunk | PRs #1–#18 merged (latest: Core Dweller mod tune #17, MCP server #18); all gates green |
 
 ## Next up
 
