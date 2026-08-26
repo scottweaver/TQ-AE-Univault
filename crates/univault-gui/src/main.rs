@@ -23,6 +23,7 @@
 //! Drag-and-drop routes files by extension.
 
 mod safe_write;
+mod search;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -190,29 +191,26 @@ struct VaultPane {
 
 /// One open document, addressable across panes — the unit the
 /// auto-refresh watcher reloads or reports conflicts on.
+/// `SearchVault` indexes the search view's loaded vaults, which ride
+/// the same autosave/refresh/conflict rails as the fixed panes.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DocId {
     Character,
     Stash(StashSlot),
     Vault,
+    SearchVault(usize),
 }
 
 impl DocId {
-    const ALL: [Self; 5] = [
+    /// The fixed pane documents; search vaults join dynamically via
+    /// [`App::all_docs`].
+    const FIXED: [Self; 5] = [
         Self::Character,
         Self::Stash(StashSlot::Bank),
         Self::Stash(StashSlot::Shared),
         Self::Stash(StashSlot::Relic),
         Self::Vault,
     ];
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Character => "the character",
-            Self::Stash(slot) => slot.label(),
-            Self::Vault => "the vault",
-        }
-    }
 }
 
 /// Decides when an externally observed file state is worth acting
@@ -514,6 +512,17 @@ struct App {
     /// Documents whose file changed on disk while they hold unsaved
     /// edits — resolved by the conflict modal, never silently.
     conflicts: Vec<DocId>,
+    /// Which surface fills the window: the two panes, or the
+    /// all-vaults search table.
+    view: MainView,
+    search: search::SearchState,
+}
+
+/// The window's main surface.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MainView {
+    Panes,
+    Search,
 }
 
 /// The socket-patch modal's working state: the dll it read and what
@@ -565,6 +574,8 @@ impl App {
             watcher: start_watcher(),
             refresh: RefreshTracker::default(),
             conflicts: Vec::new(),
+            view: MainView::Panes,
+            search: search::SearchState::default(),
         };
         app.status = Some(match args.vault {
             Some(path) => app.open(&path),
@@ -729,6 +740,12 @@ impl App {
     }
 
     fn open_vault(&mut self, path: &Path) -> Result<String, String> {
+        // A vault the search view already holds moves over model and
+        // all — unsaved edits included — never via a disk round-trip.
+        if let Some(doc) = self.search.docs.iter().position(|doc| doc.path == path) {
+            self.adopt_search_doc(doc, 0, None);
+            return Ok(format!("opened {}", path.display()));
+        }
         self.backed_up.remove(path);
         self.refresh.forget(path);
         let disk_stamp = stamp_of(path);
@@ -833,7 +850,7 @@ impl App {
                 let pane = self.relics.as_mut().ok_or("no relic bank loaded")?;
                 transfer::take_from_stash(&mut pane.stash, index)
             }
-            GridId::VaultTab(_) => None,
+            GridId::VaultTab(_) | GridId::SearchDoc { .. } => None,
         }
         .ok_or_else(|| "selection is stale — pick the item again".to_string())
     }
@@ -869,7 +886,7 @@ impl App {
                 .relics
                 .as_mut()
                 .is_some_and(|pane| transfer::place_in_stash(&mut pane.stash, item, db).is_ok()),
-            GridId::VaultTab(_) => false,
+            GridId::VaultTab(_) | GridId::SearchDoc { .. } => false,
         }
     }
 
@@ -929,23 +946,29 @@ impl App {
 
     fn move_vault_to_left(&mut self) -> Result<String, String> {
         let selected = self.right.as_ref().and_then(|pane| pane.selected);
-        let Some((GridId::VaultTab(tab), index)) = selected else {
+        let Some((grid @ GridId::VaultTab(_), index)) = selected else {
             return Err("select an item in the vault".to_string());
         };
-        self.send_vault_to_left(tab, index)
+        self.send_vault_to_left(grid, index)
     }
 
-    fn send_vault_to_left(&mut self, tab: usize, index: usize) -> Result<String, String> {
+    /// Sends the item at a vault-side grid (the open pane or a
+    /// search-loaded vault) to the active left tab.
+    fn send_vault_to_left(&mut self, grid: GridId, index: usize) -> Result<String, String> {
+        let tab = vault_tab_of(grid).ok_or("select an item in the vault")?;
         let destination = self
             .active_tab_grid()
             .ok_or("the active left tab has nothing loaded")?;
-        let vault_pane = self.right.as_mut().ok_or("load a vault first")?;
         let db = match &self.game {
             GameStatus::Loaded(data) => Some(data),
             GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
         };
-        let vault_item = transfer::take_from_vault(&mut vault_pane.vault, tab, index)
-            .ok_or("selection is stale — pick the item again")?;
+        let vault_item = {
+            let (vault, _) = vault_source_mut(&mut self.right, &mut self.search.docs, grid)
+                .ok_or("load a vault first")?;
+            transfer::take_from_vault(vault, tab, index)
+                .ok_or("selection is stale — pick the item again")?
+        };
         let label = self.caches.names.item_label(db, &vault_item.item);
         let placed = match destination {
             GridId::Sack(preferred) => match self.character.as_mut() {
@@ -985,25 +1008,30 @@ impl App {
                     reason: transfer::TransferError::BadIndex,
                 }),
             },
-            GridId::Equipment(_) | GridId::VaultTab(_) => Err(transfer::Rejected {
-                item: Box::new(vault_item.item),
-                reason: transfer::TransferError::BadIndex,
-            }),
+            GridId::Equipment(_) | GridId::VaultTab(_) | GridId::SearchDoc { .. } => {
+                Err(transfer::Rejected {
+                    item: Box::new(vault_item.item),
+                    reason: transfer::TransferError::BadIndex,
+                })
+            }
         };
         match placed {
             Ok(message) => {
                 self.mark_dirty(destination);
-                let vault_pane = self.right.as_mut().expect("still loaded");
-                vault_pane.dirty = true;
-                vault_pane.selected = None;
+                self.mark_dirty(grid);
+                if matches!(grid, GridId::VaultTab(_))
+                    && let Some(pane) = self.right.as_mut()
+                {
+                    pane.selected = None;
+                }
                 Ok(message)
             }
             Err(rejected) => {
                 let reason = rejected.reason;
-                let vault_pane = self.right.as_mut().expect("still loaded");
-                let restored =
-                    transfer::place_in_vault(&mut vault_pane.vault, *rejected.item, tab, db)
-                        .is_ok();
+                let restored = vault_source_mut(&mut self.right, &mut self.search.docs, grid)
+                    .is_some_and(|(vault, _)| {
+                        transfer::place_in_vault(vault, *rejected.item, tab, db).is_ok()
+                    });
                 Err(if restored {
                     format!("{reason}; item returned to the vault")
                 } else {
@@ -1108,7 +1136,7 @@ impl App {
             | GridId::Bank
             | GridId::Shared
             | GridId::Relic => self.send_left_to_vault(grid, index),
-            GridId::VaultTab(tab) => self.send_vault_to_left(tab, index),
+            GridId::VaultTab(_) | GridId::SearchDoc { .. } => self.send_vault_to_left(grid, index),
         }
     }
 
@@ -1172,6 +1200,17 @@ impl App {
                 .and_then(|sack| sack.items.get(index))
                 .map(|entry| entry.item.clone())
                 .ok_or_else(|| stale.to_string()),
+            GridId::SearchDoc { doc, tab } => self
+                .search
+                .docs
+                .get(doc)
+                .ok_or("vault list changed — rescan")?
+                .vault
+                .sacks
+                .get(tab)
+                .and_then(|sack| sack.items.get(index))
+                .map(|entry| entry.item.clone())
+                .ok_or_else(|| stale.to_string()),
         }
     }
 
@@ -1207,9 +1246,10 @@ impl App {
                 let pane = self.relics.as_mut().ok_or("no relic bank loaded")?;
                 transfer::place_in_stash(&mut pane.stash, item, db)
             }
-            GridId::VaultTab(tab) => {
-                let pane = self.right.as_mut().ok_or("no vault loaded")?;
-                transfer::place_in_vault_tab(&mut pane.vault, item, tab, db)
+            GridId::VaultTab(tab) | GridId::SearchDoc { tab, .. } => {
+                let (vault, _) = vault_source_mut(&mut self.right, &mut self.search.docs, grid)
+                    .ok_or("no vault loaded")?;
+                transfer::place_in_vault_tab(vault, item, tab, db)
             }
         };
         match placed {
@@ -1264,9 +1304,10 @@ impl App {
                 let pane = self.relics.as_mut().ok_or("no relic bank loaded")?;
                 transfer::place_in_stash(&mut pane.stash, piece, db)
             }
-            GridId::VaultTab(tab) => {
-                let pane = self.right.as_mut().ok_or("no vault loaded")?;
-                transfer::place_in_vault_tab(&mut pane.vault, piece, tab, db)
+            GridId::VaultTab(tab) | GridId::SearchDoc { tab, .. } => {
+                let (vault, _) = vault_source_mut(&mut self.right, &mut self.search.docs, grid)
+                    .ok_or("no vault loaded")?;
+                transfer::place_in_vault_tab(vault, piece, tab, db)
             }
         };
         if let Err(rejected) = placed {
@@ -1311,7 +1352,7 @@ impl App {
                     Err(rejected) => Err(format!("cannot copy: {}", rejected.reason)),
                 }
             }
-            GridId::VaultTab(_) => {
+            GridId::VaultTab(_) | GridId::SearchDoc { .. } => {
                 let destination = self
                     .active_tab_grid()
                     .ok_or("the active left tab has nothing loaded")?;
@@ -1336,7 +1377,7 @@ impl App {
                         transfer::place_in_stash(&mut pane.stash, item, db)
                             .map(|()| format!("copy of {label} → relic bank"))
                     }
-                    GridId::Equipment(_) | GridId::VaultTab(_) => {
+                    GridId::Equipment(_) | GridId::VaultTab(_) | GridId::SearchDoc { .. } => {
                         return Err("the active left tab has nothing loaded".to_string());
                     }
                 };
@@ -1408,6 +1449,7 @@ impl App {
             || self.shared.as_ref().is_some_and(|pane| pane.dirty)
             || self.relics.as_ref().is_some_and(|pane| pane.dirty)
             || self.right.as_ref().is_some_and(|pane| pane.dirty)
+            || self.search.docs.iter().any(|doc| doc.dirty)
     }
 
     /// Saves everything dirty whose file is still as we left it; a
@@ -1435,7 +1477,26 @@ impl App {
         {
             self.push_conflict(DocId::Vault);
         }
+        for index in 0..self.search.docs.len() {
+            if self.search.docs[index].dirty
+                && self.save_search_doc(index)? == SaveOutcome::Conflict
+            {
+                self.push_conflict(DocId::SearchVault(index));
+            }
+        }
         Ok(())
+    }
+
+    fn save_search_doc(&mut self, index: usize) -> Result<SaveOutcome, String> {
+        let doc = self.search.docs.get_mut(index).ok_or("nothing to save")?;
+        if stamp_of(&doc.path) != doc.disk_stamp {
+            return Ok(SaveOutcome::Conflict);
+        }
+        let json = doc.vault.to_json().map_err(|error| error.to_string())?;
+        write_through(&mut self.backed_up, &doc.path, json.as_bytes())?;
+        doc.dirty = false;
+        doc.disk_stamp = stamp_of(&doc.path);
+        Ok(SaveOutcome::Saved)
     }
 
     fn push_conflict(&mut self, doc: DocId) {
@@ -1499,6 +1560,34 @@ impl App {
                 .right
                 .as_ref()
                 .map(|pane| (pane.path.clone(), pane.disk_stamp.clone(), pane.dirty)),
+            DocId::SearchVault(index) => self
+                .search
+                .docs
+                .get(index)
+                .map(|doc| (doc.path.clone(), doc.disk_stamp.clone(), doc.dirty)),
+        }
+    }
+
+    /// Every open document: the fixed panes plus the search view's
+    /// loaded vaults.
+    fn all_docs(&self) -> Vec<DocId> {
+        DocId::FIXED
+            .iter()
+            .copied()
+            .chain((0..self.search.docs.len()).map(DocId::SearchVault))
+            .collect()
+    }
+
+    /// Human name of a document for statuses and the conflict modal.
+    fn doc_label(&self, doc: DocId) -> String {
+        match doc {
+            DocId::Character => "the character".to_string(),
+            DocId::Stash(slot) => slot.label().to_string(),
+            DocId::Vault => "the vault".to_string(),
+            DocId::SearchVault(index) => self.search.docs.get(index).map_or_else(
+                || "a searched vault".to_string(),
+                |doc| format!("vault '{}'", search::vault_label(&doc.path)),
+            ),
         }
     }
 
@@ -1507,9 +1596,10 @@ impl App {
     /// clean panes reload silently, dirty ones raise the conflict
     /// modal. Never acts mid-interaction.
     fn drive_refresh(&mut self, ctx: &egui::Context) {
-        let watched: Vec<PathBuf> = DocId::ALL
-            .iter()
-            .filter_map(|doc| self.doc_state(*doc).map(|(path, _, _)| path))
+        let watched: Vec<PathBuf> = self
+            .all_docs()
+            .into_iter()
+            .filter_map(|doc| self.doc_state(doc).map(|(path, _, _)| path))
             .collect();
         if let Ok(mut guard) = self.watcher.paths.lock() {
             *guard = watched;
@@ -1528,7 +1618,7 @@ impl App {
         }
         let mut reloaded = Vec::new();
         let mut failed = Vec::new();
-        for doc in DocId::ALL {
+        for doc in self.all_docs() {
             let Some((path, ours, dirty)) = self.doc_state(doc) else {
                 continue;
             };
@@ -1545,8 +1635,8 @@ impl App {
                 self.push_conflict(doc);
             } else {
                 match self.reload_doc(doc) {
-                    Ok(()) => reloaded.push(doc.label()),
-                    Err(error) => failed.push(format!("{}: {error}", doc.label())),
+                    Ok(()) => reloaded.push(self.doc_label(doc)),
+                    Err(error) => failed.push(format!("{}: {error}", self.doc_label(doc))),
                 }
             }
         }
@@ -1586,6 +1676,14 @@ impl App {
                 }
                 self.open_vault(&path).map(|_| ())
             }
+            DocId::SearchVault(index) => {
+                let slot = self.search.docs.get_mut(index).ok_or("nothing loaded")?;
+                *slot = search::load_search_doc(&path)?;
+                self.backed_up.remove(&path);
+                self.refresh.forget(&path);
+                self.search.stale = true;
+                Ok(())
+            }
         }
     }
 
@@ -1596,8 +1694,8 @@ impl App {
         let mut failed = Vec::new();
         for doc in std::mem::take(&mut self.conflicts) {
             match self.reload_doc(doc) {
-                Ok(()) => done.push(doc.label()),
-                Err(error) => failed.push(format!("{}: {error}", doc.label())),
+                Ok(()) => done.push(self.doc_label(doc)),
+                Err(error) => failed.push(format!("{}: {error}", self.doc_label(doc))),
             }
         }
         self.status = Some(if failed.is_empty() {
@@ -1634,6 +1732,11 @@ impl App {
                         pane.disk_stamp = fresh;
                     }
                 }
+                DocId::SearchVault(index) => {
+                    if let Some(doc) = self.search.docs.get_mut(index) {
+                        doc.disk_stamp = fresh;
+                    }
+                }
             }
         }
         self.autosave_at = Some(Instant::now());
@@ -1647,10 +1750,10 @@ impl App {
         if self.conflicts.is_empty() {
             return;
         }
-        let labels: Vec<&str> = self
+        let labels: Vec<String> = self
             .conflicts
             .iter()
-            .map(|doc| DocId::label(*doc))
+            .map(|doc| self.doc_label(*doc))
             .collect();
         let mut reload = false;
         let mut keep = false;
@@ -1762,8 +1865,12 @@ fn cache_file_path() -> Option<PathBuf> {
     univault_core::platform::config_dir().map(|dir| dir.join("gamedata.cache"))
 }
 
+fn vaults_dir() -> Option<PathBuf> {
+    univault_core::platform::config_dir().map(|dir| dir.join("vaults"))
+}
+
 fn default_vault_path() -> Option<PathBuf> {
-    univault_core::platform::config_dir().map(|dir| dir.join("vaults").join("Main Vault.json"))
+    vaults_dir().map(|dir| dir.join("Main Vault.json"))
 }
 
 fn game_dir_file_path() -> Option<PathBuf> {
@@ -1912,30 +2019,62 @@ impl eframe::App for App {
         if let Some(dropped) = first_dropped_path(ui.ctx()) {
             self.status = Some(self.open(&dropped));
         }
-        self.show_header(ui);
-        ui.separator();
-        let (action, drag_frame) = self.show_panes(ui);
-        if let Some((grid, index)) = drag_frame.duplicate {
-            self.status = Some(self.duplicate_item(grid, index));
-        }
-        if let Some((grid, index)) = drag_frame.quick_move {
-            self.status = Some(self.quick_move(grid, index));
-        }
-        if let Some((grid, index)) = drag_frame.copy_across {
-            self.status = Some(self.copy_across(grid, index));
-        }
-        if let Some((grid, index)) = drag_frame.edit_bonus {
-            self.request_bonus_edit(grid, index);
-        }
-        if let Some((grid, index)) = drag_frame.extract {
-            self.status = Some(self.extract_socketed(grid, index));
-        }
-        self.update_drag(ui.ctx(), drag_frame);
-        match action {
-            Some(PaneAction::MoveToVault) => self.status = Some(self.move_left_to_vault()),
-            Some(PaneAction::MoveToFile) => self.status = Some(self.move_vault_to_left()),
-            Some(PaneAction::PreviewRespec(kind)) => self.preview_respec(kind),
-            None => {}
+        match self.view {
+            MainView::Panes => {
+                if matches!(self.game, GameStatus::Loaded(_))
+                    && ui.ctx().input_mut(|input| {
+                        input.consume_key(egui::Modifiers::COMMAND, egui::Key::F)
+                    })
+                {
+                    self.enter_search();
+                }
+                self.show_header(ui);
+                ui.separator();
+                let (action, drag_frame) = self.show_panes(ui);
+                if let Some((grid, index)) = drag_frame.duplicate {
+                    self.status = Some(self.duplicate_item(grid, index));
+                }
+                if let Some((grid, index)) = drag_frame.quick_move {
+                    self.status = Some(self.quick_move(grid, index));
+                }
+                if let Some((grid, index)) = drag_frame.copy_across {
+                    self.status = Some(self.copy_across(grid, index));
+                }
+                if let Some((grid, index)) = drag_frame.edit_bonus {
+                    self.request_bonus_edit(grid, index);
+                }
+                if let Some((grid, index)) = drag_frame.extract {
+                    self.status = Some(self.extract_socketed(grid, index));
+                }
+                self.update_drag(ui.ctx(), drag_frame);
+                match action {
+                    Some(PaneAction::MoveToVault) => self.status = Some(self.move_left_to_vault()),
+                    Some(PaneAction::MoveToFile) => self.status = Some(self.move_vault_to_left()),
+                    Some(PaneAction::PreviewRespec(kind)) => self.preview_respec(kind),
+                    None => {}
+                }
+            }
+            MainView::Search => {
+                let search_frame = self.show_search_ui(ui);
+                if let Some((grid, index)) = search_frame.duplicate {
+                    self.status = Some(self.duplicate_item(grid, index));
+                }
+                if let Some((grid, index)) = search_frame.quick_move {
+                    self.status = Some(self.quick_move(grid, index));
+                }
+                if let Some((grid, index)) = search_frame.copy_across {
+                    self.status = Some(self.copy_across(grid, index));
+                }
+                if let Some((grid, index)) = search_frame.extract {
+                    self.status = Some(self.extract_socketed(grid, index));
+                }
+                if let Some((grid, index)) = search_frame.jump {
+                    self.jump_to_search_row(grid, index);
+                }
+                if search_frame.leave {
+                    self.view = MainView::Panes;
+                }
+            }
         }
         self.drive_refresh(ui.ctx());
         self.drive_autosave(ui.ctx());
@@ -2062,6 +2201,19 @@ impl App {
             if ui.button("Open vault…").clicked() {
                 requested = pick_file("Vault", &["json", "vault"], self.dialog_start_dir());
             }
+            if ui
+                .add_enabled(
+                    matches!(self.game, GameStatus::Loaded(_)),
+                    egui::Button::new("Search vaults…"),
+                )
+                .on_hover_text(
+                    "One filterable table of every item in every vault (⌘F / Ctrl+F). \
+                     Needs imported game data.",
+                )
+                .clicked()
+            {
+                self.enter_search();
+            }
             let importing = matches!(self.game, GameStatus::Importing(_));
             if ui
                 .add_enabled(!importing, egui::Button::new("Import game data…"))
@@ -2165,7 +2317,10 @@ impl App {
                  a relic/charm onto gear its type rules allow to socket it — any \
                  rarity, epics and legendaries included. The character's worn \
                  equipment is the paper doll on the Inventory tab: drag items off \
-                 it or onto a glowing slot to equip them.",
+                 it or onto a glowing slot to equip them. 'Search vaults…' (⌘F) \
+                 opens one filterable table over every vault file — the same \
+                 gestures work on its rows, and double-click shows an item at \
+                 home in its vault.",
             );
         }
     }
@@ -2319,9 +2474,10 @@ impl App {
             | GridId::Bank
             | GridId::Shared
             | GridId::Relic => self.take_from_left(grid, index),
-            GridId::VaultTab(tab) => {
-                let pane = self.right.as_mut().ok_or("no vault loaded")?;
-                transfer::take_from_vault(&mut pane.vault, tab, index)
+            GridId::VaultTab(tab) | GridId::SearchDoc { tab, .. } => {
+                let (vault, _) = vault_source_mut(&mut self.right, &mut self.search.docs, grid)
+                    .ok_or("no vault loaded")?;
+                transfer::take_from_vault(vault, tab, index)
                     .map(|entry| entry.item)
                     .ok_or_else(|| "item moved under the drag — drop ignored".to_string())
             }
@@ -2349,15 +2505,15 @@ impl App {
             GridId::Bank => self.bank.as_mut()?.stash.items.get_mut(index),
             GridId::Shared => self.shared.as_mut()?.stash.items.get_mut(index),
             GridId::Relic => self.relics.as_mut()?.stash.items.get_mut(index),
-            GridId::VaultTab(tab) => self
-                .right
-                .as_mut()?
-                .vault
-                .sacks
-                .get_mut(tab)?
-                .items
-                .get_mut(index)
-                .map(|entry| &mut entry.item),
+            GridId::VaultTab(tab) | GridId::SearchDoc { tab, .. } => {
+                let (vault, _) = vault_source_mut(&mut self.right, &mut self.search.docs, grid)?;
+                vault
+                    .sacks
+                    .get_mut(tab)?
+                    .items
+                    .get_mut(index)
+                    .map(|entry| &mut entry.item)
+            }
         }
     }
 
@@ -2890,11 +3046,13 @@ impl App {
                 };
                 transfer::place_in_stash_at(&mut pane.stash, taken, target.cell, db)
             }
-            GridId::VaultTab(tab) => {
-                let Some(pane) = self.right.as_mut() else {
+            GridId::VaultTab(tab) | GridId::SearchDoc { tab, .. } => {
+                let Some((vault, _)) =
+                    vault_source_mut(&mut self.right, &mut self.search.docs, target.grid)
+                else {
                     return Err("no vault loaded".to_string());
                 };
-                transfer::place_in_vault_at(&mut pane.vault, taken, tab, target.cell, db)
+                transfer::place_in_vault_at(vault, taken, tab, target.cell, db)
             }
         };
 
@@ -2912,7 +3070,9 @@ impl App {
                     GridId::Bank => "bank".to_string(),
                     GridId::Shared => "shared bank".to_string(),
                     GridId::Relic => "relic bank".to_string(),
-                    GridId::VaultTab(tab) => format!("vault tab {}", tab + 1),
+                    GridId::VaultTab(tab) | GridId::SearchDoc { tab, .. } => {
+                        format!("vault tab {}", tab + 1)
+                    }
                 };
                 Ok(format!(
                     "{label} → {destination} ({}, {})",
@@ -2983,12 +3143,12 @@ impl App {
                     })
                     .map_err(|_| lost)
             }
-            GridId::VaultTab(tab) => {
-                let pane = self.right.as_mut().ok_or_else(|| lost.clone())?;
-                transfer::place_in_vault_at(&mut pane.vault, item, tab, position, db)
+            GridId::VaultTab(tab) | GridId::SearchDoc { tab, .. } => {
+                let (vault, _) = vault_source_mut(&mut self.right, &mut self.search.docs, source)
+                    .ok_or_else(|| lost.clone())?;
+                transfer::place_in_vault_at(vault, item, tab, position, db)
                     .or_else(|rejected| {
-                        transfer::place_in_vault(&mut pane.vault, *rejected.item, tab, db)
-                            .map(|_| ())
+                        transfer::place_in_vault(vault, *rejected.item, tab, db).map(|_| ())
                     })
                     .map_err(|_| lost)
             }
@@ -2996,6 +3156,8 @@ impl App {
     }
 
     fn mark_dirty(&mut self, grid: GridId) {
+        // Any mutation can move rows the search table points at.
+        self.search.stale = true;
         let dirty = match grid {
             GridId::Sack(_) | GridId::Equipment(_) => {
                 self.character.as_mut().map(|pane| &mut pane.dirty)
@@ -3004,6 +3166,9 @@ impl App {
             GridId::Shared => self.shared.as_mut().map(|pane| &mut pane.dirty),
             GridId::Relic => self.relics.as_mut().map(|pane| &mut pane.dirty),
             GridId::VaultTab(_) => self.right.as_mut().map(|pane| &mut pane.dirty),
+            GridId::SearchDoc { doc, .. } => {
+                self.search.docs.get_mut(doc).map(|doc| &mut doc.dirty)
+            }
         };
         if let Some(dirty) = dirty {
             *dirty = true;
@@ -3199,6 +3364,44 @@ enum GridId {
     Shared,
     Relic,
     VaultTab(usize),
+    /// A tab of one of the search view's loaded vaults (never the
+    /// open vault pane — its tabs stay `VaultTab`).
+    SearchDoc {
+        doc: usize,
+        tab: usize,
+    },
+}
+
+/// The tab a vault-side grid addresses; `None` for left-side grids.
+fn vault_tab_of(grid: GridId) -> Option<usize> {
+    match grid {
+        GridId::VaultTab(tab) | GridId::SearchDoc { tab, .. } => Some(tab),
+        GridId::Sack(_) | GridId::Equipment(_) | GridId::Bank | GridId::Shared | GridId::Relic => {
+            None
+        }
+    }
+}
+
+/// The vault model (and dirty flag) a vault-side grid addresses: the
+/// open pane for `VaultTab`, a search-loaded vault for `SearchDoc`.
+/// A free function over the two fields so callers can keep other
+/// disjoint borrows of `App` alive.
+fn vault_source_mut<'a>(
+    right: &'a mut Option<VaultPane>,
+    docs: &'a mut [search::SearchDoc],
+    grid: GridId,
+) -> Option<(&'a mut Vault, &'a mut bool)> {
+    match grid {
+        GridId::VaultTab(_) => right
+            .as_mut()
+            .map(|pane| (&mut pane.vault, &mut pane.dirty)),
+        GridId::SearchDoc { doc, .. } => docs
+            .get_mut(doc)
+            .map(|doc| (&mut doc.vault, &mut doc.dirty)),
+        GridId::Sack(_) | GridId::Equipment(_) | GridId::Bank | GridId::Shared | GridId::Relic => {
+            None
+        }
+    }
 }
 
 /// An in-flight drag: where the item came from and how it was
