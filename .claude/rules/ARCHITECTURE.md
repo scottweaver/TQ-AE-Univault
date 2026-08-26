@@ -51,16 +51,22 @@ bootstrap Q&A).
 
 ## Crate layering
 
-- Cargo workspace with two members: `crates/univault-core` (file
-  formats, vault logic, in-memory model — GUI-agnostic) and
-  `crates/univault-gui` (egui/eframe front-end). (2026-08-24)
-- Dependencies flow `univault-gui` → `univault-core`, never the
-  reverse. Falsifiable check: `univault-core` compiles headless with
-  no egui, eframe, or winit anywhere in its dependency tree.
-  (2026-08-24)
+- Cargo workspace with three members: `crates/univault-core` (file
+  formats, vault logic, in-memory model — GUI-agnostic),
+  `crates/univault-gui` (egui/eframe front-end), and
+  `crates/univault-mcp` (read-only MCP server shell). (2026-08-24,
+  third member added 2026-08-26, MCP design dialog)
+- Dependencies flow shell → core (`univault-gui` → `univault-core`,
+  `univault-mcp` → `univault-core`), never the reverse, and never
+  shell → shell. Falsifiable check: `univault-core` compiles
+  headless with no egui, eframe, winit, rmcp, or tokio anywhere in
+  its dependency tree. (2026-08-24, extended 2026-08-26)
 - The GUI framework is egui/eframe; the core/gui split exists
   precisely so this remains swappable without touching core.
   (2026-08-24)
+- Async is confined to shell crates; core stays sync and pure.
+  `univault-mcp` carries tokio because its SDK demands it — that is
+  a shell concern, not license for async in core. (2026-08-26)
 
 ## Data flow
 
@@ -91,10 +97,20 @@ bootstrap Q&A).
 
 ## External boundaries
 
-- File formats are the only external boundaries: TQ save/stash
-  format, ARC/ARZ archives, and this app's vault format. Each format
-  is guarded by its own module in core with typed read/write
-  surfaces. (2026-08-24)
+- External boundaries are the file formats — TQ save/stash format,
+  ARC/ARZ archives, and this app's vault format, each guarded by its
+  own module in core with typed read/write surfaces — plus the
+  read-only MCP stdio surface recorded under "Source of truth".
+  (2026-08-24, MCP added 2026-08-26)
+- The MCP surface (`univault-mcp`) is a sanctioned **read-only**
+  boundary: an MCP server speaking JSON-RPC over **stdio only** — the
+  client spawns it as a child process; no listening sockets, ever.
+  It exposes game data (characters, banks, vaults, skill trees, item
+  stats) to AI agents and never writes any file. Adding write tools
+  or a network transport (HTTP/SSE) is a structural change requiring
+  its own design dialog. The "no network services" constraint below
+  stands — stdio IPC is not a network service. (2026-08-26, MCP
+  design dialog)
 - The native vault format is TQVaultAE's JSON vault schema — its
   `VaultDto`/`SackDto`/`ItemDto` field names are the wire contract —
   giving full two-way compatibility so both tools can open the same
@@ -139,6 +155,8 @@ cleanup:
 - Any module implementing the save/write-back path — the
   backup-first and targeted-splice rules
 - `crates/univault-gui/src/main.rs` — entry point / framework choice
+- `crates/univault-mcp/src/*.rs` — the read-only and stdio-only MCP
+  constraints
 
 ## Structural criteria
 
@@ -149,7 +167,8 @@ who holds authoritative state; writing to the game's own ARC/ARZ
 files (composing new mod bundles is the sanctioned exception,
 recorded above); a change to the
 vault JSON schema contract; weakening or bypassing the backup-first
-or targeted-splice write rules; adopting a parser-derive dependency;
+or targeted-splice write rules; adding write tools or a network
+transport to the MCP surface; adopting a parser-derive dependency;
 a license change; replacing egui/eframe; dropping a supported
 platform; adding original TQ 2006 support.
 

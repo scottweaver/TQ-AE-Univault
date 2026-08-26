@@ -5,7 +5,7 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-25
+Last updated: 2026-08-26
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
@@ -48,7 +48,8 @@ green (162 tests). Pick the next item from "Next up".
 tq-univault: a platform-independent (Windows/macOS/Linux)
 reimplementation of TQVaultAE — the item-vault / inventory-manager
 companion app for Titan Quest — in Rust (workspace: `univault-core`
-pure logic, `univault-gui` egui/eframe shell). Working today: full
+pure logic, `univault-gui` egui/eframe shell, `univault-mcp`
+read-only MCP stdio server for AI agents). Working today: full
 read stack (chr, stash, vault JSON + legacy import, ARZ/ARC/text/
 textures) with localized names, real footprints, and icons; grid
 rendering; left tab strip (inventory + character/shared/relic banks,
@@ -100,6 +101,24 @@ that's better") and merged as PR #7.
 
 ## Most recent meaningful progress
 
+- **2026-08-26 — MCP server: game data for AI agents.** User ask
+  ("a true MCP server, not just exports"), design-dialogued:
+  read-only v1, official `rmcp` SDK, stdio-only — ARCHITECTURE
+  amended in the same PR (third workspace member `univault-mcp`, a
+  sanctioned read-only MCP boundary; write tools or network
+  transports need a new dialog). Ten tools: overview,
+  list/get_character (via new core `respec::progression` read API —
+  attributes, unspent pools, per-skill levels), get_bank
+  (personal/shared/relic, `.dxg` twin fallback), list/get_vault,
+  search_items across every possession with location provenance,
+  get_item_details (tooltip blocks), list/get_mastery (skilltree
+  distillation promoted from the example into `core::skilltree`).
+  Paths from the GUI's config (recent-files → save roots,
+  game-dir.txt, vaults/) with `UNIVAULT_*` env overrides; `.mcp.json`
+  registers it for Claude Code. Verified over real JSON-RPC against
+  the live tree: builds/equipment resolve, 45 relic-bank items,
+  Hecate hits across bank + vault, Earth tree 34 skills. 167 tests.
+  Risk: not yet driven from a real MCP client session.
 - **2026-08-26 — Shard icons + in-app charm combining.** Two user
   asks: partial relics/charms now render the game's `shardBitmap`
   art (complete pieces keep `relicBitmap`), so partials read at a
@@ -310,19 +329,6 @@ that's better") and merged as PR #7.
   TQVaultAE, giving "Light Pine Buckler Ornate of Strength"; magic
   bumped to `UVC4` (content bumps use the magic too) so caches
   rebuild themselves.
-- **2026-08-25 — Rarity-colored item tooltips.** New core `style`
-  module ports TQVaultAE's `Item.ItemStyle` decision order and the
-  game's exact text-palette RGB values (MIT refs fetched from the
-  repo — no local checkout). Hovering a grid item now shows a
-  dark game-style tooltip: name in its rarity color, style caption,
-  relic/charm piece progress (`completedRelicLevel` now cached),
-  and socketed-relic names. Cache entries gained classification +
-  kind — magic bumped `UVC1`→`UVC2`, so the next launch re-imports
-  (game volume must be reachable once). Unknown records fall back
-  to TQVaultAE's record-path heuristics, so items color sensibly
-  even with no game data. 105 tests. Risk: tooltip visuals
-  unverified until the user hovers a real grid; path fallback skips
-  TQVaultAE's Eternal Embers special-case relic lists.
 ## Blocked / waiting
 
 - *(nothing)*

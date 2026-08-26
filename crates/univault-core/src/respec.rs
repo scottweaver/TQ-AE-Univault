@@ -142,6 +142,80 @@ pub fn respec_skills(data: &[u8]) -> Result<Respecced, RespecError> {
     })
 }
 
+/// The five attribute values as stored in the save, in file order.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Attributes {
+    pub strength: f32,
+    pub dexterity: f32,
+    pub intelligence: f32,
+    pub health: f32,
+    pub energy: f32,
+}
+
+/// One learned skill: the normalized record path and the points put
+/// into it. `mastery` is true for mastery-tree skills — the ones a
+/// respec would remove; innate defaults and quest-granted skills
+/// carry false.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LearnedSkill {
+    pub record: String,
+    pub level: i32,
+    pub mastery: bool,
+}
+
+/// Read-only snapshot of a character's spend state: attribute
+/// values, unspent point pools, and the learned-skill list.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Progression {
+    pub attributes: Attributes,
+    pub unspent_attribute_points: i32,
+    pub unspent_skill_points: i32,
+    pub skills: Vec<LearnedSkill>,
+}
+
+/// Reads the spend state without changing anything.
+///
+/// # Errors
+/// [`RespecError`] when the attribute block, point pools, or skill
+/// list cannot be located.
+pub fn progression(data: &[u8]) -> Result<Progression, RespecError> {
+    let plan = locate_attributes(data)?;
+    let mut values = [0.0_f32; ATTRIBUTE_COUNT];
+    for (value, offset) in values.iter_mut().zip(plan.temp_value_offsets) {
+        *value = ByteReader::at(data, offset)
+            .read_f32()
+            .map_err(|_| RespecError::AttributesNotFound)?;
+    }
+    let list = parse_skill_list(data)?;
+    Ok(Progression {
+        attributes: Attributes {
+            strength: values[0],
+            dexterity: values[1],
+            intelligence: values[2],
+            health: values[3],
+            energy: values[4],
+        },
+        unspent_attribute_points: read_i32_value(data, "modifierPoints")?,
+        unspent_skill_points: read_i32_value(data, "skillPoints")?,
+        skills: list
+            .entries
+            .into_iter()
+            .map(|entry| LearnedSkill {
+                record: normalize(&entry.name),
+                level: entry.level,
+                mastery: entry.removable,
+            })
+            .collect(),
+    })
+}
+
+fn read_i32_value(data: &[u8], key: &'static str) -> Result<i32, RespecError> {
+    let value_at = find_key(data, key, 0).ok_or(RespecError::MissingKey(key))?;
+    ByteReader::at(data, value_at)
+        .read_i32()
+        .map_err(|_| RespecError::MissingKey(key))
+}
+
 struct AttributePlan {
     temp_value_offsets: [usize; ATTRIBUTE_COUNT],
     refund: i32,
@@ -429,6 +503,33 @@ mod tests {
     #[test]
     fn attribute_refund_counts_points_from_deltas() {
         assert_eq!(attribute_refund(&sample_save()), Ok(16));
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)] // fixture values are exact
+    fn progression_reads_attributes_pools_and_skills() {
+        let snapshot = progression(&sample_save()).unwrap();
+        assert_eq!(snapshot.attributes.strength, 82.0);
+        assert_eq!(snapshot.attributes.dexterity, 58.0);
+        assert_eq!(snapshot.attributes.intelligence, 50.0);
+        assert_eq!(snapshot.attributes.health, 540.0);
+        assert_eq!(snapshot.attributes.energy, 300.0);
+        assert_eq!(snapshot.unspent_attribute_points, 2);
+        assert_eq!(snapshot.unspent_skill_points, 1);
+        assert_eq!(snapshot.skills.len(), 5);
+        let mastery: Vec<(&str, i32)> = snapshot
+            .skills
+            .iter()
+            .filter(|skill| skill.mastery)
+            .map(|skill| (skill.record.as_str(), skill.level))
+            .collect();
+        assert_eq!(
+            mastery,
+            [
+                (r"RECORDS\SKILLS\EARTH\EARTHMASTERY.DBR", 11),
+                (r"RECORDS\SKILLS\EARTH\VOLCANICORB.DBR", 6),
+            ]
+        );
     }
 
     #[test]
