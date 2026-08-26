@@ -10,15 +10,17 @@ Last updated: 2026-08-26
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** PR #22 (MCP full-database + mod overlays, 16
-tools) merged 2026-08-26, wrap-up done, release binary rebuilt from
-main (Claude Desktop/Code serve the new tools after a restart).
-Still open: **PR #21 (GUI auto-refresh + conflict prompts)** —
-awaiting the user's in-app acceptance run (play, save in-game,
-watch panes update; conflict modal on simultaneous edits). Its
-branch `feat/auto-refresh` will conflict with main's STATE.md on
-merge — keep both progress entries, re-trim to 10. Otherwise pick
-from "Next up".
+**Resume here:** PRs #21 (auto-refresh), #27 (Game.dll socket
+patch), #28 (mod boss-count variants), #29 (equipment paper doll)
+all merged 2026-08-26 in one sweep; wrap-up done; branches deleted;
+release binary rebuilt from main. Nothing is in flight. What's open
+is user acceptance, all in-game/in-app:
+paper doll (drag gear off/onto the doll, then load the save
+in-game), auto-refresh feel on the SMB tree, dll patch (Enable,
+socket an epic in-game), and the Gorgon rematch on the new
+`LootPlusXMAX3Tuned1xBoss` bundle (both bundles installed in
+CustomMaps; the original is back to 3x bosses). Otherwise pick from
+"Next up".
 
 - GitHub Actions event delivery was unreliable all 2026-08-26
   (major outage + slow recovery): push/PR webhook events silently
@@ -74,11 +76,7 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#20, #22–#26 merged; all gates green |
-| `feat/auto-refresh` | GUI auto-refresh + conflict prompts (PR #21) | CI green; awaiting user in-app acceptance |
-| `feat/dll-socket-patch` | Game.dll socket-gate patch toggle (PR #27) | awaiting user acceptance (Enable + socket an epic in-game) |
-| `mod/xmax3-single-boss` | both boss-count bundles from one rules file (PR #28) | both installed; awaiting Gorgon rematch on the 1xBoss mod |
-| `feat/paper-doll` | equipment paper doll (PR #29) | CI pending; awaiting user in-app acceptance |
+| `main` | trunk | PRs #1–#29 all merged; all gates green |
 
 ## Next up
 
