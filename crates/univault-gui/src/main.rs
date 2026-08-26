@@ -2,11 +2,15 @@
 //!
 //! Usage: `univault-gui [--game <TQ install dir>] [--vault <vault.json>] [file]`
 //!
-//! Two panes: a game file (a `Player.chr` or a stash `.dxb`/`.dxg`)
-//! on the left, a vault on the right. Click an item, move it across,
-//! save. Saves splice only the item region and go through the
-//! backup-first write path; stashes also get their `.dxg` twin
-//! rewritten. Drag-and-drop routes files by extension.
+//! Left pane: the character (`Player.chr`) with, discovered
+//! automatically beside it, the character's bank (its `winsys.dxb`)
+//! and the account's shared bank (`SaveData/Sys/winsys.dxb`). Right
+//! pane: a vault — the default vault under the config directory
+//! opens (and is created) at launch; `Open vault…` swaps in any
+//! other vault file. Click or drag items across, save per file.
+//! Saves splice only the item region and go through the backup-first
+//! write path; stashes also get their `.dxg` twin rewritten.
+//! Drag-and-drop routes files by extension.
 
 mod safe_write;
 
@@ -76,24 +80,33 @@ impl CliArgs {
     }
 }
 
-enum GameFile {
-    Character(Box<PlayerCharacter>),
-    Stash(Stash),
-}
-
-struct FilePane {
+struct CharacterPane {
     path: PathBuf,
     original: Vec<u8>,
-    file: GameFile,
+    character: Box<PlayerCharacter>,
     dirty: bool,
-    selected: Option<(usize, usize)>,
+}
+
+struct StashPane {
+    path: PathBuf,
+    original: Vec<u8>,
+    stash: Stash,
+    dirty: bool,
+}
+
+/// Which of the two stash documents a path or action addresses: the
+/// character's own bank or the account-wide shared bank.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StashSlot {
+    Bank,
+    Shared,
 }
 
 struct VaultPane {
     path: PathBuf,
     vault: Vault,
     dirty: bool,
-    selected: Option<(usize, usize)>,
+    selected: Option<(GridId, usize)>,
 }
 
 enum GameStatus {
@@ -279,8 +292,14 @@ struct App {
     game_note: Option<String>,
     caches: Caches,
     recents: Recents,
-    left: Option<FilePane>,
+    character: Option<CharacterPane>,
+    bank: Option<StashPane>,
+    shared: Option<StashPane>,
     right: Option<VaultPane>,
+    /// The one selected item across all left-side grids (sacks and
+    /// both banks); the vault keeps its own so cross-pane moves can
+    /// aim at the other pane's last selection.
+    left_selected: Option<(GridId, usize)>,
     status: Option<Result<String, String>>,
     pending_respec: Option<PendingRespec>,
     drag: Option<DragState>,
@@ -310,16 +329,20 @@ impl App {
             game_note,
             caches: Caches::default(),
             recents: Recents::load(),
-            left: None,
+            character: None,
+            bank: None,
+            shared: None,
             right: None,
+            left_selected: None,
             status: None,
             pending_respec: None,
             drag: None,
             pending_zoom: 1.0,
         };
-        if let Some(path) = args.vault {
-            app.status = Some(app.open(&path));
-        }
+        app.status = Some(match args.vault {
+            Some(path) => app.open(&path),
+            None => app.open_default_vault(),
+        });
         if let Some(path) = args.file {
             app.status = Some(app.open(&path));
         }
@@ -334,28 +357,81 @@ impl App {
         match extension.as_deref() {
             Some("json") => self.open_vault(path),
             Some("vault") => self.import_legacy_vault(path),
-            Some("dxb" | "dxg") => self.open_game_file(path, true),
-            _ => self.open_game_file(path, false),
+            Some("dxb" | "dxg") => {
+                let slot = stash_slot_for(path);
+                let opened = self.open_stash(slot, path)?;
+                self.recents.remember(path);
+                Ok(opened)
+            }
+            _ => self.open_character_file(path),
         }
     }
 
-    fn open_game_file(&mut self, path: &Path, is_stash: bool) -> Result<String, String> {
+    /// Opens a character and discovers its companions: the bank
+    /// beside it and the shared bank up the save tree. Missing or
+    /// unreadable companions never fail the character open — they
+    /// are reported in the status line.
+    fn open_character_file(&mut self, path: &Path) -> Result<String, String> {
         let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
-        let file = if is_stash {
-            GameFile::Stash(stash::parse_stash(&bytes).map_err(|error| error.to_string())?)
-        } else {
-            GameFile::Character(Box::new(
-                chr::parse_player(&bytes).map_err(|error| error.to_string())?,
-            ))
-        };
-        self.left = Some(FilePane {
+        let character = Box::new(chr::parse_player(&bytes).map_err(|error| error.to_string())?);
+        self.character = Some(CharacterPane {
             path: path.to_path_buf(),
             original: bytes,
-            file,
+            character,
             dirty: false,
-            selected: None,
         });
+        self.left_selected = None;
         self.recents.remember(path);
+
+        let mut notes = Vec::new();
+        match univault_core::platform::personal_stash_path(path) {
+            Some(bank) if bank.is_file() => match self.open_stash(StashSlot::Bank, &bank) {
+                Ok(_) => notes.push("bank loaded".to_string()),
+                Err(error) => notes.push(format!("bank unreadable: {error}")),
+            },
+            Some(_) | None => {
+                self.bank = None;
+                notes.push("no bank file yet".to_string());
+            }
+        }
+        let shared = univault_core::platform::transfer_stash_candidates(path)
+            .find(|candidate| candidate.is_file());
+        match shared {
+            Some(shared) => match self.open_stash(StashSlot::Shared, &shared) {
+                Ok(_) => notes.push("shared bank loaded".to_string()),
+                Err(error) => notes.push(format!("shared bank unreadable: {error}")),
+            },
+            None => notes.push("no shared bank found".to_string()),
+        }
+        Ok(format!("opened {} ({})", path.display(), notes.join(", ")))
+    }
+
+    /// Parses a stash file into its slot. A dirty pane already
+    /// holding the same path is kept as-is — reopening must not
+    /// discard unsaved edits.
+    fn open_stash(&mut self, slot: StashSlot, path: &Path) -> Result<String, String> {
+        let pane = match slot {
+            StashSlot::Bank => &mut self.bank,
+            StashSlot::Shared => &mut self.shared,
+        };
+        if pane
+            .as_ref()
+            .is_some_and(|pane| pane.path == path && pane.dirty)
+        {
+            return Ok(format!(
+                "{} already open with unsaved edits",
+                path.display()
+            ));
+        }
+        let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+        let stash = stash::parse_stash(&bytes).map_err(|error| error.to_string())?;
+        *pane = Some(StashPane {
+            path: path.to_path_buf(),
+            original: bytes,
+            stash,
+            dirty: false,
+        });
+        self.left_selected = None;
         Ok(format!("opened {}", path.display()))
     }
 
@@ -401,40 +477,99 @@ impl App {
         ))
     }
 
-    fn move_left_to_vault(&mut self) -> Result<String, String> {
-        let (Some(pane), Some(vault_pane)) = (self.left.as_mut(), self.right.as_mut()) else {
-            return Err("load a game file and a vault first".to_string());
-        };
-        let (container, index) = pane.selected.ok_or("select an item on the left")?;
+    /// Opens the standing default vault, creating the file on first
+    /// launch so a vault exists without any setup. `Open vault…`
+    /// still swaps in any other vault file.
+    fn open_default_vault(&mut self) -> Result<String, String> {
+        let path = default_vault_path().ok_or("no config directory on this platform")?;
+        if !path.exists() {
+            let empty = Vault::new(12);
+            let json = empty.to_json().map_err(|error| error.to_string())?;
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            }
+            std::fs::write(&path, json).map_err(|error| error.to_string())?;
+            self.right = Some(VaultPane {
+                path: path.clone(),
+                vault: empty,
+                dirty: false,
+                selected: None,
+            });
+            return Ok(format!("created default vault at {}", path.display()));
+        }
+        self.open_vault(&path)
+    }
+
+    /// Removes the item at `(grid, index)` from its left-side
+    /// document. `Err` when the document is gone or the index stale.
+    fn take_from_left(&mut self, grid: GridId, index: usize) -> Result<Item, String> {
+        match grid {
+            GridId::Sack(sack) => {
+                let pane = self.character.as_mut().ok_or("no character loaded")?;
+                transfer::take_from_character(&mut pane.character, sack, index)
+            }
+            GridId::Bank => {
+                let pane = self.bank.as_mut().ok_or("no bank loaded")?;
+                transfer::take_from_stash(&mut pane.stash, index)
+            }
+            GridId::Shared => {
+                let pane = self.shared.as_mut().ok_or("no shared bank loaded")?;
+                transfer::take_from_stash(&mut pane.stash, index)
+            }
+            GridId::VaultTab(_) => None,
+        }
+        .ok_or_else(|| "selection is stale — pick the item again".to_string())
+    }
+
+    /// Auto-places an item back into the left-side document it was
+    /// taken from; `false` when even that fails.
+    fn restore_to_left(&mut self, grid: GridId, item: Item) -> bool {
         let db = match &self.game {
             GameStatus::Loaded(data) => Some(data),
             GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
         };
-        let item = match &mut pane.file {
-            GameFile::Character(character) => {
-                transfer::take_from_character(character, container, index)
-            }
-            GameFile::Stash(stash) => transfer::take_from_stash(stash, index),
+        match grid {
+            GridId::Sack(sack) => self.character.as_mut().is_some_and(|pane| {
+                transfer::place_in_character(&mut pane.character, item, sack, db).is_ok()
+            }),
+            GridId::Bank => self
+                .bank
+                .as_mut()
+                .is_some_and(|pane| transfer::place_in_stash(&mut pane.stash, item, db).is_ok()),
+            GridId::Shared => self
+                .shared
+                .as_mut()
+                .is_some_and(|pane| transfer::place_in_stash(&mut pane.stash, item, db).is_ok()),
+            GridId::VaultTab(_) => false,
         }
-        .ok_or("selection is stale — pick the item again")?;
+    }
+
+    fn move_left_to_vault(&mut self) -> Result<String, String> {
+        let (grid, index) = self.left_selected.ok_or("select an item on the left")?;
+        if self.right.is_none() {
+            return Err("load a vault first".to_string());
+        }
+        let item = self.take_from_left(grid, index)?;
+        let db = match &self.game {
+            GameStatus::Loaded(data) => Some(data),
+            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
+        };
         let label = self.caches.names.item_label(db, &item);
-        let preferred = vault_pane.selected.map_or(0, |(tab, _)| tab);
+        let vault_pane = self.right.as_mut().expect("checked above");
+        let preferred = vault_pane.selected.map_or(0, |(target, _)| match target {
+            GridId::VaultTab(tab) => tab,
+            GridId::Sack(_) | GridId::Bank | GridId::Shared => 0,
+        });
         match transfer::place_in_vault(&mut vault_pane.vault, item, preferred, db) {
             Ok(tab) => {
-                pane.dirty = true;
-                pane.selected = None;
                 vault_pane.dirty = true;
+                self.mark_dirty(grid);
+                self.left_selected = None;
                 Ok(format!("{label} → vault tab {}", tab + 1))
             }
             Err(rejected) => {
                 let reason = rejected.reason;
-                let item = *rejected.item;
-                let restored = match &mut pane.file {
-                    GameFile::Character(character) => {
-                        transfer::place_in_character(character, item, container, db).is_ok()
-                    }
-                    GameFile::Stash(stash) => transfer::place_in_stash(stash, item, db).is_ok(),
-                };
+                let restored = self.restore_to_left(grid, *rejected.item);
                 Err(if restored {
                     format!("{reason}; item returned to its container")
                 } else {
@@ -444,11 +579,33 @@ impl App {
         }
     }
 
+    /// The left-side document a vault item lands in: the current
+    /// selection's document, else the first loaded one.
+    fn left_destination(&self) -> Option<GridId> {
+        match self.left_selected {
+            Some((grid @ (GridId::Sack(_) | GridId::Bank | GridId::Shared), _)) => Some(grid),
+            Some((GridId::VaultTab(_), _)) | None => {
+                if self.character.is_some() {
+                    Some(GridId::Sack(0))
+                } else if self.bank.is_some() {
+                    Some(GridId::Bank)
+                } else if self.shared.is_some() {
+                    Some(GridId::Shared)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
     fn move_vault_to_left(&mut self) -> Result<String, String> {
-        let (Some(pane), Some(vault_pane)) = (self.left.as_mut(), self.right.as_mut()) else {
-            return Err("load a game file and a vault first".to_string());
+        let destination = self
+            .left_destination()
+            .ok_or("load a character or bank first")?;
+        let vault_pane = self.right.as_mut().ok_or("load a vault first")?;
+        let Some((GridId::VaultTab(tab), index)) = vault_pane.selected else {
+            return Err("select an item in the vault".to_string());
         };
-        let (tab, index) = vault_pane.selected.ok_or("select an item in the vault")?;
         let db = match &self.game {
             GameStatus::Loaded(data) => Some(data),
             GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
@@ -456,24 +613,52 @@ impl App {
         let vault_item = transfer::take_from_vault(&mut vault_pane.vault, tab, index)
             .ok_or("selection is stale — pick the item again")?;
         let label = self.caches.names.item_label(db, &vault_item.item);
-        let preferred = pane.selected.map_or(0, |(container, _)| container);
-        let placed = match &mut pane.file {
-            GameFile::Character(character) => {
-                transfer::place_in_character(character, vault_item.item, preferred, db)
-                    .map(|sack| format!("{label} → sack {}", sack + 1))
-            }
-            GameFile::Stash(stash) => transfer::place_in_stash(stash, vault_item.item, db)
-                .map(|()| format!("{label} → stash")),
+        let placed = match destination {
+            GridId::Sack(preferred) => match self.character.as_mut() {
+                Some(pane) => transfer::place_in_character(
+                    &mut pane.character,
+                    vault_item.item,
+                    preferred,
+                    db,
+                )
+                .map(|sack| format!("{label} → sack {}", sack + 1)),
+                None => Err(transfer::Rejected {
+                    item: Box::new(vault_item.item),
+                    reason: transfer::TransferError::BadIndex,
+                }),
+            },
+            GridId::Bank => match self.bank.as_mut() {
+                Some(pane) => transfer::place_in_stash(&mut pane.stash, vault_item.item, db)
+                    .map(|()| format!("{label} → bank")),
+                None => Err(transfer::Rejected {
+                    item: Box::new(vault_item.item),
+                    reason: transfer::TransferError::BadIndex,
+                }),
+            },
+            GridId::Shared => match self.shared.as_mut() {
+                Some(pane) => transfer::place_in_stash(&mut pane.stash, vault_item.item, db)
+                    .map(|()| format!("{label} → shared bank")),
+                None => Err(transfer::Rejected {
+                    item: Box::new(vault_item.item),
+                    reason: transfer::TransferError::BadIndex,
+                }),
+            },
+            GridId::VaultTab(_) => Err(transfer::Rejected {
+                item: Box::new(vault_item.item),
+                reason: transfer::TransferError::BadIndex,
+            }),
         };
         match placed {
             Ok(message) => {
-                pane.dirty = true;
+                self.mark_dirty(destination);
+                let vault_pane = self.right.as_mut().expect("still loaded");
                 vault_pane.dirty = true;
                 vault_pane.selected = None;
                 Ok(message)
             }
             Err(rejected) => {
                 let reason = rejected.reason;
+                let vault_pane = self.right.as_mut().expect("still loaded");
                 let restored =
                     transfer::place_in_vault(&mut vault_pane.vault, *rejected.item, tab, db)
                         .is_ok();
@@ -486,35 +671,34 @@ impl App {
         }
     }
 
-    fn save_left(&mut self) -> Result<String, String> {
-        let pane = self.left.as_mut().ok_or("nothing to save")?;
-        let bytes = match &pane.file {
-            GameFile::Character(character) => {
-                let spliced = chr::replace_inventory(&pane.original, &character.sacks)
-                    .map_err(|error| error.to_string())?;
-                chr::replace_money(&spliced, character.info.money)
-                    .map_err(|error| error.to_string())?
-            }
-            GameFile::Stash(stash) => stash::replace_items(&pane.original, &stash.items)
-                .map_err(|error| error.to_string())?,
-        };
+    fn save_character(&mut self) -> Result<String, String> {
+        let pane = self.character.as_mut().ok_or("nothing to save")?;
+        let spliced = chr::replace_inventory(&pane.original, &pane.character.sacks)
+            .map_err(|error| error.to_string())?;
+        let bytes = chr::replace_money(&spliced, pane.character.info.money)
+            .map_err(|error| error.to_string())?;
         let backup = safe_write::backup_first_write(&pane.path, &bytes)
             .map_err(|error| error.to_string())?;
-        if matches!(pane.file, GameFile::Stash(_)) {
-            let twin = stash::backup_twin(&bytes).map_err(|error| error.to_string())?;
-            std::fs::write(pane.path.with_extension("dxg"), twin)
-                .map_err(|error| error.to_string())?;
-        }
         pane.original = bytes;
         pane.dirty = false;
-        Ok(match backup {
-            Some(backup) => format!(
-                "saved {} (backup: {})",
-                pane.path.display(),
-                backup.display()
-            ),
-            None => format!("saved {}", pane.path.display()),
-        })
+        Ok(saved_message(&pane.path, backup.as_deref()))
+    }
+
+    fn save_stash(&mut self, slot: StashSlot) -> Result<String, String> {
+        let pane = match slot {
+            StashSlot::Bank => self.bank.as_mut(),
+            StashSlot::Shared => self.shared.as_mut(),
+        }
+        .ok_or("nothing to save")?;
+        let bytes = stash::replace_items(&pane.original, &pane.stash.items)
+            .map_err(|error| error.to_string())?;
+        let backup = safe_write::backup_first_write(&pane.path, &bytes)
+            .map_err(|error| error.to_string())?;
+        let twin = stash::backup_twin(&bytes).map_err(|error| error.to_string())?;
+        std::fs::write(pane.path.with_extension("dxg"), twin).map_err(|error| error.to_string())?;
+        pane.original = bytes;
+        pane.dirty = false;
+        Ok(saved_message(&pane.path, backup.as_deref()))
     }
 
     fn save_vault(&mut self) -> Result<String, String> {
@@ -527,8 +711,33 @@ impl App {
     }
 }
 
+fn saved_message(path: &Path, backup: Option<&Path>) -> String {
+    match backup {
+        Some(backup) => format!("saved {} (backup: {})", path.display(), backup.display()),
+        None => format!("saved {}", path.display()),
+    }
+}
+
+/// A stash under a `Sys` folder is the account-wide transfer stash;
+/// anywhere else (a character folder) it is that character's bank.
+fn stash_slot_for(path: &Path) -> StashSlot {
+    let in_sys_folder = path
+        .parent()
+        .and_then(std::path::Path::file_name)
+        .is_some_and(|name| name.eq_ignore_ascii_case("Sys"));
+    if in_sys_folder {
+        StashSlot::Shared
+    } else {
+        StashSlot::Bank
+    }
+}
+
 fn cache_file_path() -> Option<PathBuf> {
     univault_core::platform::config_dir().map(|dir| dir.join("gamedata.cache"))
+}
+
+fn default_vault_path() -> Option<PathBuf> {
+    univault_core::platform::config_dir().map(|dir| dir.join("vaults").join("Main Vault.json"))
 }
 
 fn game_dir_file_path() -> Option<PathBuf> {
@@ -699,7 +908,8 @@ impl eframe::App for App {
         match action {
             Some(PaneAction::MoveToVault) => self.status = Some(self.move_left_to_vault()),
             Some(PaneAction::MoveToFile) => self.status = Some(self.move_vault_to_left()),
-            Some(PaneAction::SaveFile) => self.status = Some(self.save_left()),
+            Some(PaneAction::SaveCharacter) => self.status = Some(self.save_character()),
+            Some(PaneAction::SaveStash(slot)) => self.status = Some(self.save_stash(slot)),
             Some(PaneAction::SaveVault) => self.status = Some(self.save_vault()),
             Some(PaneAction::PreviewRespec(kind)) => self.preview_respec(kind),
             None => {}
@@ -711,7 +921,8 @@ impl eframe::App for App {
 enum PaneAction {
     MoveToVault,
     MoveToFile,
-    SaveFile,
+    SaveCharacter,
+    SaveStash(StashSlot),
     SaveVault,
     PreviewRespec(RespecKind),
 }
@@ -851,11 +1062,11 @@ impl App {
                 );
             }
         }
-        if self.left.is_none() && self.right.is_none() {
+        if self.character.is_none() && self.bank.is_none() && self.shared.is_none() {
             ui.heading("TQ UniVault");
             ui.label(
-                "Drop a Player.chr or stash (.dxb/.dxg) for the left pane and a vault \
-                 (.json / legacy .vault) for the right — or pass --vault and a file path.",
+                "Open (or drop) a Player.chr — its bank and the shared bank load with it. \
+                 A stash (.dxb/.dxg) or another vault (.json / legacy .vault) opens alone too.",
             );
         }
         match &self.status {
@@ -953,26 +1164,16 @@ impl App {
         let label = self.caches.names.item_label(db, &state.item);
 
         let taken = match state.source {
-            GridId::Sack(sack) => {
-                let pane = self.left.as_mut().ok_or("no game file loaded")?;
-                let GameFile::Character(character) = &mut pane.file else {
-                    return Err("drag source changed — drop ignored".to_string());
-                };
-                transfer::take_from_character(character, sack, state.index)
-            }
-            GridId::Stash => {
-                let pane = self.left.as_mut().ok_or("no game file loaded")?;
-                let GameFile::Stash(stash) = &mut pane.file else {
-                    return Err("drag source changed — drop ignored".to_string());
-                };
-                transfer::take_from_stash(stash, state.index)
+            GridId::Sack(_) | GridId::Bank | GridId::Shared => {
+                self.take_from_left(state.source, state.index)?
             }
             GridId::VaultTab(tab) => {
                 let pane = self.right.as_mut().ok_or("no vault loaded")?;
-                transfer::take_from_vault(&mut pane.vault, tab, state.index).map(|entry| entry.item)
+                transfer::take_from_vault(&mut pane.vault, tab, state.index)
+                    .map(|entry| entry.item)
+                    .ok_or("item moved under the drag — drop ignored")?
             }
-        }
-        .ok_or("item moved under the drag — drop ignored")?;
+        };
 
         if taken.base != state.item.base {
             let origin = state.item.position;
@@ -987,22 +1188,22 @@ impl App {
         };
         let placed = match target.grid {
             GridId::Sack(sack) => {
-                let Some(pane) = self.left.as_mut() else {
-                    return Err("no game file loaded".to_string());
+                let Some(pane) = self.character.as_mut() else {
+                    return Err("no character loaded".to_string());
                 };
-                let GameFile::Character(character) = &mut pane.file else {
-                    return Err("drop target changed".to_string());
-                };
-                transfer::place_in_character_at(character, taken, sack, target.cell, db)
+                transfer::place_in_character_at(&mut pane.character, taken, sack, target.cell, db)
             }
-            GridId::Stash => {
-                let Some(pane) = self.left.as_mut() else {
-                    return Err("no game file loaded".to_string());
+            GridId::Bank => {
+                let Some(pane) = self.bank.as_mut() else {
+                    return Err("no bank loaded".to_string());
                 };
-                let GameFile::Stash(stash) = &mut pane.file else {
-                    return Err("drop target changed".to_string());
+                transfer::place_in_stash_at(&mut pane.stash, taken, target.cell, db)
+            }
+            GridId::Shared => {
+                let Some(pane) = self.shared.as_mut() else {
+                    return Err("no shared bank loaded".to_string());
                 };
-                transfer::place_in_stash_at(stash, taken, target.cell, db)
+                transfer::place_in_stash_at(&mut pane.stash, taken, target.cell, db)
             }
             GridId::VaultTab(tab) => {
                 let Some(pane) = self.right.as_mut() else {
@@ -1016,15 +1217,14 @@ impl App {
             Ok(()) => {
                 self.mark_dirty(state.source);
                 self.mark_dirty(target.grid);
-                if let Some(pane) = &mut self.left {
-                    pane.selected = None;
-                }
+                self.left_selected = None;
                 if let Some(pane) = &mut self.right {
                     pane.selected = None;
                 }
                 let destination = match target.grid {
                     GridId::Sack(sack) => format!("sack {}", sack + 1),
-                    GridId::Stash => "stash".to_string(),
+                    GridId::Bank => "bank".to_string(),
+                    GridId::Shared => "shared bank".to_string(),
                     GridId::VaultTab(tab) => format!("vault tab {}", tab + 1),
                 };
                 Ok(format!(
@@ -1055,24 +1255,28 @@ impl App {
         let lost = "item could not be returned — reload without saving".to_string();
         match source {
             GridId::Sack(sack) => {
-                let pane = self.left.as_mut().ok_or_else(|| lost.clone())?;
-                let GameFile::Character(character) = &mut pane.file else {
-                    return Err(lost);
-                };
-                transfer::place_in_character_at(character, item, sack, position, db)
+                let pane = self.character.as_mut().ok_or_else(|| lost.clone())?;
+                transfer::place_in_character_at(&mut pane.character, item, sack, position, db)
                     .or_else(|rejected| {
-                        transfer::place_in_character(character, *rejected.item, sack, db)
+                        transfer::place_in_character(&mut pane.character, *rejected.item, sack, db)
                             .map(|_| ())
                     })
                     .map_err(|_| lost)
             }
-            GridId::Stash => {
-                let pane = self.left.as_mut().ok_or_else(|| lost.clone())?;
-                let GameFile::Stash(stash) = &mut pane.file else {
-                    return Err(lost);
-                };
-                transfer::place_in_stash_at(stash, item, position, db)
-                    .or_else(|rejected| transfer::place_in_stash(stash, *rejected.item, db))
+            GridId::Bank => {
+                let pane = self.bank.as_mut().ok_or_else(|| lost.clone())?;
+                transfer::place_in_stash_at(&mut pane.stash, item, position, db)
+                    .or_else(|rejected| {
+                        transfer::place_in_stash(&mut pane.stash, *rejected.item, db)
+                    })
+                    .map_err(|_| lost)
+            }
+            GridId::Shared => {
+                let pane = self.shared.as_mut().ok_or_else(|| lost.clone())?;
+                transfer::place_in_stash_at(&mut pane.stash, item, position, db)
+                    .or_else(|rejected| {
+                        transfer::place_in_stash(&mut pane.stash, *rejected.item, db)
+                    })
                     .map_err(|_| lost)
             }
             GridId::VaultTab(tab) => {
@@ -1088,24 +1292,21 @@ impl App {
     }
 
     fn mark_dirty(&mut self, grid: GridId) {
-        match grid {
-            GridId::Sack(_) | GridId::Stash => {
-                if let Some(pane) = &mut self.left {
-                    pane.dirty = true;
-                }
-            }
-            GridId::VaultTab(_) => {
-                if let Some(pane) = &mut self.right {
-                    pane.dirty = true;
-                }
-            }
+        let dirty = match grid {
+            GridId::Sack(_) => self.character.as_mut().map(|pane| &mut pane.dirty),
+            GridId::Bank => self.bank.as_mut().map(|pane| &mut pane.dirty),
+            GridId::Shared => self.shared.as_mut().map(|pane| &mut pane.dirty),
+            GridId::VaultTab(_) => self.right.as_mut().map(|pane| &mut pane.dirty),
+        };
+        if let Some(dirty) = dirty {
+            *dirty = true;
         }
     }
 
     /// Computes a respec's refund from the pane's baseline bytes and
     /// opens the confirmation modal.
     fn preview_respec(&mut self, kind: RespecKind) {
-        let Some(pane) = &self.left else { return };
+        let Some(pane) = &self.character else { return };
         let preview = match kind {
             RespecKind::Attributes => {
                 respec::attribute_refund(&pane.original).map(|points| (points, 0))
@@ -1177,7 +1378,7 @@ impl App {
     }
 
     fn apply_respec(&mut self, kind: RespecKind) -> Result<String, String> {
-        let pane = self.left.as_mut().ok_or("no character loaded")?;
+        let pane = self.character.as_mut().ok_or("no character loaded")?;
         let result = match kind {
             RespecKind::Attributes => respec::respec_attributes(&pane.original),
             RespecKind::Skills => respec::respec_skills(&pane.original),
@@ -1199,9 +1400,11 @@ impl App {
 
     /// Where file dialogs start: near what the user last touched.
     fn dialog_start_dir(&self) -> Option<PathBuf> {
-        self.left
+        self.character
             .as_ref()
             .map(|pane| pane.path.clone())
+            .or_else(|| self.bank.as_ref().map(|pane| pane.path.clone()))
+            .or_else(|| self.shared.as_ref().map(|pane| pane.path.clone()))
             .or_else(|| self.recents.entries.first().cloned())
             .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
     }
@@ -1215,20 +1418,49 @@ impl App {
         let drag = self.drag.clone();
         let mut frame = DragFrame::default();
         let mut action = None;
-        let can_move = self.left.is_some() && self.right.is_some();
+        let has_left = self.character.is_some() || self.bank.is_some() || self.shared.is_some();
+        let can_move = has_left && self.right.is_some();
         ui.columns(2, |columns| {
-            if let Some(pane) = &mut self.left {
-                if let Some(chosen) = show_file_pane(
-                    &mut columns[0],
-                    pane,
-                    db,
-                    caches,
-                    can_move,
-                    drag.as_ref(),
-                    &mut frame,
-                ) {
-                    action = Some(chosen);
-                }
+            if has_left {
+                let character = &mut self.character;
+                let bank = &mut self.bank;
+                let shared = &mut self.shared;
+                let selected = &mut self.left_selected;
+                egui::ScrollArea::vertical()
+                    .id_salt("file-pane")
+                    .show(&mut columns[0], |ui| {
+                        if let Some(pane) = character
+                            && let Some(chosen) = show_character_section(
+                                ui,
+                                pane,
+                                db,
+                                caches,
+                                can_move,
+                                selected,
+                                drag.as_ref(),
+                                &mut frame,
+                            )
+                        {
+                            action = Some(chosen);
+                        }
+                        let has_character = character.is_some();
+                        for (pane, slot) in [(bank, StashSlot::Bank), (shared, StashSlot::Shared)] {
+                            if let Some(chosen) = show_stash_slot(
+                                ui,
+                                pane,
+                                slot,
+                                has_character,
+                                db,
+                                caches,
+                                can_move,
+                                selected,
+                                drag.as_ref(),
+                                &mut frame,
+                            ) {
+                                action = Some(chosen);
+                            }
+                        }
+                    });
             } else {
                 columns[0].weak("No game file loaded.");
             }
@@ -1262,22 +1494,13 @@ fn cells_to_points(cells: i32) -> f32 {
 }
 
 /// Which on-screen grid an item lives in — the address space of
-/// drag-and-drop.
+/// selection and drag-and-drop.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum GridId {
     Sack(usize),
-    Stash,
+    Bank,
+    Shared,
     VaultTab(usize),
-}
-
-impl GridId {
-    /// Selection containers reuse sack/tab indexes; the stash is 0.
-    fn container(self) -> usize {
-        match self {
-            Self::Sack(index) | Self::VaultTab(index) => index,
-            Self::Stash => 0,
-        }
-    }
 }
 
 /// An in-flight drag: where the item came from and how it was
@@ -1319,13 +1542,12 @@ fn grid_view(
     dims: (i32, i32),
     entries: &[(usize, &Item)],
     grid: GridId,
-    selected: &mut Option<(usize, usize)>,
+    selected: &mut Option<(GridId, usize)>,
     db: Option<&GameCache>,
     caches: &mut Caches,
     drag: Option<&DragState>,
     frame: &mut DragFrame,
 ) {
-    let container = grid.container();
     let size = egui::vec2(cells_to_points(dims.0), cells_to_points(dims.1));
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
     if !ui.is_rect_visible(rect) {
@@ -1366,7 +1588,7 @@ fn grid_view(
             egui::vec2(cells_to_points(width), cells_to_points(height)),
         )
         .shrink(1.0);
-        let is_selected = *selected == Some((container, *index));
+        let is_selected = *selected == Some((grid, *index));
         paint_item_tile(
             ui,
             &painter,
@@ -1402,7 +1624,7 @@ fn grid_view(
         {
             hovered = Some(item);
             if response.clicked() {
-                *selected = Some((container, *index));
+                *selected = Some((grid, *index));
             }
         }
     }
@@ -1637,105 +1859,164 @@ fn show_equipment(
 }
 
 #[allow(clippy::too_many_arguments)] // one call surface, shell-internal
-fn show_file_pane(
+fn show_character_section(
     ui: &mut egui::Ui,
-    pane: &mut FilePane,
+    pane: &mut CharacterPane,
     db: Option<&GameCache>,
     caches: &mut Caches,
     can_move: bool,
+    selected: &mut Option<(GridId, usize)>,
     drag: Option<&DragState>,
     frame: &mut DragFrame,
 ) -> Option<PaneAction> {
     let mut action = None;
     ui.horizontal(|ui| {
-        match &mut pane.file {
-            GameFile::Character(character) => {
-                ui.heading(
-                    character
-                        .info
-                        .name
-                        .as_deref()
-                        .unwrap_or("Unnamed character"),
-                );
-                let gold = ui.add(
-                    egui::DragValue::new(&mut character.info.money)
-                        .range(0..=i32::MAX)
-                        .prefix("gold: "),
-                );
-                if gold.changed() {
-                    pane.dirty = true;
-                }
-            }
-            GameFile::Stash(stash) => {
-                ui.heading(format!("Stash {}×{}", stash.width, stash.height));
-            }
+        ui.heading(
+            pane.character
+                .info
+                .name
+                .as_deref()
+                .unwrap_or("Unnamed character"),
+        );
+        let gold = ui.add(
+            egui::DragValue::new(&mut pane.character.info.money)
+                .range(0..=i32::MAX)
+                .prefix("gold: "),
+        );
+        if gold.changed() {
+            pane.dirty = true;
         }
         if ui
             .add_enabled(pane.dirty, egui::Button::new("Save"))
             .clicked()
         {
-            action = Some(PaneAction::SaveFile);
+            action = Some(PaneAction::SaveCharacter);
         }
+        let selection_here = matches!(*selected, Some((GridId::Sack(_), _)));
         if ui
-            .add_enabled(
-                can_move && pane.selected.is_some(),
-                egui::Button::new("→ Vault"),
-            )
+            .add_enabled(can_move && selection_here, egui::Button::new("→ Vault"))
             .clicked()
         {
             action = Some(PaneAction::MoveToVault);
         }
-        if matches!(pane.file, GameFile::Character(_)) {
-            if ui.button("Respec attributes").clicked() {
-                action = Some(PaneAction::PreviewRespec(RespecKind::Attributes));
-            }
-            if ui.button("Respec skills & masteries").clicked() {
-                action = Some(PaneAction::PreviewRespec(RespecKind::Skills));
-            }
+        if ui.button("Respec attributes").clicked() {
+            action = Some(PaneAction::PreviewRespec(RespecKind::Attributes));
+        }
+        if ui.button("Respec skills & masteries").clicked() {
+            action = Some(PaneAction::PreviewRespec(RespecKind::Skills));
         }
     });
     ui.monospace(pane.path.display().to_string());
-    egui::ScrollArea::vertical()
-        .id_salt("file-pane")
-        .show(ui, |ui| match &pane.file {
-            GameFile::Character(character) => {
-                show_equipment(ui, character, db, caches);
-                for (index, sack) in character.sacks.iter().enumerate() {
-                    let title = format!("Sack {} ({} items)", index + 1, sack.items.len());
-                    egui::CollapsingHeader::new(title)
-                        .default_open(true)
-                        .show(ui, |ui| {
-                            let entries: Vec<(usize, &Item)> =
-                                sack.items.iter().enumerate().collect();
-                            grid_view(
-                                ui,
-                                chr::sack_dimensions(index),
-                                &entries,
-                                GridId::Sack(index),
-                                &mut pane.selected,
-                                db,
-                                caches,
-                                drag,
-                                frame,
-                            );
-                        });
-                }
-            }
-            GameFile::Stash(stash) => {
-                let entries: Vec<(usize, &Item)> = stash.items.iter().enumerate().collect();
+    show_equipment(ui, &pane.character, db, caches);
+    for (index, sack) in pane.character.sacks.iter().enumerate() {
+        let title = format!("Sack {} ({} items)", index + 1, sack.items.len());
+        egui::CollapsingHeader::new(title)
+            .default_open(true)
+            .show(ui, |ui| {
+                let entries: Vec<(usize, &Item)> = sack.items.iter().enumerate().collect();
                 grid_view(
                     ui,
-                    (stash.width, stash.height),
+                    chr::sack_dimensions(index),
                     &entries,
-                    GridId::Stash,
-                    &mut pane.selected,
+                    GridId::Sack(index),
+                    selected,
                     db,
                     caches,
                     drag,
                     frame,
                 );
-            }
-        });
+            });
+    }
+    action
+}
+
+/// One stash slot in the left column: the section when loaded, a
+/// placeholder explaining where the file was expected when not.
+#[allow(clippy::too_many_arguments)] // one call surface, shell-internal
+fn show_stash_slot(
+    ui: &mut egui::Ui,
+    pane: &mut Option<StashPane>,
+    slot: StashSlot,
+    has_character: bool,
+    db: Option<&GameCache>,
+    caches: &mut Caches,
+    can_move: bool,
+    selected: &mut Option<(GridId, usize)>,
+    drag: Option<&DragState>,
+    frame: &mut DragFrame,
+) -> Option<PaneAction> {
+    if let Some(pane) = pane {
+        return show_stash_section(ui, pane, slot, db, caches, can_move, selected, drag, frame);
+    }
+    if has_character {
+        let (title, hint) = match slot {
+            StashSlot::Bank => (
+                "Character bank",
+                "No bank file yet — the game creates winsys.dxb the first time \
+                 this character opens the caravan stash.",
+            ),
+            StashSlot::Shared => (
+                "Shared bank",
+                "No shared bank found — expected Sys/winsys.dxb up the save tree.",
+            ),
+        };
+        ui.separator();
+        ui.heading(title);
+        ui.weak(hint);
+    }
+    None
+}
+
+#[allow(clippy::too_many_arguments)] // one call surface, shell-internal
+fn show_stash_section(
+    ui: &mut egui::Ui,
+    pane: &mut StashPane,
+    slot: StashSlot,
+    db: Option<&GameCache>,
+    caches: &mut Caches,
+    can_move: bool,
+    selected: &mut Option<(GridId, usize)>,
+    drag: Option<&DragState>,
+    frame: &mut DragFrame,
+) -> Option<PaneAction> {
+    let mut action = None;
+    let (title, grid) = match slot {
+        StashSlot::Bank => ("Character bank", GridId::Bank),
+        StashSlot::Shared => ("Shared bank", GridId::Shared),
+    };
+    ui.separator();
+    ui.horizontal(|ui| {
+        ui.heading(format!(
+            "{title} {}×{}",
+            pane.stash.width, pane.stash.height
+        ));
+        if ui
+            .add_enabled(pane.dirty, egui::Button::new("Save"))
+            .clicked()
+        {
+            action = Some(PaneAction::SaveStash(slot));
+        }
+        let selection_here = matches!(*selected, Some((current, _)) if current == grid);
+        if ui
+            .add_enabled(can_move && selection_here, egui::Button::new("→ Vault"))
+            .clicked()
+        {
+            action = Some(PaneAction::MoveToVault);
+        }
+    });
+    ui.monospace(pane.path.display().to_string());
+    let entries: Vec<(usize, &Item)> = pane.stash.items.iter().enumerate().collect();
+    grid_view(
+        ui,
+        (pane.stash.width, pane.stash.height),
+        &entries,
+        grid,
+        selected,
+        db,
+        caches,
+        drag,
+        frame,
+    );
     action
 }
 
@@ -1841,6 +2122,32 @@ mod tests {
         assert_eq!(empty.file, None);
         // A dangling flag consumes nothing and breaks nothing.
         assert_eq!(args(&["--game"]).game_dir, None);
+    }
+
+    #[test]
+    fn stash_files_route_by_their_folder() {
+        assert!(matches!(
+            stash_slot_for(Path::new("/saves/SaveData/Sys/winsys.dxb")),
+            StashSlot::Shared
+        ));
+        assert!(matches!(
+            stash_slot_for(Path::new("/saves/SaveData/Main/_Pally Don/winsys.dxb")),
+            StashSlot::Bank
+        ));
+        assert!(matches!(
+            stash_slot_for(Path::new("winsys.dxb")),
+            StashSlot::Bank
+        ));
+    }
+
+    #[test]
+    fn default_vault_lives_under_the_config_dir() {
+        let path = default_vault_path().expect("a config dir on a supported platform");
+        assert!(path.ends_with("vaults/Main Vault.json"), "{path:?}");
+        assert!(
+            path.starts_with(univault_core::platform::config_dir().unwrap()),
+            "{path:?}"
+        );
     }
 
     #[test]

@@ -1,9 +1,10 @@
 //! Per-OS path conventions — the one place `cfg(target_os)` is
-//! allowed (ARCHITECTURE.md's platform-confinement rule). Functions
-//! here compute paths from environment variables; reading or writing
-//! the filesystem stays in the shell.
+//! allowed (ARCHITECTURE.md's platform-confinement rule) — plus the
+//! game save tree's own layout conventions. Functions here compute
+//! paths from environment variables and given paths; reading or
+//! writing the filesystem stays in the shell.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The app's configuration directory for this platform (not created
 /// here): `~/Library/Application Support/tq-univault` on macOS,
@@ -28,6 +29,28 @@ pub fn config_dir() -> Option<PathBuf> {
     }
 }
 
+/// The character's own bank beside its `Player.chr`: the game keeps
+/// each character's private stash as `winsys.dxb` in the character
+/// folder. Purely a path computation — the file exists only once the
+/// character has used the caravan in game.
+#[must_use]
+pub fn personal_stash_path(chr_path: &Path) -> Option<PathBuf> {
+    chr_path.parent().map(|dir| dir.join("winsys.dxb"))
+}
+
+/// Candidate paths for the account-wide transfer stash (the shared
+/// bank), nearest first: `<ancestor>/Sys/winsys.dxb` for each
+/// ancestor of the character folder. The save tree keeps it at
+/// `SaveData/Sys/winsys.dxb` next to `SaveData/Main/_Name/`, but
+/// walking every ancestor also covers relocated or custom-map save
+/// roots. The shell takes the first candidate that exists on disk.
+pub fn transfer_stash_candidates(chr_path: &Path) -> impl Iterator<Item = PathBuf> + '_ {
+    chr_path
+        .ancestors()
+        .skip(1)
+        .map(|dir| dir.join("Sys").join("winsys.dxb"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -38,5 +61,27 @@ mod tests {
         // in any real session (HOME / APPDATA / XDG_CONFIG_HOME).
         let dir = config_dir().expect("a config dir on a supported platform");
         assert!(dir.ends_with("tq-univault"), "{dir:?}");
+    }
+
+    #[test]
+    fn personal_stash_sits_beside_the_character_file() {
+        assert_eq!(
+            personal_stash_path(Path::new("/saves/SaveData/Main/_Pally Don/Player.chr")),
+            Some(PathBuf::from("/saves/SaveData/Main/_Pally Don/winsys.dxb"))
+        );
+        assert_eq!(personal_stash_path(Path::new("/")), None);
+    }
+
+    #[test]
+    fn transfer_stash_candidates_walk_ancestors_nearest_first() {
+        let candidates: Vec<PathBuf> =
+            transfer_stash_candidates(Path::new("/saves/SaveData/Main/_Pally Don/Player.chr"))
+                .collect();
+        assert_eq!(
+            candidates[0],
+            PathBuf::from("/saves/SaveData/Main/_Pally Don/Sys/winsys.dxb")
+        );
+        let expected = PathBuf::from("/saves/SaveData/Sys/winsys.dxb");
+        assert!(candidates.contains(&expected), "{candidates:?}");
     }
 }
