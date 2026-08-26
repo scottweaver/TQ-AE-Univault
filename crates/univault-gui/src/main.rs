@@ -500,11 +500,21 @@ struct App {
     drag: Option<DragState>,
     /// Zoom shown by the slider while dragging; applied on release.
     pending_zoom: f32,
+    /// The Game.dll socket-patch dialog, holding the inspected file
+    /// while open.
+    dll_patch: Option<DllPatchDialog>,
     watcher: FileWatcher,
     refresh: RefreshTracker,
     /// Documents whose file changed on disk while they hold unsaved
     /// edits — resolved by the conflict modal, never silently.
     conflicts: Vec<DocId>,
+}
+
+/// The socket-patch modal's working state: the dll it read and what
+/// the bytes said.
+struct DllPatchDialog {
+    path: PathBuf,
+    outcome: Result<(Vec<u8>, univault_core::dllpatch::PatchState), String>,
 }
 
 impl App {
@@ -544,6 +554,7 @@ impl App {
             pending_reload: false,
             drag: None,
             pending_zoom: 1.0,
+            dll_patch: None,
             watcher: start_watcher(),
             refresh: RefreshTracker::default(),
             conflicts: Vec::new(),
@@ -1872,6 +1883,7 @@ impl eframe::App for App {
         self.show_respec_modal(ui.ctx());
         self.show_reload_modal(ui.ctx());
         self.show_bonus_modal(ui.ctx());
+        self.show_dll_patch_modal(ui.ctx());
         self.show_conflict_modal(ui.ctx());
     }
 }
@@ -2016,6 +2028,17 @@ impl App {
                     }
                 }
             });
+            if stored_game_dir().is_some()
+                && ui
+                    .button("Socket patch…")
+                    .on_hover_text(
+                        "Toggle the Game.dll socket-gate patch: lets the game itself \
+                         accept relics/charms on Epic and Legendary items",
+                    )
+                    .clicked()
+            {
+                self.open_dll_patch_dialog();
+            }
         });
         (requested, reload_requested)
     }
@@ -2334,6 +2357,156 @@ impl App {
             pane.selected = None;
         }
         Ok(format!("socketed {piece_label} into {target_label}"))
+    }
+
+    /// Reads and inspects the install's Game.dll for the modal;
+    /// nothing is written here.
+    fn open_dll_patch_dialog(&mut self) {
+        let Some(dir) = stored_game_dir() else {
+            self.status = Some(Err("no game directory remembered yet".to_string()));
+            return;
+        };
+        let path = dir.join("Game.dll");
+        let outcome = std::fs::read(&path)
+            .map_err(|error| format!("read {}: {error}", path.display()))
+            .map(|bytes| {
+                let state = univault_core::dllpatch::inspect(&bytes);
+                (bytes, state)
+            });
+        self.dll_patch = Some(DllPatchDialog { path, outcome });
+    }
+
+    /// Applies or reverts the socket patch: pristine backup first
+    /// (created once, only from a fully vanilla file), then an
+    /// atomic-rename write, then a re-read to verify.
+    fn toggle_dll_patch(&mut self, enable: bool) -> Result<String, String> {
+        use univault_core::dllpatch::{self, PatchState};
+        let dialog = self.dll_patch.as_ref().ok_or("no dll loaded")?;
+        let path = dialog.path.clone();
+        let (bytes, state) = dialog.outcome.as_ref().map_err(Clone::clone)?;
+        let mut working = bytes.clone();
+        let backup = path.with_extension("dll.univault-original");
+        if matches!(state, PatchState::Vanilla { .. }) && !backup.exists() {
+            std::fs::write(&backup, &working)
+                .map_err(|error| format!("backup {}: {error}", backup.display()))?;
+        }
+        let changed = if enable {
+            dllpatch::enable(&mut working)
+        } else {
+            dllpatch::disable(&mut working)
+        };
+        if changed == 0 {
+            self.dll_patch = None;
+            return Ok("nothing to change".to_string());
+        }
+        let staging = path.with_extension("dll.univault-tmp");
+        std::fs::write(&staging, &working)
+            .map_err(|error| format!("write {}: {error}", staging.display()))?;
+        std::fs::rename(&staging, &path)
+            .map_err(|error| format!("replace {}: {error}", path.display()))?;
+        let verified =
+            std::fs::read(&path).map_err(|error| format!("verify {}: {error}", path.display()))?;
+        let state = dllpatch::inspect(&verified);
+        self.dll_patch = None;
+        match (enable, state) {
+            (true, PatchState::Patched { sites }) => Ok(format!(
+                "socket patch ON — {sites} site(s) patched (pristine copy kept as {})",
+                backup.display()
+            )),
+            (false, PatchState::Vanilla { sites }) => {
+                Ok(format!("socket patch OFF — {sites} site(s) restored"))
+            }
+            (_, verified_state) => Err(format!(
+                "verification after write found {verified_state:?} — restore the backup at {}",
+                backup.display()
+            )),
+        }
+    }
+
+    fn show_dll_patch_modal(&mut self, ctx: &egui::Context) {
+        use univault_core::dllpatch::PatchState;
+        let Some(dialog) = &self.dll_patch else {
+            return;
+        };
+        let mut close = false;
+        let mut apply: Option<bool> = None;
+        egui::Modal::new(egui::Id::new("dll-patch-modal")).show(ctx, |ui| {
+            ui.set_max_width(440.0);
+            ui.heading("Game.dll socket patch");
+            ui.label(format!("{}", dialog.path.display()));
+            ui.add_space(6.0);
+            match &dialog.outcome {
+                Err(error) => {
+                    ui.colored_label(egui::Color32::from_rgb(230, 130, 120), error);
+                }
+                Ok((_, state)) => {
+                    match state {
+                        PatchState::Vanilla { sites } => {
+                            ui.label(format!(
+                                "Status: UNPATCHED — {sites} signature site(s) found. \
+                                 Enabling lets the game itself socket relics and charms \
+                                 into Epic and Legendary items (type rules and costs \
+                                 stay the game's own)."
+                            ));
+                        }
+                        PatchState::Patched { sites } => {
+                            ui.label(format!(
+                                "Status: PATCHED — {sites} site(s) active. Disabling \
+                                 restores the original bytes exactly."
+                            ));
+                        }
+                        PatchState::Mixed { vanilla, patched } => {
+                            ui.label(format!(
+                                "Status: PARTIAL — {patched} patched, {vanilla} untouched \
+                                 (an interrupted or older-guide edit). Enable completes \
+                                 the patch; disable reverts everything."
+                            ));
+                        }
+                        PatchState::Unrecognized => {
+                            ui.label(
+                                "Status: UNRECOGNIZED — this Game.dll doesn't match the \
+                                 known signature (a new game version, or other mods). \
+                                 Nothing will be written.",
+                            );
+                        }
+                    }
+                    ui.add_space(6.0);
+                    ui.weak(
+                        "A pristine copy is kept beside the dll the first time it is \
+                         patched. Steam updates and 'verify integrity' replace the dll — \
+                         just re-enable afterwards. Considered cheating in multiplayer.",
+                    );
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        let (can_enable, can_disable) = match state {
+                            PatchState::Vanilla { .. } => (true, false),
+                            PatchState::Patched { .. } => (false, true),
+                            PatchState::Mixed { .. } => (true, true),
+                            PatchState::Unrecognized => (false, false),
+                        };
+                        if ui
+                            .add_enabled(can_enable, egui::Button::new("Enable patch"))
+                            .clicked()
+                        {
+                            apply = Some(true);
+                        }
+                        if ui
+                            .add_enabled(can_disable, egui::Button::new("Disable patch"))
+                            .clicked()
+                        {
+                            apply = Some(false);
+                        }
+                    });
+                }
+            }
+            ui.add_space(8.0);
+            close = ui.button("Close").clicked();
+        });
+        if let Some(enable) = apply {
+            self.status = Some(self.toggle_dll_patch(enable));
+        } else if close {
+            self.dll_patch = None;
+        }
     }
 
     /// Prepares the completion-bonus picker for the piece at

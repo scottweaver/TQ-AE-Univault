@@ -107,6 +107,23 @@ that's better") and merged as PR #7.
 
 ## Most recent meaningful progress
 
+- **2026-08-26 — Game.dll socket-gate patcher (toggle).** User
+  supplied the community guide (Steam 2202151189): NOP the two
+  conditional jumps after the Epic/Legendary classification
+  compares. New core `dllpatch` module (pure bytes: inspect →
+  Vanilla/Patched/Mixed/Unrecognized, enable/disable as
+  non-overlapping 10-byte signature swaps, self-inverse) + a GUI
+  "Socket patch…" header button opening a modal: state, warnings
+  (multiplayer; Steam updates/verify replace the dll — re-enable
+  after), Enable/Disable. Guardrails: pristine
+  `Game.dll.univault-original` written once from a fully vanilla
+  file; staging-write + rename; post-write re-read verify;
+  unrecognized versions never written. ARCHITECTURE amended in-PR
+  (single sanctioned game-binary write). Dry-run against the real
+  dll (on a copy): 1 signature site in the current EE build (older
+  guides say several — consolidated since), 4 bytes change,
+  reverse byte-identical. Risk: the user pressing Enable and
+  socketing an epic in-game is the acceptance test.
 - **2026-08-26 — Auto-refresh: panes follow the files.** User ask
   (no more Reload button pressing), design-dialogued: prompt on
   conflict, silent reload when clean. A background thread polls the
@@ -277,20 +294,6 @@ that's better") and merged as PR #7.
   it; a tree whose Sys stashes live outside any `Sys/` ancestor
   reports "no shared/relic bank found"; duplication is a deliberate
   cheat feature — the game has no such operation.
-- **2026-08-25 — Drag-and-drop item movement.** The top "Next up"
-  item: items now drag between cells, sacks, panes, and vault tabs
-  with a live drop preview (green = fits, red = blocked), the
-  ghosted source dimmed and the item riding the cursor at true
-  footprint scale. Core gained exact-position placement
-  (`grid::fits`, `transfer::place_*_at` / `fits_at` / `occupancy`
-  with a skip index so the dragged item's own cells read as free);
-  the GUI's `grid_view` switched to `Sense::click_and_drag` (click
-  select and hover tooltips unchanged — egui only reports drag
-  after a movement threshold). Failed drops restore the item at its
-  origin, falling back to auto-place. 150 tests. Risk: drop-feel
-  (snapping, grab offset) unverified until the user drags for real;
-  footprint lookups during hover are cached per record, so the old
-  "uncached before drag-and-drop" worry is closed.
 ## Blocked / waiting
 
 - *(nothing)*
