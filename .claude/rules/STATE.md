@@ -161,7 +161,8 @@ and open our vault JSON in TQVaultAE.
   Remaining spot checks: target caps ×3; vanilla XP (predicted:
   an even-level trash mob on Normal awards level×15).
   Follow-up 2026-08-25 (user request): Core Dweller Energy ×2.5 —
-  `characterMana` on all 20 pet levels (327.5 → 875 at 20), via a
+  `characterMana` on all 20 pet levels (327.5 → 875 at 20) and
+  Energy regen ×1.75 (the x3 mod's 3.0/s → 5.25/s), via a
   new list form of the modforge `record` rule; bundle rebuilt +
   reinstalled, installed arz verified; in-game check pending.
 
