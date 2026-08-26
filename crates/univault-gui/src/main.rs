@@ -8,9 +8,9 @@
 //! relic banks (`SaveData/Sys/winsys.dxb` and `miscsys.dxb`). Right
 //! pane: a vault — the default vault under the config directory
 //! opens (and is created) at launch; `Open vault…` swaps in any
-//! other vault file. Click or drag items across; right-click sends
-//! an item straight to the other pane (vault items land in the
-//! active tab); Shift+Right-click sends a copy; Shift+Click
+//! other vault file, and the vault shows one tab at a time. Click
+//! or drag items across; right-click sends an item straight to the
+//! other pane's open tab; Shift+Right-click sends a copy; Shift+Click
 //! duplicates in place; double-click a completed relic/charm or an
 //! artifact to (re)pick its completion bonus — chosen from the list,
 //! rolled at the game's odds, or removed. Every edit autosaves after a short quiet
@@ -183,6 +183,9 @@ struct VaultPane {
     dirty: bool,
     selected: Option<(GridId, usize)>,
     disk_stamp: Option<SourceStamp>,
+    /// The one tab on screen — only one is ever open, and it is
+    /// where sends, copies, and extractions land.
+    open_tab: usize,
 }
 
 /// One open document, addressable across panes — the unit the
@@ -725,6 +728,13 @@ impl App {
         self.backed_up.remove(path);
         self.refresh.forget(path);
         let disk_stamp = stamp_of(path);
+        // A reload of the already-open file (auto-refresh, Reload)
+        // keeps the user's tab; a different vault starts at tab 1.
+        let open_tab = self
+            .right
+            .as_ref()
+            .filter(|pane| pane.path == path)
+            .map_or(0, |pane| pane.open_tab);
         let vault = if path.exists() {
             let text = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
             Vault::from_json(&text).map_err(|error| error.to_string())?
@@ -738,6 +748,7 @@ impl App {
             dirty: created,
             selected: None,
             disk_stamp,
+            open_tab,
         });
         Ok(if created {
             format!(
@@ -761,6 +772,7 @@ impl App {
             dirty: true,
             selected: None,
             disk_stamp: stamp_of(&json_path),
+            open_tab: 0,
         });
         Ok(format!(
             "imported legacy vault; saving writes {}",
@@ -786,6 +798,7 @@ impl App {
                 dirty: false,
                 selected: None,
                 disk_stamp: stamp_of(&path),
+                open_tab: 0,
             });
             return Ok(format!("created default vault at {}", path.display()));
         }
@@ -872,16 +885,9 @@ impl App {
         };
         let label = self.caches.names.item_label(db, &item);
         let vault_pane = self.right.as_mut().expect("checked above");
-        let preferred = vault_pane.selected.map_or(0, |(target, _)| match target {
-            GridId::VaultTab(tab) => tab,
-            GridId::Sack(_)
-            | GridId::Equipment(_)
-            | GridId::Bank
-            | GridId::Shared
-            | GridId::Relic => 0,
-        });
-        match transfer::place_in_vault(&mut vault_pane.vault, item, preferred, db) {
-            Ok(tab) => {
+        let tab = vault_pane.open_tab;
+        match transfer::place_in_vault_tab(&mut vault_pane.vault, item, tab, db) {
+            Ok(()) => {
                 vault_pane.dirty = true;
                 self.mark_dirty(grid);
                 self.left_selected = None;
@@ -1199,7 +1205,7 @@ impl App {
             }
             GridId::VaultTab(tab) => {
                 let pane = self.right.as_mut().ok_or("no vault loaded")?;
-                transfer::place_in_vault(&mut pane.vault, item, tab, db).map(|_| ())
+                transfer::place_in_vault_tab(&mut pane.vault, item, tab, db)
             }
         };
         match placed {
@@ -1256,7 +1262,7 @@ impl App {
             }
             GridId::VaultTab(tab) => {
                 let pane = self.right.as_mut().ok_or("no vault loaded")?;
-                transfer::place_in_vault(&mut pane.vault, piece, tab, db).map(|_| ())
+                transfer::place_in_vault_tab(&mut pane.vault, piece, tab, db)
             }
         };
         if let Err(rejected) = placed {
@@ -1292,16 +1298,9 @@ impl App {
             | GridId::Shared
             | GridId::Relic => {
                 let vault_pane = self.right.as_mut().ok_or("load a vault first")?;
-                let preferred = vault_pane.selected.map_or(0, |(target, _)| match target {
-                    GridId::VaultTab(tab) => tab,
-                    GridId::Sack(_)
-                    | GridId::Equipment(_)
-                    | GridId::Bank
-                    | GridId::Shared
-                    | GridId::Relic => 0,
-                });
-                match transfer::place_in_vault(&mut vault_pane.vault, item, preferred, db) {
-                    Ok(tab) => {
+                let tab = vault_pane.open_tab;
+                match transfer::place_in_vault_tab(&mut vault_pane.vault, item, tab, db) {
+                    Ok(()) => {
                         vault_pane.dirty = true;
                         Ok(format!("copy of {label} → vault tab {}", tab + 1))
                     }
@@ -2129,8 +2128,9 @@ impl App {
             ui.label(
                 "Open (or drop) a Player.chr — its bank and the shared and relic banks load \
                  with it as tabs. A stash (.dxb/.dxg) or another vault (.json / legacy \
-                 .vault) opens alone too. Right-click sends an item to the other pane \
-                 (vault items land in the active tab); Shift+Right-click sends a copy; \
+                 .vault) opens alone too. The vault shows one tab at a time — pick \
+                 it in the strip. Right-click sends an item to the other pane, \
+                 landing in that pane's open tab; Shift+Right-click sends a copy; \
                  Shift+Click duplicates in place; double-click a completed relic, \
                  charm, or artifact to change its completion bonus; Alt+Click an \
                  item with a socketed relic/charm to extract it — both kept; drag \
@@ -4057,36 +4057,56 @@ fn show_vault_pane(
         }
     });
     ui.monospace(pane.path.display().to_string());
+    if pane.open_tab >= pane.vault.sacks.len() {
+        pane.open_tab = 0;
+    }
+    let cursor = ui.ctx().pointer_latest_pos();
+    ui.horizontal_wrapped(|ui| {
+        for (tab, sack) in pane.vault.sacks.iter().enumerate() {
+            let label = if sack.items.is_empty() {
+                format!("{}", tab + 1)
+            } else {
+                format!("{} ({})", tab + 1, sack.items.len())
+            };
+            let response = ui.add(egui::Button::selectable(pane.open_tab == tab, label));
+            // Mid-drag, pointing at a tab switches to it so any tab
+            // can receive the drop; egui suppresses hover while a
+            // widget drags, so the check is by pointer position.
+            let drag_over =
+                drag.is_some() && cursor.is_some_and(|cursor| response.rect.contains(cursor));
+            if (response.clicked() || drag_over) && pane.open_tab != tab {
+                pane.open_tab = tab;
+                pane.selected = None;
+            }
+        }
+    });
+    let Some(sack) = pane.vault.sacks.get(pane.open_tab) else {
+        ui.weak("This vault file has no tabs.");
+        return action;
+    };
     egui::ScrollArea::vertical()
         .id_salt("vault-pane")
         .show(ui, |ui| {
-            for (tab, sack) in pane.vault.sacks.iter().enumerate() {
-                let title = format!("Tab {} ({} items)", tab + 1, sack.items.len());
-                egui::CollapsingHeader::new(title)
-                    .default_open(tab == 0 || !sack.items.is_empty())
-                    .show(ui, |ui| {
-                        let entries: Vec<(usize, &Item)> = sack
-                            .items
-                            .iter()
-                            .enumerate()
-                            .map(|(index, entry)| (index, &entry.item))
-                            .collect();
-                        grid_view(
-                            ui,
-                            (
-                                univault_core::vault::TAB_WIDTH,
-                                univault_core::vault::TAB_HEIGHT,
-                            ),
-                            &entries,
-                            GridId::VaultTab(tab),
-                            &mut pane.selected,
-                            db,
-                            caches,
-                            drag,
-                            frame,
-                        );
-                    });
-            }
+            let entries: Vec<(usize, &Item)> = sack
+                .items
+                .iter()
+                .enumerate()
+                .map(|(index, entry)| (index, &entry.item))
+                .collect();
+            grid_view(
+                ui,
+                (
+                    univault_core::vault::TAB_WIDTH,
+                    univault_core::vault::TAB_HEIGHT,
+                ),
+                &entries,
+                GridId::VaultTab(pane.open_tab),
+                &mut pane.selected,
+                db,
+                caches,
+                drag,
+                frame,
+            );
         });
     action
 }

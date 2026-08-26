@@ -169,6 +169,36 @@ pub fn place_in_vault(
     Err(Rejected::no_room(item))
 }
 
+/// Places an item somewhere in one vault tab, never spilling into
+/// other tabs — the shell sends items to the tab the user has open,
+/// and a full tab is the user's problem to see, not silently
+/// worked around.
+///
+/// # Errors
+/// [`TransferError::BadIndex`] for an unknown tab;
+/// [`TransferError::NoRoom`] when that tab cannot fit the footprint.
+pub fn place_in_vault_tab(
+    vault: &mut Vault,
+    item: Item,
+    tab: usize,
+    db: Option<&GameCache>,
+) -> Result<(), Rejected> {
+    let (width, height) = footprint(db, &item);
+    let Some(sack) = vault.sacks.get_mut(tab) else {
+        return Err(Rejected::because(item, TransferError::BadIndex));
+    };
+    let taken = vault_occupancy(&sack.items, None, db);
+    match find_open_cells(&taken, width, height, TAB_WIDTH, TAB_HEIGHT) {
+        Some(position) => {
+            let mut item = item;
+            item.position = position;
+            sack.items.push(VaultItem::new(item, 0, 0));
+            Ok(())
+        }
+        None => Err(Rejected::no_room(item)),
+    }
+}
+
 /// Places an item into a character's inventory, trying
 /// `preferred_sack` first and then every sack. Returns the sack it
 /// landed in, or hands the item back on failure.
@@ -878,6 +908,51 @@ mod tests {
         assert_eq!(taken.base.file_stem(), "gladius");
         assert!(character.equipment.get(EquipSlot::RightHand).is_none());
         assert!(take_equipped(&mut character, EquipSlot::RightHand).is_none());
+    }
+
+    #[test]
+    fn place_in_vault_tab_never_spills_into_other_tabs() {
+        let mut vault = Vault::new(2);
+        place_in_vault_tab(
+            &mut vault,
+            item(r"records\item\equipmentweapon\sword_01.dbr"),
+            1,
+            None,
+        )
+        .unwrap();
+        assert!(vault.sacks[0].items.is_empty());
+        assert_eq!(vault.sacks[1].items.len(), 1);
+
+        // Fill tab 1 to the brim; the next placement reports NoRoom
+        // instead of drifting into the empty tab 0.
+        let mut placed = 1;
+        loop {
+            let overflow = place_in_vault_tab(
+                &mut vault,
+                item(r"records\item\equipmentweapon\sword_01.dbr"),
+                1,
+                None,
+            );
+            match overflow {
+                Ok(()) => placed += 1,
+                Err(rejected) => {
+                    assert_eq!(rejected.reason, TransferError::NoRoom);
+                    break;
+                }
+            }
+            assert!(placed < 1000, "tab never filled");
+        }
+        assert!(vault.sacks[0].items.is_empty());
+        assert_eq!(vault.sacks[1].items.len(), placed);
+
+        let rejected = place_in_vault_tab(
+            &mut vault,
+            item(r"records\item\equipmentweapon\sword_01.dbr"),
+            5,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(rejected.reason, TransferError::BadIndex);
     }
 
     #[test]
