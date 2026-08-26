@@ -102,8 +102,13 @@ that's better") and merged as PR #7.
   Cache format `UVC5` (shard icon + bonus tables per relic record;
   next launch re-imports, ~8s). Real-data gate: Boar's Hide level
   5, five bonuses w/ correct weights, distinct partial/complete
-  pixels, "+4 Armor" line renders. 160 tests. Risk: combine gesture
-  and modal visually unverified until the user drags real shards.
+  pixels, "+4 Armor" line renders. Same-day follow-up (user
+  request): the picker gained "Roll (game odds)" (weighted pick,
+  wall-clock entropy — deliberately not a statistical RNG), and
+  double-clicking any completed relic/charm re-opens the picker to
+  change or remove its bonus (current one marked). 162 tests. Risk:
+  combine gesture and modal visually unverified until the user
+  drags real shards.
 - **2026-08-25 — Stash `.dxg` twin fallback (bug fix).** The user's
   relic bank failed to reload: the game's save over SMB truncated
   `miscsys.dxb` mid-item (stored CRC didn't match the shortened

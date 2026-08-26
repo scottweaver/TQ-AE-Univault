@@ -11,7 +11,9 @@
 //! other vault file. Click or drag items across; right-click sends
 //! an item straight to the other pane (vault items land in the
 //! active tab); Shift+Right-click sends a copy; Shift+Click
-//! duplicates in place. Every edit autosaves after a short quiet
+//! duplicates in place; double-click a completed relic/charm to
+//! (re)pick its completion bonus — chosen from the list, rolled at
+//! the game's odds, or removed. Every edit autosaves after a short quiet
 //! period — the first write since a file was loaded goes
 //! backup-first, later writes reuse that backup. `Reload` re-reads
 //! the character and all banks from disk (confirmed when edits not
@@ -1423,6 +1425,9 @@ impl eframe::App for App {
         if let Some((grid, index)) = drag_frame.copy_across {
             self.status = Some(self.copy_across(grid, index));
         }
+        if let Some((grid, index)) = drag_frame.edit_bonus {
+            self.request_bonus_edit(grid, index);
+        }
         self.update_drag(ui.ctx(), drag_frame);
         match action {
             Some(PaneAction::MoveToVault) => self.status = Some(self.move_left_to_vault()),
@@ -1465,6 +1470,8 @@ struct PendingBonus {
     name: String,
     options: Vec<BonusOption>,
     total_weight: i64,
+    /// The bonus already on the piece, when re-picking.
+    current: Option<RecordId>,
 }
 
 /// One completion bonus the finished piece can take.
@@ -1634,7 +1641,8 @@ impl App {
                  with it as tabs. A stash (.dxb/.dxg) or another vault (.json / legacy \
                  .vault) opens alone too. Right-click sends an item to the other pane \
                  (vault items land in the active tab); Shift+Right-click sends a copy; \
-                 Shift+Click duplicates in place.",
+                 Shift+Click duplicates in place; double-click a completed relic or \
+                 charm to change its completion bonus.",
             );
         }
         match &self.status {
@@ -1821,7 +1829,7 @@ impl App {
         };
         let label = self.caches.names.record_name(db, &state.item.base);
         if outcome.target_completed {
-            self.begin_bonus_pick(grid, target_index, state.item.base.clone());
+            self.begin_bonus_pick(grid, target_index, state.item.base.clone(), None);
             Ok(format!(
                 "{label} completed ({needed}/{needed}) — choose its bonus"
             ))
@@ -1836,7 +1844,15 @@ impl App {
     /// Prepares the completion-bonus picker for the piece at
     /// `(grid, index)`; silently skipped when the record has no
     /// bonus table (the piece simply completes bonus-less).
-    fn begin_bonus_pick(&mut self, grid: GridId, index: usize, base: RecordId) {
+    /// `current` marks the bonus already on the piece when
+    /// re-picking.
+    fn begin_bonus_pick(
+        &mut self,
+        grid: GridId,
+        index: usize,
+        base: RecordId,
+        current: Option<RecordId>,
+    ) {
         let GameStatus::Loaded(db) = &self.game else {
             return;
         };
@@ -1867,7 +1883,33 @@ impl App {
             name,
             options,
             total_weight: total_weight.max(1),
+            current,
         });
+    }
+
+    /// Double-click on a completed relic/charm: re-open the bonus
+    /// picker for it. Other items are ignored; a partial piece gets
+    /// a hint instead.
+    fn request_bonus_edit(&mut self, grid: GridId, index: usize) {
+        let Ok(item) = self.item_at(grid, index) else {
+            return;
+        };
+        let needed = match &self.game {
+            GameStatus::Loaded(db) => db.completed_relic_level(&item.base),
+            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
+        };
+        let Some(needed) = needed else { return };
+        if item.var1 < needed {
+            self.status = Some(Err(format!(
+                "complete the piece first ({}/{needed} shards)",
+                item.var1
+            )));
+            return;
+        }
+        self.begin_bonus_pick(grid, index, item.base.clone(), item.relic_bonus.clone());
+        if self.pending_bonus.is_none() {
+            self.status = Some(Err("this piece has no bonus table".to_string()));
+        }
     }
 
     /// Writes the chosen completion bonus (or none) onto the
@@ -1889,9 +1931,9 @@ impl App {
         Ok(match choice {
             Some(record) => {
                 let bonus = self.caches.names.record_name(db, &record);
-                format!("{} completed — bonus: {bonus}", pending.name)
+                format!("{} — bonus: {bonus}", pending.name)
             }
-            None => format!("{} completed with no bonus", pending.name),
+            None => format!("{} — no bonus", pending.name),
         })
     }
 
@@ -1911,8 +1953,14 @@ impl App {
                 .show(ui, |ui| {
                     for option in &pending.options {
                         let odds = i64::from(option.weight.max(0)) * 100 / pending.total_weight;
+                        let is_current = pending.current.as_ref() == Some(&option.record);
+                        let label = if is_current {
+                            format!("{} — {odds}% (current)", option.name)
+                        } else {
+                            format!("{} — {odds}%", option.name)
+                        };
                         ui.group(|ui| {
-                            if ui.button(format!("{} — {odds}%", option.name)).clicked() {
+                            if ui.button(label).clicked() {
                                 choice = Some(Some(option.record.clone()));
                             }
                             for line in &option.lines {
@@ -1927,6 +1975,13 @@ impl App {
                 });
             ui.add_space(6.0);
             ui.horizontal(|ui| {
+                if ui.button("Roll (game odds)").clicked() {
+                    let weights: Vec<i32> =
+                        pending.options.iter().map(|option| option.weight).collect();
+                    if let Some(index) = weighted_index(&weights, entropy_roll()) {
+                        choice = Some(Some(pending.options[index].record.clone()));
+                    }
+                }
                 if ui.button("No bonus").clicked() {
                     choice = Some(None);
                 }
@@ -1936,10 +1991,13 @@ impl App {
         if let Some(choice) = choice {
             self.status = Some(self.apply_bonus(choice));
         } else if close || modal.should_close() {
-            // The piece stays bonus-less; there is no re-open path,
-            // which matches the game (an unpicked roll is forfeited).
+            // Nothing is written on close: a just-completed piece
+            // stays bonus-less, an edited piece keeps its bonus —
+            // double-click it any time to pick again.
             self.pending_bonus = None;
-            self.status = Some(Ok("completed without a bonus".to_string()));
+            self.status = Some(Ok(
+                "no bonus chosen — double-click the piece to pick later".to_string()
+            ));
         }
     }
 
@@ -2325,6 +2383,9 @@ struct DragFrame {
     /// A Shift+Right-click asking for a copy of the item at
     /// `(grid, index)` to be placed in the other pane.
     copy_across: Option<(GridId, usize)>,
+    /// A double-click asking to (re)pick the completion bonus of the
+    /// completed relic/charm at `(grid, index)`.
+    edit_bonus: Option<(GridId, usize)>,
 }
 
 /// Paints a container as its actual cell grid, with items at their
@@ -2418,7 +2479,9 @@ fn grid_view(
             && item_rect.contains(pointer)
         {
             hovered = Some(item);
-            if response.clicked() {
+            if response.double_clicked() {
+                frame.edit_bonus = Some((grid, *index));
+            } else if response.clicked() {
                 if ui.ctx().input(|input| input.modifiers.shift) {
                     frame.duplicate = Some((grid, *index));
                 } else {
@@ -2609,6 +2672,35 @@ fn paint_drop_preview(
         fits,
         combine_with: None,
     }
+}
+
+/// Picks an index by cumulative weight from a roll; `None` when
+/// every weight is zero or negative.
+fn weighted_index(weights: &[i32], roll: u64) -> Option<usize> {
+    let clamp = |weight: &i32| u64::try_from((*weight).max(0)).unwrap_or(0);
+    let total: u64 = weights.iter().map(clamp).sum();
+    if total == 0 {
+        return None;
+    }
+    let mut point = roll % total;
+    for (index, weight) in weights.iter().enumerate() {
+        let weight = clamp(weight);
+        if point < weight {
+            return Some(index);
+        }
+        point -= weight;
+    }
+    None
+}
+
+/// A per-click roll from the wall clock — plenty for picking a game
+/// bonus, deliberately not a statistical RNG.
+fn entropy_roll() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::from(elapsed.subsec_nanos()) ^ elapsed.as_secs().rotate_left(20)
+        })
 }
 
 /// The grid cell a point lands in, clamped so the footprint stays
@@ -3018,6 +3110,25 @@ mod tests {
         assert_eq!(empty.file, None);
         // A dangling flag consumes nothing and breaks nothing.
         assert_eq!(args(&["--game"]).game_dir, None);
+    }
+
+    #[test]
+    fn weighted_index_walks_cumulative_weights() {
+        let weights = [900, 300, 300];
+        assert_eq!(weighted_index(&weights, 0), Some(0));
+        assert_eq!(weighted_index(&weights, 899), Some(0));
+        assert_eq!(weighted_index(&weights, 900), Some(1));
+        assert_eq!(weighted_index(&weights, 1199), Some(1));
+        assert_eq!(weighted_index(&weights, 1200), Some(2));
+        // The roll wraps around the total.
+        assert_eq!(weighted_index(&weights, 1500), Some(0));
+    }
+
+    #[test]
+    fn weighted_index_skips_nonpositive_weights() {
+        assert_eq!(weighted_index(&[0, 5, -3], 0), Some(1));
+        assert_eq!(weighted_index(&[0, 0], 7), None);
+        assert_eq!(weighted_index(&[], 7), None);
     }
 
     #[test]
