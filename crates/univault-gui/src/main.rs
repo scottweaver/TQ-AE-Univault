@@ -123,6 +123,16 @@ impl StashSlot {
     }
 }
 
+/// How a stash open concluded.
+enum StashOpened {
+    Loaded,
+    /// The `.dxb` was unreadable; the `.dxg` twin supplied the data
+    /// and the repaired image will autosave back over the bad file.
+    RecoveredFromTwin,
+    /// A dirty pane already holding this path was kept untouched.
+    KeptDirty,
+}
+
 /// The left pane's tab strip: which document is on screen.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LeftTab {
@@ -440,7 +450,17 @@ impl App {
                 let slot = stash_slot_for(path);
                 let opened = self.open_stash(slot, path)?;
                 self.recents.remember(path);
-                Ok(opened)
+                Ok(match opened {
+                    StashOpened::Loaded => format!("opened {}", path.display()),
+                    StashOpened::RecoveredFromTwin => format!(
+                        "opened {} — recovered from its .dxg twin (the .dxb was corrupt); \
+                         the repaired file saves automatically",
+                        path.display()
+                    ),
+                    StashOpened::KeptDirty => {
+                        format!("{} already open with unsaved edits", path.display())
+                    }
+                })
             }
             _ => self.open_character_file(path),
         }
@@ -488,7 +508,13 @@ impl App {
         let label = slot.label();
         if let Some(path) = found {
             match self.open_stash(slot, &path) {
-                Ok(_) => notes.push(format!("{label} loaded")),
+                Ok(StashOpened::Loaded) => notes.push(format!("{label} loaded")),
+                Ok(StashOpened::RecoveredFromTwin) => notes.push(format!(
+                    "{label} recovered from its .dxg twin — repaired file saves automatically"
+                )),
+                Ok(StashOpened::KeptDirty) => {
+                    notes.push(format!("{label} kept — unsaved edits"));
+                }
                 Err(error) => notes.push(format!("{label} unreadable: {error}")),
             }
             return;
@@ -512,29 +538,50 @@ impl App {
 
     /// Parses a stash file into its slot. A dirty pane already
     /// holding the same path is kept as-is — reopening must not
-    /// discard unsaved edits.
-    fn open_stash(&mut self, slot: StashSlot, path: &Path) -> Result<String, String> {
+    /// discard unsaved edits. An unreadable `.dxb` falls back to its
+    /// `.dxg` twin — the game's own recovery for a corrupt or
+    /// truncated write — and the repaired image saves back
+    /// automatically (backup-first, so the bad file is kept).
+    fn open_stash(&mut self, slot: StashSlot, path: &Path) -> Result<StashOpened, String> {
         self.backed_up.remove(path);
         let pane = self.stash_slot_mut(slot);
         if pane
             .as_ref()
             .is_some_and(|pane| pane.path == path && pane.dirty)
         {
-            return Ok(format!(
-                "{} already open with unsaved edits",
-                path.display()
-            ));
+            return Ok(StashOpened::KeptDirty);
         }
-        let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
-        let stash = stash::parse_stash(&bytes).map_err(|error| error.to_string())?;
-        *pane = Some(StashPane {
+        let direct = std::fs::read(path)
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| {
+                let stash = stash::parse_stash(&bytes).map_err(|error| error.to_string())?;
+                Ok((bytes, stash))
+            });
+        let (original, stash, opened) = match direct {
+            Ok((bytes, stash)) => (bytes, stash, StashOpened::Loaded),
+            Err(error) => {
+                let recovered = std::fs::read(path.with_extension("dxg"))
+                    .ok()
+                    .and_then(|twin| stash::restore_from_twin(&twin).ok())
+                    .and_then(|restored| {
+                        let stash = stash::parse_stash(&restored).ok()?;
+                        Some((restored, stash))
+                    });
+                let Some((restored, stash)) = recovered else {
+                    return Err(error);
+                };
+                (restored, stash, StashOpened::RecoveredFromTwin)
+            }
+        };
+        let dirty = matches!(opened, StashOpened::RecoveredFromTwin);
+        *self.stash_slot_mut(slot) = Some(StashPane {
             path: path.to_path_buf(),
-            original: bytes,
+            original,
             stash,
-            dirty: false,
+            dirty,
         });
         self.left_selected = None;
-        Ok(format!("opened {}", path.display()))
+        Ok(opened)
     }
 
     fn open_vault(&mut self, path: &Path) -> Result<String, String> {

@@ -25,7 +25,11 @@ feature branches deleted local+remote, gates green on merged main:
   TQVaultAE.
 - App checks worth a mention next session: autosave against the
   network mount (one `univault-bak` per file per session), TQVaultAE
-  opening the default vault JSON.
+  opening the default vault JSON. Relic-bank `.dxb` truncation
+  (game-side partial write over SMB) hit 2026-08-25; recovered via
+  the new twin fallback — the truncated write's newest relic (a
+  Hecate's Crescent shard) was lost with it and can be re-duplicated
+  in-app if wanted.
 - PROJECT.md bootstrap still deferred (user re-confirmed 2026-08-25);
   answers saved in agent memory (bootstrap-project-deferred).
 
@@ -86,6 +90,19 @@ that's better") and merged as PR #7.
 
 ## Most recent meaningful progress
 
+- **2026-08-25 — Stash `.dxg` twin fallback (bug fix).** The user's
+  relic bank failed to reload: the game's save over SMB truncated
+  `miscsys.dxb` mid-item (stored CRC didn't match the shortened
+  bytes). The complete `.dxg` twin sat beside it — the game's own
+  recovery path — so `stash::restore_from_twin` (inverse of
+  `backup_twin`, shared `patched_name_copy` core) now backs
+  `open_stash`: an unreadable `.dxb` loads from its twin, marked
+  dirty so autosave writes the repaired file back through
+  backup-first (the corrupt original becomes the backup). Proven
+  against the real corrupt file: 30 relics recovered, resplice
+  byte-identical. 156 tests. Risk: only the truncated write's
+  newest item is unrecoverable (it existed nowhere but the cut
+  bytes).
 - **2026-08-25 — Default vault + bank/shared/relic panes +
   Shift+Click duplicate.** The user's prompt asks after real use: a
   vault file now exists without setup (`<config>/vaults/Main
@@ -287,19 +304,6 @@ that's better") and merged as PR #7.
   UTF-8. 95+ tests; cache answers verified identical to live data
   across all real characters. Risk: cache format is versioned only
   by magic — bump `UVC1` on layout changes.
-- **2026-08-24 — Grid rendering with item icons.** `tex::decode`
-  turns the game's uncompressed 32-bit BGRA / 24-bit BGR textures
-  into RGBA (a probe of the real install put those at 99.9% of item
-  bitmaps; DXT stragglers fall back to an initial-letter tile);
-  `GameData::item_icon` serves decoded images. The GUI paints
-  sacks/stash/vault tabs as real cell grids — items at their
-  positions with true footprints, icon textures, stack badges,
-  selection highlight, hover-name tooltips — via per-record caches
-  (names/footprints/icons) so nothing expensive runs per frame.
-  96 tests. Why: it finally looks like a vault, not a debugger.
-  Risk: rendering is visually unverified until the user runs it;
-  egui texture memory grows unbounded with the icon cache (fine at
-  item-bitmap sizes).
 ## Blocked / waiting
 
 - *(nothing)*

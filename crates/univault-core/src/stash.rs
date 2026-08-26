@@ -153,7 +153,24 @@ fn cell_to_offset(cell: i32) -> f32 {
 /// # Errors
 /// The parse errors of locating `fName`.
 pub fn backup_twin(dxb: &[u8]) -> Result<Vec<u8>, StashError> {
-    let mut reader = ByteReader::new(dxb);
+    patched_name_copy(dxb, [b'b', b'B'], b'g')
+}
+
+/// Rebuilds `.dxb` bytes from a `.dxg` backup twin — the inverse of
+/// [`backup_twin`], for recovering a corrupt or truncated `.dxb` the
+/// way the game does (the twin is a complete copy of the last good
+/// write).
+///
+/// # Errors
+/// The parse errors of locating `fName`.
+pub fn restore_from_twin(dxg: &[u8]) -> Result<Vec<u8>, StashError> {
+    patched_name_copy(dxg, [b'g', b'G'], b'b')
+}
+
+/// A copy of `data` with the stored `fName`'s trailing byte patched
+/// (when it is one of `from`) and the leading CRC recomputed.
+fn patched_name_copy(data: &[u8], from: [u8; 2], to: u8) -> Result<Vec<u8>, StashError> {
+    let mut reader = ByteReader::new(data);
     reader.read_i32().map_err(ParseError::from)?;
     for key in ["begin_block", "stashVersion"] {
         reader.expect_key(key).map_err(ParseError::from)?;
@@ -165,16 +182,16 @@ pub fn backup_twin(dxb: &[u8]) -> Result<Vec<u8>, StashError> {
         .map_err(|_| StashError::InvalidItemCount { count: name_length })?;
     let last_name_byte = reader.pos() + name_length.saturating_sub(1);
 
-    let mut twin = dxb.to_vec();
-    if let Some(byte) = twin.get_mut(last_name_byte)
-        && (*byte == b'b' || *byte == b'B')
+    let mut copy = data.to_vec();
+    if let Some(byte) = copy.get_mut(last_name_byte)
+        && from.contains(byte)
     {
-        *byte = b'g';
+        *byte = to;
     }
-    twin[..4].fill(0);
-    let crc = stash_crc(&twin);
-    twin[..4].copy_from_slice(&crc.to_le_bytes());
-    Ok(twin)
+    copy[..4].fill(0);
+    let crc = stash_crc(&copy);
+    copy[..4].copy_from_slice(&crc.to_le_bytes());
+    Ok(copy)
 }
 
 /// `TQVaultAE`'s `CalculateCRC`: the standard reflected CRC-32 table
@@ -312,6 +329,25 @@ mod tests {
         zeroed[..4].fill(0);
         assert_eq!(twin[..4], stash_crc(&zeroed).to_le_bytes());
         assert_eq!(parse_stash(&twin).unwrap(), parse_stash(&original).unwrap());
+    }
+
+    #[test]
+    fn restore_from_twin_round_trips_the_dxb_image() {
+        let mut original = stash_file();
+        let crc = {
+            let mut zeroed = original.clone();
+            zeroed[..4].fill(0);
+            stash_crc(&zeroed)
+        };
+        original[..4].copy_from_slice(&crc.to_le_bytes());
+
+        let twin = backup_twin(&original).unwrap();
+        let restored = restore_from_twin(&twin).unwrap();
+        assert_eq!(restored, original, "twin restore must invert backup_twin");
+
+        let name_at = crate::reader::find_key(&restored, "fName", 0).unwrap();
+        let mut reader = crate::reader::ByteReader::at(&restored, name_at);
+        assert_eq!(reader.read_cstring().unwrap(), "winsys.dxb");
     }
 
     #[test]
