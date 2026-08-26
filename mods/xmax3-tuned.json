@@ -73,6 +73,25 @@
         "records\\skills\\nature\\pet\\wolf_20.dbr"
       ],
       "multiply": { "characterMana": 2.5, "characterManaRegen": 1.75 }
+    },
+    {
+      "kind": "record",
+      "record": "records\\skills\\earth\\pet\\coredwellerskill_provoke.dbr",
+      "set": {
+        "skillTargetRadius": 8.0,
+        "offensiveTauntMax": [
+          12.0, 12.0, 12.0, 12.0, 12.0, 12.0, 12.0, 12.0, 12.0, 12.0,
+          12.0, 12.0, 13.0, 13.0, 14.0, 15.0, 16.0, 16.0, 17.0, 18.0
+        ]
+      }
+    },
+    {
+      "kind": "record",
+      "record": "records\\skills\\earth\\coredweller_petskill_wildfire.dbr",
+      "set": {
+        "offensiveSlowOffensiveAbilityDurationMin": 3.0,
+        "offensiveSlowRunSpeedDurationMin": 3.0
+      }
     }
   ]
 }

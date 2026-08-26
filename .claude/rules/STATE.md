@@ -5,7 +5,7 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-25
+Last updated: 2026-08-26
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
@@ -32,8 +32,9 @@ green (162 tests). Pick the next item from "Next up".
   ×2.5 / regen ×1.75 on Core Dweller (875 / 5.25 at level 20) and
   Call of the Wild wolves (255 / 3.5); vanilla XP restored
   (even-level trash mob on Normal ≈ level×15); target caps ×3 in
-  dense packs. Older residual: open one of our vault JSONs in
-  TQVaultAE.
+  dense packs; 2026-08-26 Core Dweller tune — Provoke 8m radius,
+  taunt-max floored at 12, Wildfire OA/movement debuffs 3s. Older
+  residual: open one of our vault JSONs in TQVaultAE.
 - App checks worth a mention next session: autosave against the
   network mount (one `univault-bak` per file per session). The
   2026-08-25 relic-bank `.dxb` truncation was game-side; the twin
@@ -100,6 +101,16 @@ that's better") and merged as PR #7.
 
 ## Most recent meaningful progress
 
+- **2026-08-26 — Core Dweller Provoke/Wildfire tune.** Three user
+  asks via two new `record` rules in `mods/xmax3-tuned.json`:
+  Provoke `skillTargetRadius` 3 → 8m and `offensiveTauntMax`
+  floored at 12 (user identified the variable; levels already
+  above 12 keep their higher values); Wildfire's OA and
+  movement-slow debuff durations 1s → 3s (burn duration untouched
+  per the user's clarification). Bundle rebuilt + reinstalled,
+  installed arz dump-verified. Risk: "range 5m" read as +5m on the
+  3m base — if the user meant 5m total, one number to change;
+  in-game check pending.
 - **2026-08-26 — Shard icons + in-app charm combining.** Two user
   asks: partial relics/charms now render the game's `shardBitmap`
   art (complete pieces keep `relicBitmap`), so partials read at a
@@ -310,19 +321,6 @@ that's better") and merged as PR #7.
   TQVaultAE, giving "Light Pine Buckler Ornate of Strength"; magic
   bumped to `UVC4` (content bumps use the magic too) so caches
   rebuild themselves.
-- **2026-08-25 — Rarity-colored item tooltips.** New core `style`
-  module ports TQVaultAE's `Item.ItemStyle` decision order and the
-  game's exact text-palette RGB values (MIT refs fetched from the
-  repo — no local checkout). Hovering a grid item now shows a
-  dark game-style tooltip: name in its rarity color, style caption,
-  relic/charm piece progress (`completedRelicLevel` now cached),
-  and socketed-relic names. Cache entries gained classification +
-  kind — magic bumped `UVC1`→`UVC2`, so the next launch re-imports
-  (game volume must be reachable once). Unknown records fall back
-  to TQVaultAE's record-path heuristics, so items color sensibly
-  even with no game data. 105 tests. Risk: tooltip visuals
-  unverified until the user hovers a real grid; path fallback skips
-  TQVaultAE's Eternal Embers special-case relic lists.
 ## Blocked / waiting
 
 - *(nothing)*
