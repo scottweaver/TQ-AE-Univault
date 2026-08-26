@@ -375,6 +375,73 @@ pub fn combine_shards(target: &mut Item, source: &mut Item, needed: i32) -> Comb
     }
 }
 
+/// Which socket of a gear item holds the piece to extract: the
+/// classic relic/charm socket, or the Atlantis-era second socket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelicSlot {
+    First,
+    Second,
+}
+
+/// Why an extraction failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ExtractError {
+    #[error("nothing is socketed in that slot")]
+    NoRelic,
+}
+
+/// The socket an extraction would take from, first socket first;
+/// `None` when nothing is socketed.
+#[must_use]
+pub fn socketed_slot(item: &Item) -> Option<RelicSlot> {
+    if item.relic.is_some() {
+        return Some(RelicSlot::First);
+    }
+    item.atlantis
+        .as_ref()
+        .and_then(|extra| extra.relic.as_ref())
+        .map(|_| RelicSlot::Second)
+}
+
+/// Splits the socketed relic/charm out of `gear` without destroying
+/// either side — the app-side alternative to the Enchanter's
+/// destroy-one-half recovery. The returned standalone piece carries
+/// the socket's shard count (clamped to the record's completion
+/// level — the second socket stores a completed-marker sentinel, not
+/// a count) and the socket's completion bonus; the gear keeps
+/// everything else. On error, `gear` is unchanged.
+///
+/// # Errors
+/// [`ExtractError::NoRelic`] when the requested socket is empty.
+pub fn extract_relic(
+    db: Option<&GameCache>,
+    gear: &mut Item,
+    slot: RelicSlot,
+) -> Result<Item, ExtractError> {
+    let (record, bonus, count) = match slot {
+        RelicSlot::First => {
+            let record = gear.relic.take().ok_or(ExtractError::NoRelic)?;
+            let bonus = gear.relic_bonus.take();
+            let count = gear.var1;
+            gear.var1 = 0;
+            (record, bonus, count)
+        }
+        RelicSlot::Second => {
+            let extra = gear.atlantis.take().ok_or(ExtractError::NoRelic)?;
+            let Some(record) = extra.relic else {
+                gear.atlantis = Some(extra);
+                return Err(ExtractError::NoRelic);
+            };
+            (record, extra.bonus, extra.var2)
+        }
+    };
+    let mut piece = Item::bare(record, gear.seed);
+    let needed = db.and_then(|db| db.completed_relic_level(&piece.base));
+    piece.var1 = needed.map_or_else(|| count.max(1), |needed| count.max(1).min(needed));
+    piece.relic_bonus = bonus;
+    Ok(piece)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -473,6 +540,62 @@ mod tests {
         );
         let data = GameData::from_parts(ArzFile::parse(builder.build()).unwrap(), TextDb::new());
         data.build_cache(Vec::new())
+    }
+
+    #[test]
+    fn extract_keeps_gear_and_returns_the_piece_with_its_count_and_bonus() {
+        let db = charm_db();
+        let bonus = RecordId::parse(r"records\item\bonus.dbr".to_string()).unwrap();
+        let mut gear = shard(r"records\item\equipmentweapon\sword.dbr", 0);
+        gear.relic =
+            Some(RecordId::parse(r"records\item\animalrelics\boarhide.dbr".to_string()).unwrap());
+        gear.relic_bonus = Some(bonus.clone());
+        gear.var1 = 2;
+        assert_eq!(socketed_slot(&gear), Some(RelicSlot::First));
+
+        let piece = extract_relic(Some(&db), &mut gear, RelicSlot::First).unwrap();
+        assert_eq!(
+            piece.base.as_str(),
+            r"records\item\animalrelics\boarhide.dbr"
+        );
+        assert_eq!(piece.var1, 2);
+        assert_eq!(piece.relic_bonus, Some(bonus));
+        assert_eq!(gear.relic, None);
+        assert_eq!(gear.relic_bonus, None);
+        assert_eq!(gear.var1, 0);
+        assert_eq!(socketed_slot(&gear), None);
+    }
+
+    #[test]
+    fn extract_second_socket_clamps_the_completed_sentinel() {
+        let db = charm_db();
+        let mut gear = shard(r"records\item\equipmentweapon\sword.dbr", 0);
+        gear.atlantis = Some(crate::chr::AtlantisRelic {
+            relic: RecordId::parse(r"records\item\animalrelics\boarhide.dbr".to_string()),
+            bonus: None,
+            var2: crate::vault::VAR2_DEFAULT,
+        });
+        assert_eq!(socketed_slot(&gear), Some(RelicSlot::Second));
+
+        let piece = extract_relic(Some(&db), &mut gear, RelicSlot::Second).unwrap();
+        // The sentinel means "completed", not a count of two million.
+        assert_eq!(piece.var1, 3);
+        assert!(gear.atlantis.is_none());
+    }
+
+    #[test]
+    fn extract_from_an_empty_socket_changes_nothing() {
+        let mut gear = shard(r"records\item\equipmentweapon\sword.dbr", 0);
+        let before = gear.clone();
+        assert_eq!(
+            extract_relic(None, &mut gear, RelicSlot::First),
+            Err(ExtractError::NoRelic)
+        );
+        assert_eq!(
+            extract_relic(None, &mut gear, RelicSlot::Second),
+            Err(ExtractError::NoRelic)
+        );
+        assert_eq!(gear, before);
     }
 
     #[test]
