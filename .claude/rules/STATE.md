@@ -10,12 +10,12 @@ Last updated: 2026-08-25
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** nothing in flight — PRs #7 (default vault, bank
-tabs, right-click sends, copy/duplicate, Reload, autosave) and #8
-(pet Energy tuning in the mod spec) merged 2026-08-25 after user
-acceptance ("Ah, that's better"); post-merge cleanup done (all
-feature branches deleted local+remote, gates green on merged main:
-155 tests, clippy clean). Pick the next item from "Next up".
+**Resume here:** nothing in flight — the 2026-08-26 batch (PR #12
+shard icons + combining, #13 workflow_dispatch, #14 bonus
+roll/re-pick + artifacts) merged and user-ACCEPTED ("everything
+seems to be working"); post-merge cleanup done, main green (162
+tests, CI validated via manual dispatch during the Actions
+outage). Pick the next item from "Next up".
 
 - User in-game checks outstanding (mod acceptance): pet Energy
   ×2.5 / regen ×1.75 on Core Dweller (875 / 5.25 at level 20) and
@@ -110,9 +110,9 @@ that's better") and merged as PR #7.
   their bonus table lives on the formula record
   (`artifactBonusTableName`), attached to the artifact entry at
   import (`UVC6`; probe: Thunderfist 7 bonuses, "of Annihilation"
-  +25% Physical Damage). 162 tests. Risk:
-  combine gesture and modal visually unverified until the user
-  drags real shards.
+  +25% Physical Damage). 162 tests. ACCEPTED
+  2026-08-26: "everything seems to be working" — shard art,
+  combining, picker, roll, re-pick, and artifacts verified in use.
 - **2026-08-25 — Stash `.dxg` twin fallback (bug fix).** The user's
   relic bank failed to reload: the game's save over SMB truncated
   `miscsys.dxb` mid-item (stored CRC didn't match the shortened
