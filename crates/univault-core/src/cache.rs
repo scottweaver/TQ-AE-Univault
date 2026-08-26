@@ -8,13 +8,14 @@
 //!
 //! Format (all little-endian, strings length-prefixed **UTF-8** —
 //! localized names exceed Windows-1252, e.g. Ragnarök's
-//! "Jǫrmungandr"): `UVC5` magic, source-fingerprint list (path, size,
+//! "Jǫrmungandr"): `UVC6` magic, source-fingerprint list (path, size,
 //! mtime seconds), a table of runtime display labels, then entries
 //! keyed by normalized record path: name, footprint, classification
 //! and kind tags, an optional JSON-encoded stat block, an optional
 //! zlib-compressed RGBA icon, an optional second icon (the relic/
 //! charm shard art shown while incomplete), and the completion-bonus
-//! table (record path + weight pairs) for relics and charms.
+//! table (record path + weight pairs) for relics, charms, and
+//! artifacts (an artifact inherits its formula's table).
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -34,7 +35,7 @@ use crate::writer::{write_i32, write_i64};
 // The magic is the cache's only version: bump it for layout changes
 // AND for content-generation changes (names, stat rendering), so
 // existing caches rebuild automatically.
-const MAGIC: i32 = 0x3543_5655; // "UVC5"
+const MAGIC: i32 = 0x3643_5655; // "UVC6"
 
 /// Identity of one source file at import time; the shell compares
 /// these against the live files to detect a game update.
@@ -188,8 +189,9 @@ impl GameCache {
             .is_some_and(|needed| item.var1 < needed)
     }
 
-    /// The completion bonuses a relic/charm can roll, as game-style
-    /// record paths with their table weights; empty for other kinds.
+    /// The completion bonuses a relic/charm/artifact can roll, as
+    /// game-style record paths with their table weights; empty for
+    /// other kinds (an artifact inherits its formula's table).
     #[must_use]
     pub fn relic_bonuses(&self, id: &RecordId) -> &[(String, i32)] {
         self.entry(id).map_or(&[], |entry| entry.bonuses.as_slice())

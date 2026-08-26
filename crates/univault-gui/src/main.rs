@@ -11,9 +11,9 @@
 //! other vault file. Click or drag items across; right-click sends
 //! an item straight to the other pane (vault items land in the
 //! active tab); Shift+Right-click sends a copy; Shift+Click
-//! duplicates in place; double-click a completed relic/charm to
-//! (re)pick its completion bonus — chosen from the list, rolled at
-//! the game's odds, or removed. Every edit autosaves after a short quiet
+//! duplicates in place; double-click a completed relic/charm or an
+//! artifact to (re)pick its completion bonus — chosen from the list,
+//! rolled at the game's odds, or removed. Every edit autosaves after a short quiet
 //! period — the first write since a file was loaded goes
 //! backup-first, later writes reuse that backup. `Reload` re-reads
 //! the character and all banks from disk (confirmed when edits not
@@ -1641,8 +1641,8 @@ impl App {
                  with it as tabs. A stash (.dxb/.dxg) or another vault (.json / legacy \
                  .vault) opens alone too. Right-click sends an item to the other pane \
                  (vault items land in the active tab); Shift+Right-click sends a copy; \
-                 Shift+Click duplicates in place; double-click a completed relic or \
-                 charm to change its completion bonus.",
+                 Shift+Click duplicates in place; double-click a completed relic, \
+                 charm, or artifact to change its completion bonus.",
             );
         }
         match &self.status {
@@ -1887,29 +1887,36 @@ impl App {
         });
     }
 
-    /// Double-click on a completed relic/charm: re-open the bonus
-    /// picker for it. Other items are ignored; a partial piece gets
-    /// a hint instead.
+    /// Double-click on a completed relic/charm or an artifact:
+    /// re-open the bonus picker for it. Other items are ignored; a
+    /// partial relic piece gets a hint instead.
     fn request_bonus_edit(&mut self, grid: GridId, index: usize) {
         let Ok(item) = self.item_at(grid, index) else {
             return;
         };
-        let needed = match &self.game {
-            GameStatus::Loaded(db) => db.completed_relic_level(&item.base),
-            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
+        let (needed, has_table) = match &self.game {
+            GameStatus::Loaded(db) => (
+                db.completed_relic_level(&item.base),
+                !db.relic_bonuses(&item.base).is_empty(),
+            ),
+            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => (None, false),
         };
-        let Some(needed) = needed else { return };
-        if item.var1 < needed {
+        if let Some(needed) = needed
+            && item.var1 < needed
+        {
             self.status = Some(Err(format!(
                 "complete the piece first ({}/{needed} shards)",
                 item.var1
             )));
             return;
         }
-        self.begin_bonus_pick(grid, index, item.base.clone(), item.relic_bonus.clone());
-        if self.pending_bonus.is_none() {
-            self.status = Some(Err("this piece has no bonus table".to_string()));
+        if !has_table {
+            if needed.is_some() {
+                self.status = Some(Err("this piece has no bonus table".to_string()));
+            }
+            return;
         }
+        self.begin_bonus_pick(grid, index, item.base.clone(), item.relic_bonus.clone());
     }
 
     /// Writes the chosen completion bonus (or none) onto the
