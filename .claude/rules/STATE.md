@@ -10,19 +10,22 @@ Last updated: 2026-08-25
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** `feat/banks-and-default-vault` (PR open) — default
-vault + character/shared-bank panes; the user running the app is
-the acceptance gate; merge + post-merge cleanup once it passes.
+**Resume here:** nothing in flight — PRs #7 (default vault, bank
+tabs, right-click sends, copy/duplicate, Reload, autosave) and #8
+(pet Energy tuning in the mod spec) merged 2026-08-25 after user
+acceptance ("Ah, that's better"); post-merge cleanup done (all
+feature branches deleted local+remote, gates green on merged main:
+155 tests, clippy clean). Pick the next item from "Next up".
 
-- PR #5 (drag-and-drop) merged 2026-08-25 with user sign-off on the
-  branch point; its branch is deleted local+remote. Drag feel-test
-  now happens alongside the new panes.
-- Post-merge cleanup debt: merged remote branches feat/ci-and-test-coverage,
-  feat/backup-rotation, feat/skill-export, feat/mod-forge still on origin —
-  deletion awaits user confirmation.
-- User in-game checks outstanding (mod acceptance): vanilla XP restored
-  (even-level trash mob on Normal ≈ level×15); target caps ×3 in dense
-  packs. Older residual: open one of our vault JSONs in TQVaultAE.
+- User in-game checks outstanding (mod acceptance): pet Energy
+  ×2.5 / regen ×1.75 on Core Dweller (875 / 5.25 at level 20) and
+  Call of the Wild wolves (255 / 3.5); vanilla XP restored
+  (even-level trash mob on Normal ≈ level×15); target caps ×3 in
+  dense packs. Older residual: open one of our vault JSONs in
+  TQVaultAE.
+- App checks worth a mention next session: autosave against the
+  network mount (one `univault-bak` per file per session), TQVaultAE
+  opening the default vault JSON.
 - PROJECT.md bootstrap still deferred (user re-confirmed 2026-08-25);
   answers saved in agent memory (bootstrap-project-deferred).
 
@@ -34,10 +37,15 @@ companion app for Titan Quest — in Rust (workspace: `univault-core`
 pure logic, `univault-gui` egui/eframe shell). Working today: full
 read stack (chr, stash, vault JSON + legacy import, ARZ/ARC/text/
 textures) with localized names, real footprints, and icons; grid
-rendering; two-pane vault ⇄ character/stash transfers; gold editing;
-backup-first splice saves — user-accepted against a real
-network-mounted save tree. Binding decisions in ARCHITECTURE.md
-(backup-first + targeted-splice writes, TQVaultAE JSON vault schema,
+rendering; left tab strip (inventory + character/shared/relic banks,
+auto-discovered from the character path) ⇄ auto-created default
+vault, with drag-and-drop, right-click sends, copy/duplicate,
+respec, Reload, gold editing, and autosaved backup-first splice
+writes — user-accepted against a real network-mounted save tree.
+The mod forge (arz composer + patch specs) tunes the user's live
+LootPlus x3 mod. Binding decisions in ARCHITECTURE.md
+(autosave + per-load backup-first + targeted-splice writes,
+TQVaultAE JSON vault schema,
 hand-rolled parsers ported from MIT TQVaultAE — GPL refs eyes-only,
 docs/format-references.md; MIT OR Apache-2.0; TQ AE + expansions
 only). No issue tracker is bound yet (deliberately deferred).
@@ -46,8 +54,7 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | tooltips + CI + respec + skill export + mod forge + drag-and-drop merged (PRs #1–#5); all gates green |
-| `feat/banks-and-default-vault` | default vault file + character/shared bank panes | PR opening |
+| `main` | trunk | PRs #1–#8 merged (latest: bank tabs + default vault + autosave #7, pet Energy mod tuning #8); all gates green |
 
 ## Next up
 
@@ -67,14 +74,14 @@ it works great!" — both respec buttons verified in-game. Residual
 check whenever convenient: confirm a transferred-back item in-game
 and open our vault JSON in TQVaultAE.
 
-1. Default vault + bank/shared-bank access — **in flight on
-   `feat/banks-and-default-vault`** (user's three prompt asks after
-   first real use; awaiting the user's app run and PR merge).
-2. Game-install auto-discovery (Steam library paths per OS in
+Default vault + bank tabs + autosave ACCEPTED 2026-08-25 ("Ah,
+that's better") and merged as PR #7.
+
+1. Game-install auto-discovery (Steam library paths per OS in
    `platform`) to preseed the one-time Import dialog.
-3. DXT1/3 decode for the ~7 compressed item bitmaps (currently an
+2. DXT1/3 decode for the ~7 compressed item bitmaps (currently an
    initial-letter fallback tile).
-4. Stretch (unscheduled): local SQLite index across vaults for
+3. Stretch (unscheduled): local SQLite index across vaults for
    search — would be additive, vault files stay the source of truth.
 
 ## Most recent meaningful progress
