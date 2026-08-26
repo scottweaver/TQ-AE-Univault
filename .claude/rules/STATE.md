@@ -88,8 +88,10 @@ and open our vault JSON in TQVaultAE.
   it), the shared bank (`Sys/winsys.dxb`), and the relic bank
   (`Sys/miscsys.dxb`, Atlantis+) as grid sections in the left pane,
   each with its own Save (stash splice + `.dxg` twin,
-  backup-first); Shift+Click duplicates an item in place (same
-  seed = exact copy, auto-placed, spilling to sibling sacks/tabs).
+  backup-first); right-click sends an item straight to the other
+  pane (left → vault, vault → left); Shift+Click duplicates an
+  item in place (same seed = exact copy, auto-placed, spilling to
+  sibling sacks/tabs).
   Underneath: the left pane became independent documents
   (`CharacterPane` + three `StashPane`s), `GridId` gained
   `Bank`/`Shared`/`Relic`, selection is `(GridId, index)`

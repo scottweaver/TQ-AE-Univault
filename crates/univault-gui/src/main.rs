@@ -8,7 +8,8 @@
 //! winsys.dxb` and `miscsys.dxb`). Right pane: a vault — the
 //! default vault under the config directory opens (and is created)
 //! at launch; `Open vault…` swaps in any other vault file. Click or
-//! drag items across, Shift+Click to duplicate, save per file.
+//! drag items across, right-click to send an item straight to the
+//! other pane, Shift+Click to duplicate, save per file.
 //! Saves splice only the item region and go through the backup-first
 //! write path; stashes also get their `.dxg` twin rewritten.
 //! Drag-and-drop routes files by extension.
@@ -590,6 +591,10 @@ impl App {
 
     fn move_left_to_vault(&mut self) -> Result<String, String> {
         let (grid, index) = self.left_selected.ok_or("select an item on the left")?;
+        self.send_left_to_vault(grid, index)
+    }
+
+    fn send_left_to_vault(&mut self, grid: GridId, index: usize) -> Result<String, String> {
         if self.right.is_none() {
             return Err("load a vault first".to_string());
         }
@@ -647,13 +652,18 @@ impl App {
     }
 
     fn move_vault_to_left(&mut self) -> Result<String, String> {
+        let selected = self.right.as_ref().and_then(|pane| pane.selected);
+        let Some((GridId::VaultTab(tab), index)) = selected else {
+            return Err("select an item in the vault".to_string());
+        };
+        self.send_vault_to_left(tab, index)
+    }
+
+    fn send_vault_to_left(&mut self, tab: usize, index: usize) -> Result<String, String> {
         let destination = self
             .left_destination()
             .ok_or("load a character or bank first")?;
         let vault_pane = self.right.as_mut().ok_or("load a vault first")?;
-        let Some((GridId::VaultTab(tab), index)) = vault_pane.selected else {
-            return Err("select an item in the vault".to_string());
-        };
         let db = match &self.game {
             GameStatus::Loaded(data) => Some(data),
             GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
@@ -724,6 +734,17 @@ impl App {
                     format!("{reason}; item could not be returned — reload without saving")
                 })
             }
+        }
+    }
+
+    /// Right-click: sends a left-side item straight to the vault, or
+    /// a vault item back to the left side.
+    fn quick_move(&mut self, grid: GridId, index: usize) -> Result<String, String> {
+        match grid {
+            GridId::Sack(_) | GridId::Bank | GridId::Shared | GridId::Relic => {
+                self.send_left_to_vault(grid, index)
+            }
+            GridId::VaultTab(tab) => self.send_vault_to_left(tab, index),
         }
     }
 
@@ -1035,6 +1056,9 @@ impl eframe::App for App {
         if let Some((grid, index)) = drag_frame.duplicate {
             self.status = Some(self.duplicate_item(grid, index));
         }
+        if let Some((grid, index)) = drag_frame.quick_move {
+            self.status = Some(self.quick_move(grid, index));
+        }
         self.update_drag(ui.ctx(), drag_frame);
         match action {
             Some(PaneAction::MoveToVault) => self.status = Some(self.move_left_to_vault()),
@@ -1202,7 +1226,8 @@ impl App {
             ui.label(
                 "Open (or drop) a Player.chr — its bank and the shared and relic banks load \
                  with it. A stash (.dxb/.dxg) or another vault (.json / legacy .vault) opens \
-                 alone too. Shift+Click an item to duplicate it.",
+                 alone too. Right-click an item to send it across; Shift+Click to duplicate \
+                 it.",
             );
         }
         match &self.status {
@@ -1695,6 +1720,9 @@ struct DragFrame {
     /// A Shift+Click asking for the item at `(grid, index)` to be
     /// duplicated into its own container.
     duplicate: Option<(GridId, usize)>,
+    /// A right-click asking for the item at `(grid, index)` to be
+    /// sent straight to the other pane.
+    quick_move: Option<(GridId, usize)>,
 }
 
 /// Paints a container as its actual cell grid, with items at their
@@ -1794,6 +1822,9 @@ fn grid_view(
                 } else {
                     *selected = Some((grid, *index));
                 }
+            }
+            if response.secondary_clicked() {
+                frame.quick_move = Some((grid, *index));
             }
         }
     }
