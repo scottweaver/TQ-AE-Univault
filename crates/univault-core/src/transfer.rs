@@ -337,24 +337,37 @@ pub struct Combined {
     pub target_completed: bool,
 }
 
+/// A standalone relic/charm's shard count. The game stores a single
+/// freshly dropped shard as `var1 = 0` — one shard and "unset" share
+/// an encoding — so the effective count is never below one (the same
+/// rule the stats renderer ports from `TQVaultAE`).
+#[must_use]
+pub fn shard_count(item: &Item) -> i32 {
+    item.var1.max(1)
+}
+
 /// Whether `source` can pour shards into `target`: the same
-/// relic/charm record, the target still short of completion, and
-/// the completion level known from game data.
+/// relic/charm record, both still short of completion (a completed
+/// piece is a finished item carrying its bonus — never a pour
+/// source), and the completion level known from game data.
 #[must_use]
 pub fn can_combine(db: Option<&GameCache>, source: &Item, target: &Item) -> bool {
     let Some(needed) = db.and_then(|db| db.completed_relic_level(&target.base)) else {
         return false;
     };
-    source.base == target.base && source.var1 > 0 && target.var1 < needed
+    source.base == target.base && shard_count(source) < needed && shard_count(target) < needed
 }
 
 /// Pours shards from `source` into `target` up to `needed` — the
 /// game's merge rule: the remainder stays in the source, so shards
-/// are never destroyed.
+/// are never destroyed. Counts are the effective [`shard_count`]s,
+/// so zero-encoded single shards pour their one shard.
 pub fn combine_shards(target: &mut Item, source: &mut Item, needed: i32) -> Combined {
-    let transferred = source.var1.min(needed - target.var1).max(0);
-    target.var1 += transferred;
-    source.var1 -= transferred;
+    let source_count = shard_count(source);
+    let target_count = shard_count(target);
+    let transferred = source_count.min(needed - target_count).max(0);
+    target.var1 = target_count + transferred;
+    source.var1 = source_count - transferred;
     Combined {
         transferred,
         source_emptied: source.var1 <= 0,
@@ -426,6 +439,54 @@ mod tests {
         let a = shard(r"records\item\animalrelics\boarhide.dbr", 2);
         let b = shard(r"records\item\animalrelics\boarhide.dbr", 2);
         assert!(!can_combine(None, &a, &b));
+    }
+
+    /// The game stores one freshly dropped shard as `var1 = 0`; two
+    /// such singles must merge into a two-shard stack.
+    #[test]
+    fn combine_pours_zero_encoded_single_shards() {
+        let mut target = shard(r"records\item\animalrelics\boarhide.dbr", 0);
+        let mut source = shard(r"records\item\animalrelics\boarhide.dbr", 0);
+        let outcome = combine_shards(&mut target, &mut source, 3);
+        assert_eq!(
+            outcome,
+            Combined {
+                transferred: 1,
+                source_emptied: true,
+                target_completed: false,
+            }
+        );
+        assert_eq!(target.var1, 2);
+        assert_eq!(source.var1, 0);
+    }
+
+    fn charm_db() -> GameCache {
+        use crate::arz::ArzFile;
+        use crate::arz::fixture::{ArzBuilder, Values};
+        use crate::gamedata::GameData;
+        use crate::text::TextDb;
+        let mut builder = ArzBuilder::default();
+        builder.record(
+            "records\\item\\animalrelics\\boarhide.dbr",
+            "ItemCharm",
+            &[("completedRelicLevel", Values::Ints(&[3]))],
+        );
+        let data = GameData::from_parts(ArzFile::parse(builder.build()).unwrap(), TextDb::new());
+        data.build_cache(Vec::new())
+    }
+
+    #[test]
+    fn can_combine_accepts_single_shards_and_rejects_completed_pieces() {
+        let db = charm_db();
+        let single = shard(r"records\item\animalrelics\boarhide.dbr", 0);
+        let partial = shard(r"records\item\animalrelics\boarhide.dbr", 2);
+        let completed = shard(r"records\item\animalrelics\boarhide.dbr", 3);
+        assert!(can_combine(Some(&db), &single, &partial));
+        assert!(can_combine(Some(&db), &partial, &single));
+        // A completed piece is a finished item: never a source and
+        // never a target.
+        assert!(!can_combine(Some(&db), &completed, &partial));
+        assert!(!can_combine(Some(&db), &partial, &completed));
     }
 
     fn player_bytes() -> Vec<u8> {
