@@ -128,6 +128,58 @@ that's better") and merged as PR #7.
   proved both real characters round-trip. 185 tests. Risk: in-app
   acceptance pending — unequip/equip on the doll, then load the
   save in-game.
+- **2026-08-26 — Mod: a second bundle with single bosses.** User
+  hit an unwinnable tripled Gorgon-sisters fight (three queens
+  cross-healing via Regrowth), then refined the ask: keep the
+  original 3x-boss mod AND a 1x-boss variant, side by side. Root
+  cause mapped via the MCP record tools: the x3 base multiplies
+  named boss/hero *pools* (extra entries, limits stripped) on top
+  of the global 300% spawn modifier; the author's own x3x1 base
+  keeps trash x3 but collapses those pools to one spawn. Now one
+  rules file builds both: `modforge` gained a bundle-name override,
+  and `mods/xmax3-tuned.json` documents the two builds —
+  `LootPlusXMAX3Tuned` (base x3, unchanged behavior) and
+  `LootPlusXMAX3Tuned1xBoss` (base x3x1). Both composed,
+  dump-verified (Euryale pool 6 entries vs 1; identical tunes:
+  vanilla XP, Provoke 5m, spawnModifier 300), and installed to
+  CustomMaps. Risk: user switches to the 1xBoss mod in-game and
+  replays the Gorgon fight — that is the acceptance test; the x3x1
+  base also singles named heroes.
+- **2026-08-26 — Game.dll socket-gate patcher (toggle).** User
+  supplied the community guide (Steam 2202151189): NOP the two
+  conditional jumps after the Epic/Legendary classification
+  compares. New core `dllpatch` module (pure bytes: inspect →
+  Vanilla/Patched/Mixed/Unrecognized, enable/disable as
+  non-overlapping 10-byte signature swaps, self-inverse) + a GUI
+  "Socket patch…" header button opening a modal: state, warnings
+  (multiplayer; Steam updates/verify replace the dll — re-enable
+  after), Enable/Disable. Guardrails: pristine
+  `Game.dll.univault-original` written once from a fully vanilla
+  file; staging-write + rename; post-write re-read verify;
+  unrecognized versions never written. ARCHITECTURE amended in-PR
+  (single sanctioned game-binary write). Dry-run against the real
+  dll (on a copy): 1 signature site in the current EE build (older
+  guides say several — consolidated since), 4 bytes change,
+  reverse byte-identical. Risk: the user pressing Enable and
+  socketing an epic in-game is the acceptance test.
+- **2026-08-26 — Auto-refresh: panes follow the files.** User ask
+  (no more Reload button pressing), design-dialogued: prompt on
+  conflict, silent reload when clean. A background thread polls the
+  open character/banks/vault stamps every 2s (stat can hang on SMB —
+  never on the UI thread); a change must hold across two polls
+  before acting (never read the game's file mid-write — the relic
+  bank truncation lesson); own autosaves are recognized by stamp and
+  ignored; reloads defer while a drag/press/text-edit is live.
+  Conflicts: an external change to a dirty pane — or an autosave
+  about to land on an externally-changed file (every save now
+  re-checks freshness first) — suspends autosave and prompts:
+  reload-from-disk or keep-mine (keep-mine re-arms backup-first so
+  the external bytes are backed up before being overwritten; the
+  recorded exception to one-backup-per-load). ARCHITECTURE data-flow
+  amended in-PR. The manual Reload button stays. 170 tests. Risk:
+  feel unverified against the real SMB tree (poll cost, false
+  settles) until the user runs it; a reload that fails mid-conflict
+  leaves the pane clean-but-stale (same as manual Reload).
 - **2026-08-26 — Socket into any rarity (type rules kept).** User
   ask, refined: relics/charms socket into epics, legendaries, and
   set pieces in-app — the game's *type* rules stay (a ring relic
@@ -232,68 +284,6 @@ that's better") and merged as PR #7.
   +25% Physical Damage). 162 tests. ACCEPTED
   2026-08-26: "everything seems to be working" — shard art,
   combining, picker, roll, re-pick, and artifacts verified in use.
-- **2026-08-25 — Stash `.dxg` twin fallback (bug fix).** The user's
-  relic bank failed to reload: the game's save over SMB truncated
-  `miscsys.dxb` mid-item (stored CRC didn't match the shortened
-  bytes). The complete `.dxg` twin sat beside it — the game's own
-  recovery path — so `stash::restore_from_twin` (inverse of
-  `backup_twin`, shared `patched_name_copy` core) now backs
-  `open_stash`: an unreadable `.dxb` loads from its twin, marked
-  dirty so autosave writes the repaired file back through
-  backup-first (the corrupt original becomes the backup). Proven
-  against the real corrupt file: 30 relics recovered, resplice
-  byte-identical. 156 tests. Risk: only the truncated write's
-  newest item is unrecoverable (it existed nowhere but the cut
-  bytes).
-- **2026-08-25 — Default vault + bank/shared/relic panes +
-  Shift+Click duplicate.** The user's prompt asks after real use: a
-  vault file now exists without setup (`<config>/vaults/Main
-  Vault.json`, created and auto-opened at launch; `Open vault…`
-  still swaps in any other file); opening a `Player.chr`
-  auto-discovers and loads its private bank (`winsys.dxb` beside
-  it), the shared bank (`Sys/winsys.dxb`), and the relic bank
-  (`Sys/miscsys.dxb`, Atlantis+) as grid sections in the left pane,
-  each with its own Save (stash splice + `.dxg` twin,
-  backup-first); right-click sends an item straight to the other
-  pane (vault items land in the active left tab); Shift+Right-click
-  sends a copy across (original stays); Shift+Click duplicates an
-  item in place (same seed = exact copy, auto-placed, spilling to
-  sibling sacks/tabs); a Reload button re-reads the character and
-  all banks from disk (confirm modal when unsaved edits would be
-  lost). Same-day UX rework (user request): the left pane became a
-  tab strip — Inventory / Character bank / Shared bank / Relic bank
-  — one document on screen at a time, absent documents greyed out
-  with the reason on hover; cross-bank drags now route via the
-  vault or right-click since only one left grid is visible. Then
-  autosave (user request): all Save buttons removed — edits flush
-  600ms after the interaction quiets (drag/pointer/text focus
-  postpone), with a 5s retry on failure and a "Saving…" header
-  note. Backup policy refined to one-backup-per-load so per-edit
-  writes can't churn the 5-slot rotation; ARCHITECTURE.md's
-  data-flow constraint renegotiated in the same change.
-  Underneath: the left pane became independent documents
-  (`CharacterPane` + three `StashPane`s), `GridId` gained
-  `Bank`/`Shared`/`Relic`, selection is `(GridId, index)`
-  everywhere, and re-discovery never silently reloads a dirty
-  stash pane. 155 tests. Risk: layout and discovery unverified
-  against the real network-mounted save tree until the user runs
-  it; a tree whose Sys stashes live outside any `Sys/` ancestor
-  reports "no shared/relic bank found"; duplication is a deliberate
-  cheat feature — the game has no such operation.
-- **2026-08-25 — Drag-and-drop item movement.** The top "Next up"
-  item: items now drag between cells, sacks, panes, and vault tabs
-  with a live drop preview (green = fits, red = blocked), the
-  ghosted source dimmed and the item riding the cursor at true
-  footprint scale. Core gained exact-position placement
-  (`grid::fits`, `transfer::place_*_at` / `fits_at` / `occupancy`
-  with a skip index so the dragged item's own cells read as free);
-  the GUI's `grid_view` switched to `Sense::click_and_drag` (click
-  select and hover tooltips unchanged — egui only reports drag
-  after a movement threshold). Failed drops restore the item at its
-  origin, falling back to auto-place. 150 tests. Risk: drop-feel
-  (snapping, grab offset) unverified until the user drags for real;
-  footprint lookups during hover are cached per record, so the old
-  "uncached before drag-and-drop" worry is closed.
 ## Blocked / waiting
 
 - *(nothing)*

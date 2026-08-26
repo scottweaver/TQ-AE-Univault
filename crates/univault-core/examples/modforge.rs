@@ -89,13 +89,19 @@ fn main() {
         (args.next(), args.next(), args.next(), args.next())
     else {
         eprintln!(
-            "usage: modforge <TQ AE install dir> <base mod dir> <patch.json> <CustomMaps dir>"
+            "usage: modforge <TQ AE install dir> <base mod dir> <patch.json> <CustomMaps dir> \
+             [bundle name]"
         );
         std::process::exit(2);
     };
-    let spec: PatchSpec =
+    let mut spec: PatchSpec =
         serde_json::from_str(&std::fs::read_to_string(&patch_path).expect("read patch spec"))
             .expect("parse patch spec");
+    // One rules file, several bundles: an override names this build
+    // (e.g. the same tunes onto the x3 and x3x1 bases).
+    if let Some(name) = args.next() {
+        spec.name = name;
+    }
 
     let main_db = ArzFile::parse(
         std::fs::read(Path::new(&game_dir).join("Database/database.arz")).expect("read database"),

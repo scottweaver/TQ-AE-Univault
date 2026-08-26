@@ -35,6 +35,17 @@ bootstrap Q&A).
   store for vaulted items. (2026-08-24)
 - The game's ARC/ARZ archives (item database, textures, strings) are
   read-only reference data. This app never writes them. (2026-08-24)
+- The `Game.dll` socket-gate patch is the **single sanctioned write
+  to a game binary** (user-requested, guide-sourced): a 10-byte
+  signature swap that NOPs the Epic/Legendary socketing rejections —
+  byte-exact, same-length, self-inverse. Guardrails: a pristine copy
+  (`Game.dll.univault-original`) is written once before the first
+  patch; unrecognized versions are never touched; writes go
+  staging-file-then-rename and are re-read to verify; the toggle is
+  an explicit modal spelling out the multiplayer and game-update
+  caveats. Any other binary patch — new signature, new file — is a
+  structural change requiring its own design dialog. (2026-08-26,
+  dll-patch dialog)
 - Mod bundles are a sanctioned **output** boundary: `arz::compose`
   serializes this app's own mod databases into new CustomMaps
   bundles (optionally merged onto a base mod's records). The game's
@@ -85,10 +96,22 @@ bootstrap Q&A).
   takes the backup; subsequent autosaves of the same loaded baseline
   reuse it, so per-edit writes cannot churn the rotation into
   discarding the pre-session state. (Re)loading a file — including
-  via Reload — re-arms the backup. Mirrors TQVaultAE's
-  `TQVaultData\Backup` behavior. This app mutates people's save
-  files; this constraint is non-negotiable. (2026-08-24, autosave
-  refinement 2026-08-25)
+  via Reload or auto-refresh — re-arms the backup. Mirrors
+  TQVaultAE's `TQVaultData\Backup` behavior. This app mutates
+  people's save files; this constraint is non-negotiable.
+  (2026-08-24, autosave refinement 2026-08-25)
+- The shell watches the open files (character, banks, vault) by
+  polling and keeps panes current: an external change reloads a
+  clean pane automatically, but only after the file's stamp holds
+  stable across two polls (never read a file mid-write). **The app
+  never knowingly overwrites an externally-changed file without the
+  user choosing to**: every save first re-checks the file against
+  the stamp taken at load/last write, and a mismatch — or an
+  external change to a dirty pane — suspends autosave and prompts.
+  Choosing "keep mine" re-arms backup-first so the external version
+  is backed up before being overwritten; a deliberate exception to
+  one-backup-per-load, since those bytes never existed in this
+  session. (2026-08-26, auto-refresh design dialog)
 - Writes to game-owned files are targeted splices: parsing locates
   the blocks being edited and only those bytes change; every other
   byte is copied through untouched. Full-file re-serialization of a
@@ -169,7 +192,9 @@ files (composing new mod bundles is the sanctioned exception,
 recorded above); a change to the
 vault JSON schema contract; weakening or bypassing the backup-first
 or targeted-splice write rules; adding write tools or a network
-transport to the MCP surface; adopting a parser-derive dependency;
+transport to the MCP surface; any game-binary patch beyond the
+recorded `Game.dll` socket-gate signature; adopting a parser-derive
+dependency;
 a license change; replacing egui/eframe; dropping a supported
 platform; adding original TQ 2006 support.
 
