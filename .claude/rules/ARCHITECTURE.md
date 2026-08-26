@@ -85,10 +85,22 @@ bootstrap Q&A).
   takes the backup; subsequent autosaves of the same loaded baseline
   reuse it, so per-edit writes cannot churn the rotation into
   discarding the pre-session state. (Re)loading a file — including
-  via Reload — re-arms the backup. Mirrors TQVaultAE's
-  `TQVaultData\Backup` behavior. This app mutates people's save
-  files; this constraint is non-negotiable. (2026-08-24, autosave
-  refinement 2026-08-25)
+  via Reload or auto-refresh — re-arms the backup. Mirrors
+  TQVaultAE's `TQVaultData\Backup` behavior. This app mutates
+  people's save files; this constraint is non-negotiable.
+  (2026-08-24, autosave refinement 2026-08-25)
+- The shell watches the open files (character, banks, vault) by
+  polling and keeps panes current: an external change reloads a
+  clean pane automatically, but only after the file's stamp holds
+  stable across two polls (never read a file mid-write). **The app
+  never knowingly overwrites an externally-changed file without the
+  user choosing to**: every save first re-checks the file against
+  the stamp taken at load/last write, and a mismatch — or an
+  external change to a dirty pane — suspends autosave and prompts.
+  Choosing "keep mine" re-arms backup-first so the external version
+  is backed up before being overwritten; a deliberate exception to
+  one-backup-per-load, since those bytes never existed in this
+  session. (2026-08-26, auto-refresh design dialog)
 - Writes to game-owned files are targeted splices: parsing locates
   the blocks being edited and only those bytes change; every other
   byte is copied through untouched. Full-file re-serialization of a
