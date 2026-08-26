@@ -115,9 +115,14 @@ that's better") and merged as PR #7.
   files / full row actions): "Search vaults…" (⌘F) swaps the panes
   for one filtered, sortable table over every vault file — icon,
   rarity-colored name, requirement, vault, full colored stat lines.
-  Filters: name, affix presence/value, stat value, wearable-at req
-  caps, set, rarity, type, socketed, expansion, per-vault. Core got
-  `query` (Filter conjunction over the cache; typed
+  Filters: name, set, wearable-at req caps, rarity, type, socketed,
+  expansion, per-vault — plus dynamic stat/affix criteria rows
+  (add/remove; any-stat / affix-stat / affix-name; min–max value
+  windows; autocomplete fed by the vaults' own stat templates and
+  affix names — reworked mid-PR after user feedback that single
+  fixed fields couldn't express "pierce res AND poison res AND burn
+  damage"). Core got `query` (Filter conjunction over the cache;
+  `ValueBounds` windows; `stat_template` vocabulary; typed
   `stats::item_requirements`; `item_name` promoted from MCP);
   non-open vaults load as docs riding the existing autosave/
   refresh/conflict rails (`DocId::SearchVault`), and rows are

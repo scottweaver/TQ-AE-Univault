@@ -11,9 +11,11 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
+use std::collections::BTreeSet;
 use univault_core::cache::{GameCache, SourceStamp};
 use univault_core::chr::Item;
-use univault_core::query::{self, Expansion, Filter, ItemCategory};
+
+use univault_core::query::{self, Expansion, Filter, ItemCategory, ValueBounds};
 use univault_core::stats::{self, Requirement};
 use univault_core::style::{self, ItemStyle};
 use univault_core::vault::Vault;
@@ -38,12 +40,26 @@ pub(crate) struct SearchDoc {
 pub(crate) struct SearchState {
     pub(crate) docs: Vec<SearchDoc>,
     pub(crate) stale: bool,
+    /// The suggestion vocabularies lag behind `stale`: they rebuild
+    /// only when item data changed, never on a filter keystroke.
+    vocab_stale: bool,
+    vocab_stats: Vec<String>,
+    vocab_affixes: Vec<String>,
     draft: FilterDraft,
     sort: SortSpec,
     source_filter: Option<RowSource>,
     rows: Vec<SearchRow>,
     total: usize,
     selected: Option<(GridId, usize)>,
+}
+
+impl SearchState {
+    /// Item data changed (edit, reload, rescan, adoption): rows and
+    /// suggestion vocabularies both need a rebuild.
+    pub(crate) fn mark_data_changed(&mut self) {
+        self.stale = true;
+        self.vocab_stale = true;
+    }
 }
 
 /// Which vault a row came from: the open pane or a loaded doc.
@@ -58,11 +74,9 @@ enum RowSource {
 #[derive(Default, Clone, PartialEq)]
 struct FilterDraft {
     name: String,
-    affix: String,
-    affix_stat: String,
-    affix_stat_min: String,
-    stat: String,
-    stat_min: String,
+    /// The dynamic stat/affix criteria — as many rows as the user
+    /// adds, each its own conjunct.
+    criteria: Vec<CriterionDraft>,
     req_level: String,
     req_strength: String,
     req_dexterity: String,
@@ -73,6 +87,39 @@ struct FilterDraft {
     category: Option<ItemCategory>,
     socketed: Option<bool>,
     origin: OriginDraft,
+}
+
+/// One criterion row: what to match, where, and the value window. A
+/// row with nothing filled in is inert.
+#[derive(Default, Clone, PartialEq)]
+struct CriterionDraft {
+    scope: CriterionScope,
+    text: String,
+    min: String,
+    max: String,
+}
+
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum CriterionScope {
+    /// Any stat line on the item (base, affix, relic, bonus).
+    #[default]
+    AnyStat,
+    /// Only lines an affix grants.
+    AffixStat,
+    /// The affix's name itself (presence — no value window).
+    AffixName,
+}
+
+impl CriterionScope {
+    const ALL: [Self; 3] = [Self::AnyStat, Self::AffixStat, Self::AffixName];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::AnyStat => "Any stat",
+            Self::AffixStat => "Affix stat",
+            Self::AffixName => "Affix name",
+        }
+    }
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -144,17 +191,88 @@ fn filter_field(ui: &mut egui::Ui, value: &mut String, hint: &str, width: f32) {
 
 fn filter_text_row(ui: &mut egui::Ui, draft: &mut FilterDraft) {
     ui.horizontal_wrapped(|ui| {
-        filter_field(ui, &mut draft.name, "Name contains…", 150.0);
-        filter_field(ui, &mut draft.affix, "Affix name…", 120.0);
-        filter_field(ui, &mut draft.affix_stat, "Affix stat…", 120.0);
-        ui.label("≥");
-        filter_field(ui, &mut draft.affix_stat_min, "n", 40.0);
-        filter_field(ui, &mut draft.stat, "Any stat…", 120.0);
-        ui.label("≥");
-        filter_field(ui, &mut draft.stat_min, "n", 40.0);
-        filter_field(ui, &mut draft.set, "Set name…", 120.0);
+        filter_field(ui, &mut draft.name, "Name contains…", 170.0);
+        filter_field(ui, &mut draft.set, "Set name…", 140.0);
         ui.checkbox(&mut draft.set_only, "set items only");
     });
+}
+
+/// How many suggestions the autocomplete popup offers at once.
+const SUGGESTION_LIMIT: usize = 8;
+
+fn contains_ci(haystack: &str, needle: &str) -> bool {
+    haystack.to_lowercase().contains(&needle.to_lowercase())
+}
+
+/// A text field with an autocomplete popup fed from `vocab`. The
+/// popup also renders on the frame focus is lost so a click on a
+/// suggestion lands before it closes.
+fn suggesting_field(
+    ui: &mut egui::Ui,
+    id_salt: (&str, usize),
+    value: &mut String,
+    hint: &str,
+    width: f32,
+    vocab: &[String],
+) {
+    let response = ui.add(
+        egui::TextEdit::singleline(value)
+            .hint_text(hint)
+            .desired_width(width),
+    );
+    if !(response.has_focus() || response.lost_focus()) {
+        return;
+    }
+    let matching: Vec<&String> = vocab
+        .iter()
+        .filter(|entry| contains_ci(entry, value))
+        .take(SUGGESTION_LIMIT)
+        .collect();
+    if matching.is_empty() || (matching.len() == 1 && *matching[0] == *value) {
+        return;
+    }
+    egui::Area::new(egui::Id::new(id_salt).with("suggestions"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(response.rect.left_bottom() + egui::vec2(0.0, 4.0))
+        .show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.set_min_width(response.rect.width());
+                for entry in matching {
+                    if ui.selectable_label(false, entry).clicked() {
+                        value.clone_from(entry);
+                    }
+                }
+            });
+        });
+}
+
+/// The suggestion vocabularies over every loaded vault: distinct
+/// stat-line templates (numbers replaced by `#`) and affix names.
+fn collect_vocab<'a>(
+    db: &GameCache,
+    vaults: impl Iterator<Item = &'a Vault>,
+) -> (Vec<String>, Vec<String>) {
+    let mut stats = BTreeSet::new();
+    let mut affixes = BTreeSet::new();
+    for vault in vaults {
+        for sack in &vault.sacks {
+            for entry in &sack.items {
+                let item = &entry.item;
+                for line in query::stat_lines(db, item) {
+                    if !line.text.trim().is_empty() {
+                        stats.insert(query::stat_template(&line.text));
+                    }
+                }
+                for affix in [item.prefix.as_ref(), item.suffix.as_ref()]
+                    .into_iter()
+                    .flatten()
+                {
+                    affixes.insert(query::record_name(Some(db), affix));
+                }
+            }
+        }
+    }
+    (stats.into_iter().collect(), affixes.into_iter().collect())
 }
 
 /// A vault file's display name: its file stem.
@@ -209,32 +327,36 @@ fn draft_filters(draft: &FilterDraft) -> Vec<Filter> {
     if let Some(name) = text(&draft.name) {
         filters.push(Filter::NameContains(name));
     }
-    if let Some(affix) = text(&draft.affix) {
-        filters.push(Filter::HasAffix(affix));
-    }
-    let affix_stat_min = number(&draft.affix_stat_min);
-    if let Some(text) = text(&draft.affix_stat) {
-        filters.push(Filter::AffixStat {
-            text,
-            min: affix_stat_min,
-        });
-    } else if affix_stat_min.is_some() {
-        filters.push(Filter::AffixStat {
-            text: String::new(),
-            min: affix_stat_min,
-        });
-    }
-    let stat_min = number(&draft.stat_min);
-    if let Some(text) = text(&draft.stat) {
-        filters.push(Filter::StatContains {
-            text,
-            min: stat_min,
-        });
-    } else if stat_min.is_some() {
-        filters.push(Filter::StatContains {
-            text: String::new(),
-            min: stat_min,
-        });
+    for criterion in &draft.criteria {
+        let trimmed = criterion.text.trim().to_string();
+        let bounds = ValueBounds {
+            min: number(&criterion.min),
+            max: number(&criterion.max),
+        };
+        let inert = trimmed.is_empty() && bounds.is_unbounded();
+        match criterion.scope {
+            CriterionScope::AffixName => {
+                if !trimmed.is_empty() {
+                    filters.push(Filter::HasAffix(trimmed));
+                }
+            }
+            CriterionScope::AnyStat => {
+                if !inert {
+                    filters.push(Filter::StatContains {
+                        text: trimmed,
+                        bounds,
+                    });
+                }
+            }
+            CriterionScope::AffixStat => {
+                if !inert {
+                    filters.push(Filter::AffixStat {
+                        text: trimmed,
+                        bounds,
+                    });
+                }
+            }
+        }
     }
     for (field, requirement) in [
         (&draft.req_level, Requirement::Level),
@@ -402,7 +524,7 @@ impl App {
         docs.extend(kept.into_iter().filter(|doc| doc.dirty));
         self.search.docs = docs;
         self.search.source_filter = None;
-        self.search.stale = true;
+        self.search.mark_data_changed();
         if !failures.is_empty() {
             self.status = Some(Err(format!(
                 "some vaults could not be read: {}",
@@ -453,7 +575,7 @@ impl App {
                 },
             };
         }
-        self.search.stale = true;
+        self.search.mark_data_changed();
     }
 
     /// Double-click on a row: show the item at home in the vault
@@ -485,6 +607,17 @@ impl App {
             self.search.rows.clear();
             return;
         };
+        if self.search.vocab_stale {
+            let vaults = self
+                .right
+                .iter()
+                .map(|pane| &pane.vault)
+                .chain(self.search.docs.iter().map(|doc| &doc.vault));
+            let (stats, affixes) = collect_vocab(db, vaults);
+            self.search.vocab_stats = stats;
+            self.search.vocab_affixes = affixes;
+            self.search.vocab_stale = false;
+        }
         let filters = draft_filters(&self.search.draft);
         let wanted = self.search.source_filter;
         let mut total = 0;
@@ -572,7 +705,69 @@ impl App {
 
     fn show_filter_bar(&mut self, ui: &mut egui::Ui) {
         filter_text_row(ui, &mut self.search.draft);
+        self.show_criteria_rows(ui);
         self.show_filter_choice_row(ui);
+    }
+
+    /// The dynamic criteria list: one row per stat/affix conjunct,
+    /// each with a scope, an autocompleting text, and a min–max
+    /// value window; rows are added and removed freely.
+    fn show_criteria_rows(&mut self, ui: &mut egui::Ui) {
+        let SearchState {
+            draft,
+            vocab_stats,
+            vocab_affixes,
+            ..
+        } = &mut self.search;
+        if draft.criteria.is_empty() {
+            draft.criteria.push(CriterionDraft::default());
+        }
+        let mut remove = None;
+        for (index, criterion) in draft.criteria.iter_mut().enumerate() {
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt(("criterion-scope", index))
+                    .selected_text(criterion.scope.label())
+                    .width(96.0)
+                    .show_ui(ui, |ui| {
+                        for scope in CriterionScope::ALL {
+                            ui.selectable_value(&mut criterion.scope, scope, scope.label());
+                        }
+                    });
+                let vocab: &[String] = match criterion.scope {
+                    CriterionScope::AnyStat | CriterionScope::AffixStat => vocab_stats,
+                    CriterionScope::AffixName => vocab_affixes,
+                };
+                suggesting_field(
+                    ui,
+                    ("criterion-text", index),
+                    &mut criterion.text,
+                    "type or pick…",
+                    260.0,
+                    vocab,
+                );
+                match criterion.scope {
+                    CriterionScope::AffixName => {}
+                    CriterionScope::AnyStat | CriterionScope::AffixStat => {
+                        filter_field(ui, &mut criterion.min, "min", 44.0);
+                        ui.label("–");
+                        filter_field(ui, &mut criterion.max, "max", 44.0);
+                    }
+                }
+                if ui
+                    .button("✕")
+                    .on_hover_text("Remove this criterion")
+                    .clicked()
+                {
+                    remove = Some(index);
+                }
+            });
+        }
+        if let Some(index) = remove {
+            draft.criteria.remove(index);
+        }
+        if ui.button("＋ Add stat / affix criterion").clicked() {
+            draft.criteria.push(CriterionDraft::default());
+        }
     }
 
     fn show_filter_choice_row(&mut self, ui: &mut egui::Ui) {
@@ -854,12 +1049,20 @@ mod tests {
         assert!(draft_filters(&FilterDraft::default()).is_empty());
     }
 
+    fn criterion(scope: CriterionScope, text: &str, min: &str, max: &str) -> CriterionDraft {
+        CriterionDraft {
+            scope,
+            text: text.into(),
+            min: min.into(),
+            max: max.into(),
+        }
+    }
+
     #[test]
     fn text_fields_trim_and_numbers_parse() {
         let draft = FilterDraft {
             name: "  hecate  ".into(),
-            affix_stat: "fire".into(),
-            affix_stat_min: " 12.5 ".into(),
+            criteria: vec![criterion(CriterionScope::AffixStat, "fire", " 12.5 ", "")],
             req_level: "20".into(),
             req_strength: "not a number".into(),
             ..FilterDraft::default()
@@ -868,7 +1071,10 @@ mod tests {
         assert!(filters.contains(&Filter::NameContains("hecate".into())));
         assert!(filters.contains(&Filter::AffixStat {
             text: "fire".into(),
-            min: Some(12.5),
+            bounds: ValueBounds {
+                min: Some(12.5),
+                max: None,
+            },
         }));
         assert!(filters.contains(&Filter::RequirementAtMost(Requirement::Level, 20)));
         assert!(
@@ -880,16 +1086,66 @@ mod tests {
     }
 
     #[test]
+    fn each_criterion_row_becomes_its_own_conjunct() {
+        let draft = FilterDraft {
+            criteria: vec![
+                criterion(CriterionScope::AnyStat, "pierce resistance", "20", ""),
+                criterion(CriterionScope::AnyStat, "poison resistance", "10", "40"),
+                criterion(CriterionScope::AnyStat, "burn damage", "", ""),
+                criterion(CriterionScope::AffixName, "of Thorns", "", ""),
+                criterion(CriterionScope::AnyStat, "", "", ""),
+            ],
+            ..FilterDraft::default()
+        };
+        assert_eq!(
+            draft_filters(&draft),
+            vec![
+                Filter::StatContains {
+                    text: "pierce resistance".into(),
+                    bounds: ValueBounds {
+                        min: Some(20.0),
+                        max: None,
+                    },
+                },
+                Filter::StatContains {
+                    text: "poison resistance".into(),
+                    bounds: ValueBounds {
+                        min: Some(10.0),
+                        max: Some(40.0),
+                    },
+                },
+                Filter::StatContains {
+                    text: "burn damage".into(),
+                    bounds: ValueBounds::default(),
+                },
+                Filter::HasAffix("of Thorns".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn affix_name_rows_ignore_the_value_window() {
+        let draft = FilterDraft {
+            criteria: vec![criterion(CriterionScope::AffixName, "", "5", "10")],
+            ..FilterDraft::default()
+        };
+        assert!(draft_filters(&draft).is_empty());
+    }
+
+    #[test]
     fn bare_minimum_values_still_filter() {
         let draft = FilterDraft {
-            stat_min: "100".into(),
+            criteria: vec![criterion(CriterionScope::AnyStat, "", "100", "")],
             ..FilterDraft::default()
         };
         assert_eq!(
             draft_filters(&draft),
             vec![Filter::StatContains {
                 text: String::new(),
-                min: Some(100.0),
+                bounds: ValueBounds {
+                    min: Some(100.0),
+                    max: None,
+                },
             }]
         );
     }

@@ -239,21 +239,47 @@ pub fn stat_lines(db: &GameCache, item: &Item) -> Vec<StatLine> {
     lines
 }
 
+/// A value window on a stat line: the line's largest number must
+/// fall inside `[min, max]` (either side open). Fully open bounds
+/// make the criterion presence-only — a numberless line passes.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ValueBounds {
+    pub min: Option<f32>,
+    pub max: Option<f32>,
+}
+
+impl ValueBounds {
+    #[must_use]
+    pub fn is_unbounded(self) -> bool {
+        self.min.is_none() && self.max.is_none()
+    }
+
+    fn admits(self, largest: Option<f32>) -> bool {
+        if self.is_unbounded() {
+            return true;
+        }
+        let Some(value) = largest else { return false };
+        self.min.is_none_or(|min| value >= min) && self.max.is_none_or(|max| value <= max)
+    }
+}
+
 /// One search criterion; a query is a conjunction of these. All text
 /// matching is case-insensitive substring containment, and an empty
-/// needle matches everything.
+/// needle matches everything. Stat-line text is matched against the
+/// line's [`stat_template`], so a picked "+#% Pierce Resistance"
+/// template and free text like "pierce resist" both hit.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Filter {
     /// The full display name contains the text.
     NameContains(String),
     /// A prefix or suffix whose name contains the text is present.
     HasAffix(String),
-    /// A prefix or suffix grants a stat line containing the text —
-    /// with `min`, the line's largest number must reach it.
-    AffixStat { text: String, min: Option<f32> },
-    /// Any stat line on the item (base, affix, relic, bonus)
-    /// matches — with `min`, the line's largest number must reach it.
-    StatContains { text: String, min: Option<f32> },
+    /// A prefix or suffix grants a stat line matching the text, its
+    /// largest number inside `bounds`.
+    AffixStat { text: String, bounds: ValueBounds },
+    /// Any stat line on the item (base, affix, relic, bonus) matches
+    /// the text, its largest number inside `bounds`.
+    StatContains { text: String, bounds: ValueBounds },
     /// The item's requirement for the key is at most the cap (items
     /// without that requirement pass).
     RequirementAtMost(Requirement, i32),
@@ -281,14 +307,14 @@ fn passes(db: &GameCache, item: &Item, filter: &Filter) -> bool {
         Filter::HasAffix(name) => {
             affix_records(item).any(|affix| contains_ci(&record_name(Some(db), affix), name))
         }
-        Filter::AffixStat { text, min } => affix_records(item)
+        Filter::AffixStat { text, bounds } => affix_records(item)
             .filter_map(|affix| db.entry(affix))
             .filter_map(|entry| entry.stats.as_ref())
             .flat_map(|stats| stats::attr_slot(stats, 0))
-            .any(|line| line_passes(line, text, *min)),
-        Filter::StatContains { text, min } => stat_lines(db, item)
+            .any(|line| line_passes(line, text, *bounds)),
+        Filter::StatContains { text, bounds } => stat_lines(db, item)
             .iter()
-            .any(|line| line_passes(line, text, *min)),
+            .any(|line| line_passes(line, text, *bounds)),
         Filter::RequirementAtMost(key, cap) => stats::item_requirements(db, item)
             .into_iter()
             .find(|(existing, _)| existing == key)
@@ -314,27 +340,55 @@ fn affix_records(item: &Item) -> impl Iterator<Item = &RecordId> {
         .flatten()
 }
 
-fn line_passes(line: &StatLine, text: &str, min: Option<f32>) -> bool {
-    contains_ci(&line.text, text)
-        && min.is_none_or(|min| {
-            numbers_in(&line.text)
-                .into_iter()
-                .fold(None::<f32>, |best, value| {
-                    Some(best.map_or(value, |best| best.max(value)))
-                })
-                .is_some_and(|largest| largest >= min)
-        })
+fn line_passes(line: &StatLine, text: &str, bounds: ValueBounds) -> bool {
+    contains_ci(&stat_template(&line.text), text) && bounds.admits(largest_number(&line.text))
 }
 
 fn contains_ci(haystack: &str, needle: &str) -> bool {
     haystack.to_lowercase().contains(&needle.to_lowercase())
 }
 
-/// Every number in a display line, sign included only when directly
-/// attached ("-15%" is negative; the dash in "3.0 - 6.0" is not).
+/// The display line with every number replaced by `#` — the rolled
+/// values drop out, the wording stays: "+24% Pierce Resistance"
+/// becomes "+#% Pierce Resistance". This is both the key stat
+/// vocabularies group lines under and the haystack stat-text filters
+/// match against, so picked templates and free text behave alike.
+#[must_use]
+pub fn stat_template(text: &str) -> String {
+    let mut template = String::with_capacity(text.len());
+    let mut rest = 0;
+    for (start, end, _) in number_spans(text) {
+        template.push_str(&text[rest..start]);
+        template.push('#');
+        rest = end;
+    }
+    template.push_str(&text[rest..]);
+    template
+}
+
+fn largest_number(text: &str) -> Option<f32> {
+    number_spans(text)
+        .into_iter()
+        .map(|(_, _, value)| value)
+        .fold(None, |best: Option<f32>, value| {
+            Some(best.map_or(value, |best| best.max(value)))
+        })
+}
+
+#[cfg(test)]
 fn numbers_in(text: &str) -> Vec<f32> {
+    number_spans(text)
+        .into_iter()
+        .map(|(_, _, value)| value)
+        .collect()
+}
+
+/// Every number in a display line as `(start, end, value)` byte
+/// spans; the sign is part of the span only when directly attached
+/// ("-15%" is negative; the dash in "3.0 - 6.0" is not).
+fn number_spans(text: &str) -> Vec<(usize, usize, f32)> {
     let bytes = text.as_bytes();
-    let mut values = Vec::new();
+    let mut spans = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i].is_ascii_digit() {
@@ -345,15 +399,17 @@ fn numbers_in(text: &str) -> Vec<f32> {
             while end < bytes.len() && (bytes[end].is_ascii_digit() || bytes[end] == b'.') {
                 end += 1;
             }
-            if let Ok(value) = text[start..end].trim_end_matches('.').parse::<f32>() {
-                values.push(value);
+            let parsed = &text[start..end];
+            let trailing_dots = parsed.len() - parsed.trim_end_matches('.').len();
+            if let Ok(value) = parsed.trim_end_matches('.').parse::<f32>() {
+                spans.push((start, end - trailing_dots, value));
             }
             i = end;
         } else {
             i += 1;
         }
     }
-    values
+    spans
 }
 
 #[cfg(test)]
@@ -538,17 +594,24 @@ mod tests {
         assert!(!one(&db, &plain, Filter::HasAffix(String::new())));
     }
 
+    fn at_least(min: f32) -> ValueBounds {
+        ValueBounds {
+            min: Some(min),
+            max: None,
+        }
+    }
+
     #[test]
     fn affix_value_compares_against_the_lines_largest_number() {
         let db = sample_cache();
         let sword = affixed_sword();
-        let fire = |min| Filter::AffixStat {
+        let fire = |bounds| Filter::AffixStat {
             text: "fire".into(),
-            min,
+            bounds,
         };
-        assert!(one(&db, &sword, fire(None)));
-        assert!(one(&db, &sword, fire(Some(10.0))));
-        assert!(!one(&db, &sword, fire(Some(10.5))));
+        assert!(one(&db, &sword, fire(ValueBounds::default())));
+        assert!(one(&db, &sword, fire(at_least(10.0))));
+        assert!(!one(&db, &sword, fire(at_least(10.5))));
         // Base lines don't count as affix stats: 12~31 Damage is on
         // the base, so no affix line reaches 30.
         assert!(!one(
@@ -556,7 +619,7 @@ mod tests {
             &sword,
             Filter::AffixStat {
                 text: String::new(),
-                min: Some(30.0),
+                bounds: at_least(30.0),
             }
         ));
     }
@@ -565,14 +628,65 @@ mod tests {
     fn stat_filter_spans_base_and_affix_lines() {
         let db = sample_cache();
         let sword = affixed_sword();
-        let stat = |text: &str, min| Filter::StatContains {
+        let stat = |text: &str, bounds| Filter::StatContains {
             text: text.into(),
-            min,
+            bounds,
         };
-        assert!(one(&db, &sword, stat("damage", Some(31.0))));
-        assert!(one(&db, &sword, stat("cold damage", Some(7.0))));
-        assert!(!one(&db, &sword, stat("cold damage", Some(8.0))));
-        assert!(!one(&db, &sword, stat("poison", None)));
+        assert!(one(&db, &sword, stat("damage", at_least(31.0))));
+        assert!(one(&db, &sword, stat("cold damage", at_least(7.0))));
+        assert!(!one(&db, &sword, stat("cold damage", at_least(8.0))));
+        assert!(!one(&db, &sword, stat("poison", ValueBounds::default())));
+    }
+
+    #[test]
+    fn value_bounds_form_a_closed_window() {
+        let db = sample_cache();
+        let sword = affixed_sword();
+        let damage = |min, max| Filter::StatContains {
+            text: "damage".into(),
+            bounds: ValueBounds { min, max },
+        };
+        // The base line's largest number is 31.
+        assert!(one(&db, &sword, damage(Some(31.0), Some(31.0))));
+        assert!(!one(&db, &sword, damage(Some(31.5), None)));
+        // Fire (10) and cold (7) lines satisfy a low window; the
+        // window excludes the 31 but another line supplies the hit.
+        assert!(one(&db, &sword, damage(Some(5.0), Some(8.0))));
+        assert!(!one(&db, &sword, damage(None, Some(6.0))));
+    }
+
+    #[test]
+    fn picked_templates_and_free_text_match_alike() {
+        let db = sample_cache();
+        let sword = affixed_sword();
+        for text in ["# ~ # Damage", "damage", "~ # dam"] {
+            assert!(
+                one(
+                    &db,
+                    &sword,
+                    Filter::StatContains {
+                        text: text.into(),
+                        bounds: ValueBounds::default(),
+                    }
+                ),
+                "expected {text:?} to match the base damage line"
+            );
+        }
+    }
+
+    #[test]
+    fn stat_template_replaces_numbers_with_hashes() {
+        assert_eq!(stat_template("12 ~ 31 Damage"), "# ~ # Damage");
+        assert_eq!(
+            stat_template("+24% Pierce Resistance"),
+            "+#% Pierce Resistance"
+        );
+        assert_eq!(stat_template("-15% Something"), "#% Something");
+        assert_eq!(
+            stat_template("over 3.0 - 6.0 Seconds"),
+            "over # - # Seconds"
+        );
+        assert_eq!(stat_template("no digits here"), "no digits here");
     }
 
     #[test]
@@ -580,12 +694,12 @@ mod tests {
         let db = sample_cache();
         let mut charm = item("records\\item\\monkeypaw.dbr");
         charm.var1 = 2;
-        let cold = |min| Filter::StatContains {
+        let cold = |bounds| Filter::StatContains {
             text: "cold".into(),
-            min,
+            bounds,
         };
-        assert!(one(&db, &charm, cold(Some(8.0))));
-        assert!(!one(&db, &charm, cold(Some(9.0))));
+        assert!(one(&db, &charm, cold(at_least(8.0))));
+        assert!(!one(&db, &charm, cold(at_least(9.0))));
     }
 
     #[test]
@@ -661,7 +775,7 @@ mod tests {
             &socketed,
             Filter::StatContains {
                 text: "cold".into(),
-                min: Some(8.0),
+                bounds: at_least(8.0),
             }
         ));
     }

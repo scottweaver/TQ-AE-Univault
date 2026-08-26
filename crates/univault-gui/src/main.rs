@@ -772,7 +772,7 @@ impl App {
             open_tab,
         });
         // The pane's rows in the search table point at the old model.
-        self.search.stale = true;
+        self.search.mark_data_changed();
         Ok(if created {
             format!(
                 "new vault (12 tabs) — will be created at {}",
@@ -797,7 +797,7 @@ impl App {
             disk_stamp: stamp_of(&json_path),
             open_tab: 0,
         });
-        self.search.stale = true;
+        self.search.mark_data_changed();
         Ok(format!(
             "imported legacy vault; saving writes {}",
             json_path.display()
@@ -1684,7 +1684,7 @@ impl App {
                 *slot = search::load_search_doc(&path)?;
                 self.backed_up.remove(&path);
                 self.refresh.forget(&path);
-                self.search.stale = true;
+                self.search.mark_data_changed();
                 Ok(())
             }
         }
@@ -3160,7 +3160,7 @@ impl App {
 
     fn mark_dirty(&mut self, grid: GridId) {
         // Any mutation can move rows the search table points at.
-        self.search.stale = true;
+        self.search.mark_data_changed();
         let dirty = match grid {
             GridId::Sack(_) | GridId::Equipment(_) => {
                 self.character.as_mut().map(|pane| &mut pane.dirty)
