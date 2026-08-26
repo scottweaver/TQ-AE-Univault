@@ -107,6 +107,23 @@ that's better") and merged as PR #7.
 
 ## Most recent meaningful progress
 
+- **2026-08-26 — Game.dll socket-gate patcher (toggle).** User
+  supplied the community guide (Steam 2202151189): NOP the two
+  conditional jumps after the Epic/Legendary classification
+  compares. New core `dllpatch` module (pure bytes: inspect →
+  Vanilla/Patched/Mixed/Unrecognized, enable/disable as
+  non-overlapping 10-byte signature swaps, self-inverse) + a GUI
+  "Socket patch…" header button opening a modal: state, warnings
+  (multiplayer; Steam updates/verify replace the dll — re-enable
+  after), Enable/Disable. Guardrails: pristine
+  `Game.dll.univault-original` written once from a fully vanilla
+  file; staging-write + rename; post-write re-read verify;
+  unrecognized versions never written. ARCHITECTURE amended in-PR
+  (single sanctioned game-binary write). Dry-run against the real
+  dll (on a copy): 1 signature site in the current EE build (older
+  guides say several — consolidated since), 4 bytes change,
+  reverse byte-identical. Risk: the user pressing Enable and
+  socketing an epic in-game is the acceptance test.
 - **2026-08-26 — Socket into any rarity (type rules kept).** User
   ask, refined: relics/charms socket into epics, legendaries, and
   set pieces in-app — the game's *type* rules stay (a ring relic
@@ -259,60 +276,6 @@ that's better") and merged as PR #7.
   it; a tree whose Sys stashes live outside any `Sys/` ancestor
   reports "no shared/relic bank found"; duplication is a deliberate
   cheat feature — the game has no such operation.
-- **2026-08-25 — Drag-and-drop item movement.** The top "Next up"
-  item: items now drag between cells, sacks, panes, and vault tabs
-  with a live drop preview (green = fits, red = blocked), the
-  ghosted source dimmed and the item riding the cursor at true
-  footprint scale. Core gained exact-position placement
-  (`grid::fits`, `transfer::place_*_at` / `fits_at` / `occupancy`
-  with a skip index so the dragged item's own cells read as free);
-  the GUI's `grid_view` switched to `Sense::click_and_drag` (click
-  select and hover tooltips unchanged — egui only reports drag
-  after a movement threshold). Failed drops restore the item at its
-  origin, falling back to auto-place. 150 tests. Risk: drop-feel
-  (snapping, grab offset) unverified until the user drags for real;
-  footprint lookups during hover are cached per record, so the old
-  "uncached before drag-and-drop" worry is closed.
-- **2026-08-25 — Mod forge: from reader to mod maker.** User pivot
-  into modding, design-dialogued: `arz::compose` (writer half of the
-  format; layout from the MIT `TQArchive-Wrapper` reference — 24B
-  header, zlib payloads, record table w/ timestamps, string table)
-  with parser upgrades it needed: record-table order + timestamps
-  preserved, `DbRecord` variables now an ordered Vec (also fixes
-  latent HashMap-iteration nondeterminism), `set_variable` edit op.
-  ARCHITECTURE amended: mod bundles are a sanctioned output
-  boundary; the game's own archives stay read-only. New `modforge`
-  example compiles a JSON patch spec into a CustomMaps bundle
-  merged onto a base mod (game loads one custom quest at a time —
-  the user plays LootPlus XMAX x3): effective-record logic patches
-  the base mod's version when it overrides vanilla (proven: x3's
-  own Earth Enchantment radii got scaled, not vanilla's). First
-  real mod built + installed: `LootPlusXMAX3Tuned` — all
-  player-side `skillTargetNumber` ×3 (11 records; monster/boss/
-  hero/quest-script skills and dev leftovers excluded) and Earth
-  Enchantment aura radius ×3 (15→60m at ultimate). Patch spec
-  committed at `mods/xmax3-tuned.json`. Composed db self-checks:
-  full re-parse + every record decode-equal. 146 tests. Two
-  follow-up rules same-day (user request): all summon cooldowns
-  (`Skill_SpawnPet` × `skillCooldownTime`) filled to 0 — 28 skills
-  incl. item/artifact summons — and the x3 mod's global 30% XP cut
-  (`* 0.7` wrapper on gameengine.dbr `experienceEquation`, found
-  with the new `moddiff` example) reverted to vanilla via a
-  variable-level revert rule. In-game acceptance STARTED
-  2026-08-25: the engine loads the composed database — zero summon
-  cooldowns verified in play, which also clears the record-table
-  ordering worry; Earth Enchantment radius verified (5m → 15m at
-  one point — the game's own tooltip reads the merged record).
-  Remaining spot checks: target caps ×3; vanilla XP (predicted:
-  an even-level trash mob on Normal awards level×15).
-  Follow-up 2026-08-25 (user request): Core Dweller Energy ×2.5 —
-  `characterMana` on all 20 pet levels (327.5 → 875 at 20) and
-  Energy regen ×1.75 (the x3 mod's 3.0/s → 5.25/s); same factors
-  on Call of the Wild's 20 wolf records (energy 112.5 → 255,
-  regen 2.0 → 3.5/s) — via a
-  new list form of the modforge `record` rule; bundle rebuilt +
-  reinstalled, installed arz verified; in-game check pending.
-
 ## Blocked / waiting
 
 - *(nothing)*

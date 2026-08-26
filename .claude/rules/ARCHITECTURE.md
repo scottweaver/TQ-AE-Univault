@@ -35,6 +35,17 @@ bootstrap Q&A).
   store for vaulted items. (2026-08-24)
 - The game's ARC/ARZ archives (item database, textures, strings) are
   read-only reference data. This app never writes them. (2026-08-24)
+- The `Game.dll` socket-gate patch is the **single sanctioned write
+  to a game binary** (user-requested, guide-sourced): a 10-byte
+  signature swap that NOPs the Epic/Legendary socketing rejections —
+  byte-exact, same-length, self-inverse. Guardrails: a pristine copy
+  (`Game.dll.univault-original`) is written once before the first
+  patch; unrecognized versions are never touched; writes go
+  staging-file-then-rename and are re-read to verify; the toggle is
+  an explicit modal spelling out the multiplayer and game-update
+  caveats. Any other binary patch — new signature, new file — is a
+  structural change requiring its own design dialog. (2026-08-26,
+  dll-patch dialog)
 - Mod bundles are a sanctioned **output** boundary: `arz::compose`
   serializes this app's own mod databases into new CustomMaps
   bundles (optionally merged onto a base mod's records). The game's
@@ -169,7 +180,9 @@ files (composing new mod bundles is the sanctioned exception,
 recorded above); a change to the
 vault JSON schema contract; weakening or bypassing the backup-first
 or targeted-splice write rules; adding write tools or a network
-transport to the MCP surface; adopting a parser-derive dependency;
+transport to the MCP surface; any game-binary patch beyond the
+recorded `Game.dll` socket-gate signature; adopting a parser-derive
+dependency;
 a license change; replacing egui/eframe; dropping a supported
 platform; adding original TQ 2006 support.
 
