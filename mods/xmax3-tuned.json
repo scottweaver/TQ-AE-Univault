@@ -46,7 +46,7 @@
         "records\\skills\\earth\\pet\\coredweller_19.dbr",
         "records\\skills\\earth\\pet\\coredweller_20.dbr"
       ],
-      "multiply": { "characterMana": 2.5 }
+      "multiply": { "characterMana": 2.5, "characterManaRegen": 1.75 }
     }
   ]
 }
