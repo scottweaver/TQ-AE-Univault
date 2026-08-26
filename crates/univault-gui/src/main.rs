@@ -9,7 +9,9 @@
 //! default vault under the config directory opens (and is created)
 //! at launch; `Open vault…` swaps in any other vault file. Click or
 //! drag items across, right-click to send an item straight to the
-//! other pane, Shift+Click to duplicate, save per file.
+//! other pane, Shift+Click to duplicate, save per file; `Reload`
+//! re-reads the character and all banks from disk (confirmed when
+//! unsaved edits would be lost).
 //! Saves splice only the item region and go through the backup-first
 //! write path; stashes also get their `.dxg` twin rewritten.
 //! Drag-and-drop routes files by extension.
@@ -317,6 +319,9 @@ struct App {
     left_selected: Option<(GridId, usize)>,
     status: Option<Result<String, String>>,
     pending_respec: Option<PendingRespec>,
+    /// A requested reload awaiting confirmation because unsaved
+    /// edits would be lost.
+    pending_reload: bool,
     drag: Option<DragState>,
     /// Zoom shown by the slider while dragging; applied on release.
     pending_zoom: f32,
@@ -352,6 +357,7 @@ impl App {
             left_selected: None,
             status: None,
             pending_respec: None,
+            pending_reload: false,
             drag: None,
             pending_zoom: 1.0,
         };
@@ -737,6 +743,92 @@ impl App {
         }
     }
 
+    /// The left-side documents holding unsaved edits, by display
+    /// name — what a reload would discard.
+    fn left_dirty_labels(&self) -> Vec<&'static str> {
+        let mut labels = Vec::new();
+        if self.character.as_ref().is_some_and(|pane| pane.dirty) {
+            labels.push("the character");
+        }
+        for slot in [StashSlot::Bank, StashSlot::Shared, StashSlot::Relic] {
+            let dirty = match slot {
+                StashSlot::Bank => &self.bank,
+                StashSlot::Shared => &self.shared,
+                StashSlot::Relic => &self.relics,
+            }
+            .as_ref()
+            .is_some_and(|pane| pane.dirty);
+            if dirty {
+                labels.push(slot.label());
+            }
+        }
+        labels
+    }
+
+    /// Re-reads the character and every bank from disk, discarding
+    /// any in-memory edits. With a character loaded this re-runs
+    /// companion discovery from its path; otherwise each open stash
+    /// pane reloads from its own path.
+    fn reload_left(&mut self) -> Result<String, String> {
+        if let Some(pane) = &mut self.character {
+            pane.dirty = false;
+        }
+        for slot in [StashSlot::Bank, StashSlot::Shared, StashSlot::Relic] {
+            if let Some(pane) = self.stash_slot_mut(slot).as_mut() {
+                pane.dirty = false;
+            }
+        }
+        self.left_selected = None;
+        if let Some(path) = self.character.as_ref().map(|pane| pane.path.clone()) {
+            return self
+                .open_character_file(&path)
+                .map(|message| format!("reloaded — {message}"));
+        }
+        let mut reloaded = Vec::new();
+        for slot in [StashSlot::Bank, StashSlot::Shared, StashSlot::Relic] {
+            if let Some(path) = self
+                .stash_slot_mut(slot)
+                .as_ref()
+                .map(|pane| pane.path.clone())
+            {
+                self.open_stash(slot, &path)?;
+                reloaded.push(slot.label());
+            }
+        }
+        if reloaded.is_empty() {
+            return Err("nothing to reload".to_string());
+        }
+        Ok(format!("reloaded {}", reloaded.join(", ")))
+    }
+
+    fn show_reload_modal(&mut self, ctx: &egui::Context) {
+        if !self.pending_reload {
+            return;
+        }
+        let dirty = self.left_dirty_labels();
+        let mut close = false;
+        let mut confirm = false;
+        let modal = egui::Modal::new(egui::Id::new("reload-modal")).show(ctx, |ui| {
+            ui.set_max_width(340.0);
+            ui.heading("Reload from disk?");
+            ui.label(format!(
+                "Unsaved changes to {} will be lost.",
+                dirty.join(", ")
+            ));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                close = ui.button("Cancel").clicked();
+                confirm = ui.button("Reload").clicked();
+            });
+        });
+        if confirm {
+            self.status = Some(self.reload_left());
+        }
+        if close || confirm || modal.should_close() {
+            self.pending_reload = false;
+        }
+    }
+
     /// Right-click: sends a left-side item straight to the vault, or
     /// a vault item back to the left side.
     fn quick_move(&mut self, grid: GridId, index: usize) -> Result<String, String> {
@@ -1070,6 +1162,7 @@ impl eframe::App for App {
             None => {}
         }
         self.show_respec_modal(ui.ctx());
+        self.show_reload_modal(ui.ctx());
     }
 }
 
@@ -1142,8 +1235,16 @@ impl App {
         }
     }
 
-    fn show_header(&mut self, ui: &mut egui::Ui) {
+    /// The Open/Reload/Import/Recent button row. Returns the path
+    /// the user asked to open (if any) and whether a reload was
+    /// requested.
+    fn show_toolbar(&mut self, ui: &mut egui::Ui) -> (Option<PathBuf>, bool) {
         let mut requested: Option<PathBuf> = None;
+        let mut reload_requested = false;
+        let has_left = self.character.is_some()
+            || self.bank.is_some()
+            || self.shared.is_some()
+            || self.relics.is_some();
         ui.horizontal(|ui| {
             if ui.button("Open character…").clicked() {
                 requested = pick_file(
@@ -1151,6 +1252,13 @@ impl App {
                     &["chr", "dxb", "dxg"],
                     self.dialog_start_dir(),
                 );
+            }
+            if ui
+                .add_enabled(has_left, egui::Button::new("Reload"))
+                .on_hover_text("Re-read the character and all banks from disk")
+                .clicked()
+            {
+                reload_requested = true;
             }
             if ui.button("Open vault…").clicked() {
                 requested = pick_file("Vault", &["json", "vault"], self.dialog_start_dir());
@@ -1182,8 +1290,20 @@ impl App {
                 }
             });
         });
+        (requested, reload_requested)
+    }
+
+    fn show_header(&mut self, ui: &mut egui::Ui) {
+        let (requested, reload_requested) = self.show_toolbar(ui);
         if let Some(path) = requested {
             self.status = Some(self.open(&path));
+        }
+        if reload_requested {
+            if self.left_dirty_labels().is_empty() {
+                self.status = Some(self.reload_left());
+            } else {
+                self.pending_reload = true;
+            }
         }
         self.show_zoom_control(ui);
         if let Some(note) = &self.game_note {
