@@ -11,17 +11,20 @@
 //! other vault file. Click or drag items across; right-click sends
 //! an item straight to the other pane (vault items land in the
 //! active tab); Shift+Right-click sends a copy; Shift+Click
-//! duplicates in place; save per file. `Reload` re-reads the
-//! character and all banks from disk (confirmed when unsaved edits
-//! would be lost).
+//! duplicates in place. Every edit autosaves after a short quiet
+//! period — the first write since a file was loaded goes
+//! backup-first, later writes reuse that backup. `Reload` re-reads
+//! the character and all banks from disk (confirmed when edits not
+//! yet autosaved would be lost).
 //! Saves splice only the item region and go through the backup-first
 //! write path; stashes also get their `.dxg` twin rewritten.
 //! Drag-and-drop routes files by extension.
 
 mod safe_write;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 use univault_core::cache::{GameCache, SourceStamp};
@@ -360,6 +363,14 @@ struct App {
     /// Which left-side document the tab strip is showing — also the
     /// destination of vault → left sends.
     active_tab: LeftTab,
+    /// Files already backed up since they were last loaded: the
+    /// first autosave of a freshly loaded file takes the backup,
+    /// later autosaves reuse it, so rotation isn't churned through
+    /// by every edit.
+    backed_up: HashSet<PathBuf>,
+    /// When the pending autosave fires; pushed forward while the
+    /// user is still interacting.
+    autosave_at: Option<Instant>,
     status: Option<Result<String, String>>,
     pending_respec: Option<PendingRespec>,
     /// A requested reload awaiting confirmation because unsaved
@@ -399,6 +410,8 @@ impl App {
             right: None,
             left_selected: None,
             active_tab: LeftTab::Inventory,
+            backed_up: HashSet::new(),
+            autosave_at: None,
             status: None,
             pending_respec: None,
             pending_reload: false,
@@ -440,6 +453,7 @@ impl App {
     fn open_character_file(&mut self, path: &Path) -> Result<String, String> {
         let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
         let character = Box::new(chr::parse_player(&bytes).map_err(|error| error.to_string())?);
+        self.backed_up.remove(path);
         self.character = Some(CharacterPane {
             path: path.to_path_buf(),
             original: bytes,
@@ -500,6 +514,7 @@ impl App {
     /// holding the same path is kept as-is — reopening must not
     /// discard unsaved edits.
     fn open_stash(&mut self, slot: StashSlot, path: &Path) -> Result<String, String> {
+        self.backed_up.remove(path);
         let pane = self.stash_slot_mut(slot);
         if pane
             .as_ref()
@@ -523,6 +538,7 @@ impl App {
     }
 
     fn open_vault(&mut self, path: &Path) -> Result<String, String> {
+        self.backed_up.remove(path);
         let vault = if path.exists() {
             let text = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
             Vault::from_json(&text).map_err(|error| error.to_string())?
@@ -1039,49 +1055,121 @@ impl App {
         }
     }
 
-    fn save_character(&mut self) -> Result<String, String> {
+    fn save_character(&mut self) -> Result<(), String> {
         let pane = self.character.as_mut().ok_or("nothing to save")?;
         let spliced = chr::replace_inventory(&pane.original, &pane.character.sacks)
             .map_err(|error| error.to_string())?;
         let bytes = chr::replace_money(&spliced, pane.character.info.money)
             .map_err(|error| error.to_string())?;
-        let backup = safe_write::backup_first_write(&pane.path, &bytes)
-            .map_err(|error| error.to_string())?;
+        write_through(&mut self.backed_up, &pane.path, &bytes)?;
         pane.original = bytes;
         pane.dirty = false;
-        Ok(saved_message(&pane.path, backup.as_deref()))
+        Ok(())
     }
 
-    fn save_stash(&mut self, slot: StashSlot) -> Result<String, String> {
-        let pane = self
-            .stash_slot_mut(slot)
-            .as_mut()
-            .ok_or("nothing to save")?;
+    fn save_stash(&mut self, slot: StashSlot) -> Result<(), String> {
+        let pane = match slot {
+            StashSlot::Bank => self.bank.as_mut(),
+            StashSlot::Shared => self.shared.as_mut(),
+            StashSlot::Relic => self.relics.as_mut(),
+        }
+        .ok_or("nothing to save")?;
         let bytes = stash::replace_items(&pane.original, &pane.stash.items)
             .map_err(|error| error.to_string())?;
-        let backup = safe_write::backup_first_write(&pane.path, &bytes)
-            .map_err(|error| error.to_string())?;
+        write_through(&mut self.backed_up, &pane.path, &bytes)?;
         let twin = stash::backup_twin(&bytes).map_err(|error| error.to_string())?;
         std::fs::write(pane.path.with_extension("dxg"), twin).map_err(|error| error.to_string())?;
         pane.original = bytes;
         pane.dirty = false;
-        Ok(saved_message(&pane.path, backup.as_deref()))
+        Ok(())
     }
 
-    fn save_vault(&mut self) -> Result<String, String> {
+    fn save_vault(&mut self) -> Result<(), String> {
         let pane = self.right.as_mut().ok_or("nothing to save")?;
         let json = pane.vault.to_json().map_err(|error| error.to_string())?;
-        safe_write::backup_first_write(&pane.path, json.as_bytes())
-            .map_err(|error| error.to_string())?;
+        write_through(&mut self.backed_up, &pane.path, json.as_bytes())?;
         pane.dirty = false;
-        Ok(format!("saved {}", pane.path.display()))
+        Ok(())
+    }
+
+    fn any_dirty(&self) -> bool {
+        self.character.as_ref().is_some_and(|pane| pane.dirty)
+            || self.bank.as_ref().is_some_and(|pane| pane.dirty)
+            || self.shared.as_ref().is_some_and(|pane| pane.dirty)
+            || self.relics.as_ref().is_some_and(|pane| pane.dirty)
+            || self.right.as_ref().is_some_and(|pane| pane.dirty)
+    }
+
+    fn flush_dirty(&mut self) -> Result<(), String> {
+        if self.character.as_ref().is_some_and(|pane| pane.dirty) {
+            self.save_character()?;
+        }
+        for slot in [StashSlot::Bank, StashSlot::Shared, StashSlot::Relic] {
+            if self
+                .stash_slot_mut(slot)
+                .as_ref()
+                .is_some_and(|pane| pane.dirty)
+            {
+                self.save_stash(slot)?;
+            }
+        }
+        if self.right.as_ref().is_some_and(|pane| pane.dirty) {
+            self.save_vault()?;
+        }
+        Ok(())
+    }
+
+    /// Autosave: once anything is dirty, writes land after a short
+    /// quiet period — the deadline is pushed while a drag, a pressed
+    /// pointer button, or a focused text field means the edit is
+    /// still in motion. A failed flush retries on a slower cadence
+    /// and reports through the status line.
+    fn drive_autosave(&mut self, ctx: &egui::Context) {
+        if !self.any_dirty() {
+            self.autosave_at = None;
+            return;
+        }
+        let now = Instant::now();
+        let busy = self.drag.is_some()
+            || ctx.input(|input| input.pointer.any_down())
+            || ctx.memory(|memory| memory.focused().is_some());
+        let deadline = self.autosave_at.get_or_insert(now + AUTOSAVE_DELAY);
+        if busy {
+            *deadline = now + AUTOSAVE_DELAY;
+        }
+        if now < *deadline {
+            ctx.request_repaint_after(*deadline - now);
+            return;
+        }
+        self.autosave_at = None;
+        if let Err(error) = self.flush_dirty() {
+            self.status = Some(Err(format!("autosave failed: {error}")));
+            self.autosave_at = Some(Instant::now() + AUTOSAVE_RETRY);
+            ctx.request_repaint_after(AUTOSAVE_RETRY);
+        }
     }
 }
 
-fn saved_message(path: &Path, backup: Option<&Path>) -> String {
-    match backup {
-        Some(backup) => format!("saved {} (backup: {})", path.display(), backup.display()),
-        None => format!("saved {}", path.display()),
+/// Quiet period between the last edit and its autosave.
+const AUTOSAVE_DELAY: Duration = Duration::from_millis(600);
+/// Backoff before an autosave that failed (e.g. an unreachable
+/// volume) is retried.
+const AUTOSAVE_RETRY: Duration = Duration::from_secs(5);
+
+/// The write path behind autosave: the first write since `path` was
+/// last loaded goes backup-first; later writes reuse that backup so
+/// per-edit saves don't churn the rotation.
+fn write_through(
+    backed_up: &mut HashSet<PathBuf>,
+    path: &Path,
+    bytes: &[u8],
+) -> Result<(), String> {
+    if backed_up.contains(path) {
+        safe_write::write_synced(path, bytes).map_err(|error| error.to_string())
+    } else {
+        safe_write::backup_first_write(path, bytes).map_err(|error| error.to_string())?;
+        backed_up.insert(path.to_path_buf());
+        Ok(())
     }
 }
 
@@ -1291,12 +1379,10 @@ impl eframe::App for App {
         match action {
             Some(PaneAction::MoveToVault) => self.status = Some(self.move_left_to_vault()),
             Some(PaneAction::MoveToFile) => self.status = Some(self.move_vault_to_left()),
-            Some(PaneAction::SaveCharacter) => self.status = Some(self.save_character()),
-            Some(PaneAction::SaveStash(slot)) => self.status = Some(self.save_stash(slot)),
-            Some(PaneAction::SaveVault) => self.status = Some(self.save_vault()),
             Some(PaneAction::PreviewRespec(kind)) => self.preview_respec(kind),
             None => {}
         }
+        self.drive_autosave(ui.ctx());
         self.show_respec_modal(ui.ctx());
         self.show_reload_modal(ui.ctx());
     }
@@ -1305,9 +1391,6 @@ impl eframe::App for App {
 enum PaneAction {
     MoveToVault,
     MoveToFile,
-    SaveCharacter,
-    SaveStash(StashSlot),
-    SaveVault,
     PreviewRespec(RespecKind),
 }
 
@@ -1495,6 +1578,9 @@ impl App {
                 ui.colored_label(ui.visuals().error_fg_color, message);
             }
             None => {}
+        }
+        if self.any_dirty() {
+            ui.weak("Saving…");
         }
     }
 
@@ -1791,7 +1877,7 @@ impl App {
                 ui.label("Nothing to refund — this character is already respecced.");
             } else {
                 ui.label(body);
-                ui.weak("Applies in memory; nothing is written until you press Save.");
+                ui.weak("Saves automatically once confirmed.");
             }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
@@ -1821,12 +1907,11 @@ impl App {
         pane.original = result.bytes;
         pane.dirty = true;
         Ok(match kind {
-            RespecKind::Attributes => format!(
-                "refunded {} attribute points — press Save to write",
-                result.refunded_points
-            ),
+            RespecKind::Attributes => {
+                format!("refunded {} attribute points", result.refunded_points)
+            }
             RespecKind::Skills => format!(
-                "removed {} skills, refunded {} skill points — press Save to write",
+                "removed {} skills, refunded {} skill points",
                 result.skills_removed, result.refunded_points
             ),
         })
@@ -2329,12 +2414,6 @@ fn show_character_section(
         if gold.changed() {
             pane.dirty = true;
         }
-        if ui
-            .add_enabled(pane.dirty, egui::Button::new("Save"))
-            .clicked()
-        {
-            action = Some(PaneAction::SaveCharacter);
-        }
         let selection_here = matches!(*selected, Some((GridId::Sack(_), _)));
         if ui
             .add_enabled(can_move && selection_here, egui::Button::new("→ Vault"))
@@ -2497,12 +2576,6 @@ fn show_stash_section(
             "{title} {}×{}",
             pane.stash.width, pane.stash.height
         ));
-        if ui
-            .add_enabled(pane.dirty, egui::Button::new("Save"))
-            .clicked()
-        {
-            action = Some(PaneAction::SaveStash(slot));
-        }
         let selection_here = matches!(*selected, Some((current, _)) if current == grid);
         if ui
             .add_enabled(can_move && selection_here, egui::Button::new("→ Vault"))
@@ -2540,12 +2613,6 @@ fn show_vault_pane(
     let mut action = None;
     ui.horizontal(|ui| {
         ui.heading("Vault");
-        if ui
-            .add_enabled(pane.dirty, egui::Button::new("Save"))
-            .clicked()
-        {
-            action = Some(PaneAction::SaveVault);
-        }
         if ui
             .add_enabled(
                 can_move && pane.selected.is_some(),
