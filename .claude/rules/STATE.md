@@ -10,14 +10,15 @@ Last updated: 2026-08-26
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** PRs #21 (auto-refresh), #27 (Game.dll socket
-patch), #28 (mod boss-count variants), #29 (equipment paper doll)
-all merged 2026-08-26 in one sweep; wrap-up done; branches deleted;
-release binary rebuilt from main. Nothing is in flight. What's open
-is user acceptance, all in-game/in-app:
-paper doll (drag gear off/onto the doll, then load the save
-in-game), auto-refresh feel on the SMB tree, dll patch (Enable,
-socket an epic in-game), and the Gorgon rematch on the new
+**Resume here:** `feat/vault-search` is in flight (PR open): the
+all-vaults search view — design-dialogued (full-window mode, all
+vault files, full row actions), implemented, all gates green. Once
+merged, run the wrap-up. In-app acceptance ask: press "Search
+vaults…" (⌘F), filter, right-click/Shift+Click/Alt+Click a row,
+double-click to jump. Older acceptance still open, all
+in-game/in-app: paper doll (drag gear off/onto the doll, then load
+the save in-game), auto-refresh feel on the SMB tree, dll patch
+(Enable, socket an epic in-game), and the Gorgon rematch on the new
 `LootPlusXMAX3Tuned1xBoss` bundle (both bundles installed in
 CustomMaps; the original is back to 3x bosses). Otherwise pick from
 "Next up".
@@ -76,7 +77,8 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#29 all merged; all gates green |
+| `main` | trunk | PRs #1–#32 all merged; all gates green |
+| `feat/vault-search` | all-vaults search view | PR open; gates green; in-app acceptance pending |
 
 ## Next up
 
@@ -108,6 +110,21 @@ that's better") and merged as PR #7.
 
 ## Most recent meaningful progress
 
+- **2026-08-26 — All-vaults search view (feat/vault-search, PR
+  open).** User ask, design-dialogued (full-window mode / all vault
+  files / full row actions): "Search vaults…" (⌘F) swaps the panes
+  for one filtered, sortable table over every vault file — icon,
+  rarity-colored name, requirement, vault, full colored stat lines.
+  Filters: name, affix presence/value, stat value, wearable-at req
+  caps, set, rarity, type, socketed, expansion, per-vault. Core got
+  `query` (Filter conjunction over the cache; typed
+  `stats::item_requirements`; `item_name` promoted from MCP);
+  non-open vaults load as docs riding the existing autosave/
+  refresh/conflict rails (`DocId::SearchVault`), and rows are
+  gesture targets via `GridId::SearchDoc` (send/duplicate/copy/
+  extract); double-click adopts the vault into the pane by model
+  handoff — no disk round-trip. 211 tests. Risk: table feel
+  (row heights, gestures) unverified until the user runs it.
 - **2026-08-26 — Status messages became toasts (UX fix).** User
   report: the header status line reflowed the panes on every action
   ("jittering" while moving items), and "Saving…" flickered its own
@@ -255,25 +272,6 @@ that's better") and merged as PR #7.
   tests. Risk: none new — read-only reads of already-sanctioned
   formats; user acceptance from their buildcrafting project
   pending.
-- **2026-08-26 — MCP server: game data for AI agents.** User ask
-  ("a true MCP server, not just exports"), design-dialogued:
-  read-only v1, official `rmcp` SDK, stdio-only — ARCHITECTURE
-  amended in the same PR (third workspace member `univault-mcp`, a
-  sanctioned read-only MCP boundary; write tools or network
-  transports need a new dialog). Ten tools: overview,
-  list/get_character (via new core `respec::progression` read API —
-  attributes, unspent pools, per-skill levels), get_bank
-  (personal/shared/relic, `.dxg` twin fallback), list/get_vault,
-  search_items across every possession with location provenance,
-  get_item_details (tooltip blocks), list/get_mastery (skilltree
-  distillation promoted from the example into `core::skilltree`).
-  Paths from the GUI's config (recent-files → save roots,
-  game-dir.txt, vaults/) with `UNIVAULT_*` env overrides; `.mcp.json`
-  registers it for Claude Code. Verified over real JSON-RPC against
-  the live tree: builds/equipment resolve, 45 relic-bank items,
-  Hecate hits across bank + vault, Earth tree 34 skills. 167 tests.
-  ACCEPTED 2026-08-26: driven from the user's "Titan Quest AE
-  Buildcrafting" Claude project — "able to use just fine".
 ## Blocked / waiting
 
 - *(nothing)*
