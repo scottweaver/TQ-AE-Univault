@@ -108,6 +108,24 @@ that's better") and merged as PR #7.
 
 ## Most recent meaningful progress
 
+- **2026-08-26 — Auto-refresh: panes follow the files.** User ask
+  (no more Reload button pressing), design-dialogued: prompt on
+  conflict, silent reload when clean. A background thread polls the
+  open character/banks/vault stamps every 2s (stat can hang on SMB —
+  never on the UI thread); a change must hold across two polls
+  before acting (never read the game's file mid-write — the relic
+  bank truncation lesson); own autosaves are recognized by stamp and
+  ignored; reloads defer while a drag/press/text-edit is live.
+  Conflicts: an external change to a dirty pane — or an autosave
+  about to land on an externally-changed file (every save now
+  re-checks freshness first) — suspends autosave and prompts:
+  reload-from-disk or keep-mine (keep-mine re-arms backup-first so
+  the external bytes are backed up before being overwritten; the
+  recorded exception to one-backup-per-load). ARCHITECTURE data-flow
+  amended in-PR. The manual Reload button stays. 170 tests. Risk:
+  feel unverified against the real SMB tree (poll cost, false
+  settles) until the user runs it; a reload that fails mid-conflict
+  leaves the pane clean-but-stale (same as manual Reload).
 - **2026-08-26 — MCP server: game data for AI agents.** User ask
   ("a true MCP server, not just exports"), design-dialogued:
   read-only v1, official `rmcp` SDK, stdio-only — ARCHITECTURE
@@ -298,23 +316,6 @@ that's better") and merged as PR #7.
   Risk: GUI modal visually unverified; in-game acceptance (load a
   respecced save, re-pick masteries) still pending.
 
-- **2026-08-25 — GitHub repo + CI + test-coverage push.** The user
-  created the GitHub remote and `main` is pushed. New CI workflow:
-  rustfmt, clippy `-D warnings` + tests across
-  ubuntu/macos/windows (platform independence is now checked, not
-  assumed), and a cargo-llvm-cov job publishing an lcov artifact.
-  Coverage rose 70%→80% of lines: fixture tests now cover the stats
-  engine's dark corners (granted skills incl. triggered levels, pet
-  summons, augments, racial bonuses, global XOR chance groups,
-  damage qualifiers, duration-scaled slow damage, socketed-relic and
-  artifact bonus assembly, expansion origin), cache corrupt-file
-  errors, dictionary/style branches, and the GUI's pure helpers.
-  The origin test caught a real bug: DBR paths start with
-  `records\`, so the XPACK check never matched and expansion lines
-  never rendered. `Item::bare` joined core's public API. Risk:
-  `stats/render.rs` sits at ~71% lines (formula reagents, buff
-  redirects, scroll effects untested); GUI shell logic beyond the
-  helpers is uncovered; CI is unproven until the first Actions run.
 ## Blocked / waiting
 
 - *(nothing)*
