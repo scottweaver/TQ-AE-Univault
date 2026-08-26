@@ -47,6 +47,32 @@
         "records\\skills\\earth\\pet\\coredweller_20.dbr"
       ],
       "multiply": { "characterMana": 2.5, "characterManaRegen": 1.75 }
+    },
+    {
+      "kind": "record",
+      "records": [
+        "records\\skills\\nature\\pet\\wolf_01.dbr",
+        "records\\skills\\nature\\pet\\wolf_02.dbr",
+        "records\\skills\\nature\\pet\\wolf_03.dbr",
+        "records\\skills\\nature\\pet\\wolf_04.dbr",
+        "records\\skills\\nature\\pet\\wolf_05.dbr",
+        "records\\skills\\nature\\pet\\wolf_06.dbr",
+        "records\\skills\\nature\\pet\\wolf_07.dbr",
+        "records\\skills\\nature\\pet\\wolf_08.dbr",
+        "records\\skills\\nature\\pet\\wolf_09.dbr",
+        "records\\skills\\nature\\pet\\wolf_10.dbr",
+        "records\\skills\\nature\\pet\\wolf_11.dbr",
+        "records\\skills\\nature\\pet\\wolf_12.dbr",
+        "records\\skills\\nature\\pet\\wolf_13.dbr",
+        "records\\skills\\nature\\pet\\wolf_14.dbr",
+        "records\\skills\\nature\\pet\\wolf_15.dbr",
+        "records\\skills\\nature\\pet\\wolf_16.dbr",
+        "records\\skills\\nature\\pet\\wolf_17.dbr",
+        "records\\skills\\nature\\pet\\wolf_18.dbr",
+        "records\\skills\\nature\\pet\\wolf_19.dbr",
+        "records\\skills\\nature\\pet\\wolf_20.dbr"
+      ],
+      "multiply": { "characterMana": 2.5, "characterManaRegen": 1.75 }
     }
   ]
 }
