@@ -124,6 +124,24 @@ that's better") and merged as PR #7.
   guides say several — consolidated since), 4 bytes change,
   reverse byte-identical. Risk: the user pressing Enable and
   socketing an epic in-game is the acceptance test.
+- **2026-08-26 — Auto-refresh: panes follow the files.** User ask
+  (no more Reload button pressing), design-dialogued: prompt on
+  conflict, silent reload when clean. A background thread polls the
+  open character/banks/vault stamps every 2s (stat can hang on SMB —
+  never on the UI thread); a change must hold across two polls
+  before acting (never read the game's file mid-write — the relic
+  bank truncation lesson); own autosaves are recognized by stamp and
+  ignored; reloads defer while a drag/press/text-edit is live.
+  Conflicts: an external change to a dirty pane — or an autosave
+  about to land on an externally-changed file (every save now
+  re-checks freshness first) — suspends autosave and prompts:
+  reload-from-disk or keep-mine (keep-mine re-arms backup-first so
+  the external bytes are backed up before being overwritten; the
+  recorded exception to one-backup-per-load). ARCHITECTURE data-flow
+  amended in-PR. The manual Reload button stays. 170 tests. Risk:
+  feel unverified against the real SMB tree (poll cost, false
+  settles) until the user runs it; a reload that fails mid-conflict
+  leaves the pane clean-but-stale (same as manual Reload).
 - **2026-08-26 — Socket into any rarity (type rules kept).** User
   ask, refined: relics/charms socket into epics, legendaries, and
   set pieces in-app — the game's *type* rules stay (a ring relic

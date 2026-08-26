@@ -96,6 +96,9 @@ struct CharacterPane {
     original: Vec<u8>,
     character: Box<PlayerCharacter>,
     dirty: bool,
+    /// The file's identity when we last read or wrote it; a live
+    /// stamp that differs means someone else changed the file.
+    disk_stamp: Option<SourceStamp>,
 }
 
 struct StashPane {
@@ -103,6 +106,7 @@ struct StashPane {
     original: Vec<u8>,
     stash: Stash,
     dirty: bool,
+    disk_stamp: Option<SourceStamp>,
 }
 
 /// Which stash document a path or action addresses: the character's
@@ -178,6 +182,111 @@ struct VaultPane {
     vault: Vault,
     dirty: bool,
     selected: Option<(GridId, usize)>,
+    disk_stamp: Option<SourceStamp>,
+}
+
+/// One open document, addressable across panes — the unit the
+/// auto-refresh watcher reloads or reports conflicts on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DocId {
+    Character,
+    Stash(StashSlot),
+    Vault,
+}
+
+impl DocId {
+    const ALL: [Self; 5] = [
+        Self::Character,
+        Self::Stash(StashSlot::Bank),
+        Self::Stash(StashSlot::Shared),
+        Self::Stash(StashSlot::Relic),
+        Self::Vault,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Character => "the character",
+            Self::Stash(slot) => slot.label(),
+            Self::Vault => "the vault",
+        }
+    }
+}
+
+/// Decides when an externally observed file state is worth acting
+/// on: a change must hold steady across two consecutive polls so a
+/// file caught mid-write (the game saves over SMB) is never read
+/// half-written.
+#[derive(Default)]
+struct RefreshTracker {
+    pending: HashMap<PathBuf, SourceStamp>,
+}
+
+impl RefreshTracker {
+    /// Feeds one poll observation; `true` means the change settled
+    /// and the caller should reload or raise a conflict now.
+    fn settled(
+        &mut self,
+        path: &Path,
+        observed: Option<&SourceStamp>,
+        ours: Option<&SourceStamp>,
+    ) -> bool {
+        let Some(observed) = observed else {
+            // Unreachable file (mount hiccup, mid-rename): never act,
+            // never accumulate.
+            self.pending.remove(path);
+            return false;
+        };
+        if Some(observed) == ours {
+            self.pending.remove(path);
+            return false;
+        }
+        if self.pending.get(path) == Some(observed) {
+            return true;
+        }
+        self.pending.insert(path.to_path_buf(), observed.clone());
+        false
+    }
+
+    fn forget(&mut self, path: &Path) {
+        self.pending.remove(path);
+    }
+}
+
+/// Background poller behind auto-refresh: stats the watched files on
+/// a fixed cadence and reports the snapshots. Stat calls can hang on
+/// an unreachable network mount, so they never run on the UI thread.
+struct FileWatcher {
+    paths: std::sync::Arc<std::sync::Mutex<Vec<PathBuf>>>,
+    receiver: std::sync::mpsc::Receiver<Vec<(PathBuf, Option<SourceStamp>)>>,
+}
+
+fn start_watcher() -> FileWatcher {
+    let paths = std::sync::Arc::new(std::sync::Mutex::new(Vec::<PathBuf>::new()));
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let shared = std::sync::Arc::clone(&paths);
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(WATCH_INTERVAL);
+            let watched = match shared.lock() {
+                Ok(guard) => guard.clone(),
+                Err(_) => return,
+            };
+            if watched.is_empty() {
+                continue;
+            }
+            let snapshot: Vec<(PathBuf, Option<SourceStamp>)> = watched
+                .into_iter()
+                .map(|path| {
+                    let stamp = stamp_of(&path);
+                    (path, stamp)
+                })
+                .collect();
+            if sender.send(snapshot).is_err() {
+                return;
+            }
+        }
+    });
+    FileWatcher { paths, receiver }
 }
 
 enum GameStatus {
@@ -394,6 +503,11 @@ struct App {
     /// The Game.dll socket-patch dialog, holding the inspected file
     /// while open.
     dll_patch: Option<DllPatchDialog>,
+    watcher: FileWatcher,
+    refresh: RefreshTracker,
+    /// Documents whose file changed on disk while they hold unsaved
+    /// edits — resolved by the conflict modal, never silently.
+    conflicts: Vec<DocId>,
 }
 
 /// The socket-patch modal's working state: the dll it read and what
@@ -441,6 +555,9 @@ impl App {
             drag: None,
             pending_zoom: 1.0,
             dll_patch: None,
+            watcher: start_watcher(),
+            refresh: RefreshTracker::default(),
+            conflicts: Vec::new(),
         };
         app.status = Some(match args.vault {
             Some(path) => app.open(&path),
@@ -485,14 +602,17 @@ impl App {
     /// Missing or unreadable companions never fail the character
     /// open — they are reported in the status line.
     fn open_character_file(&mut self, path: &Path) -> Result<String, String> {
+        let disk_stamp = stamp_of(path);
         let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
         let character = Box::new(chr::parse_player(&bytes).map_err(|error| error.to_string())?);
         self.backed_up.remove(path);
+        self.refresh.forget(path);
         self.character = Some(CharacterPane {
             path: path.to_path_buf(),
             original: bytes,
             character,
             dirty: false,
+            disk_stamp,
         });
         self.left_selected = None;
         self.recents.remember(path);
@@ -558,6 +678,7 @@ impl App {
     /// automatically (backup-first, so the bad file is kept).
     fn open_stash(&mut self, slot: StashSlot, path: &Path) -> Result<StashOpened, String> {
         self.backed_up.remove(path);
+        self.refresh.forget(path);
         let pane = self.stash_slot_mut(slot);
         if pane
             .as_ref()
@@ -565,6 +686,7 @@ impl App {
         {
             return Ok(StashOpened::KeptDirty);
         }
+        let disk_stamp = stamp_of(path);
         let direct = std::fs::read(path)
             .map_err(|error| error.to_string())
             .and_then(|bytes| {
@@ -593,6 +715,7 @@ impl App {
             original,
             stash,
             dirty,
+            disk_stamp,
         });
         self.left_selected = None;
         Ok(opened)
@@ -600,6 +723,8 @@ impl App {
 
     fn open_vault(&mut self, path: &Path) -> Result<String, String> {
         self.backed_up.remove(path);
+        self.refresh.forget(path);
+        let disk_stamp = stamp_of(path);
         let vault = if path.exists() {
             let text = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
             Vault::from_json(&text).map_err(|error| error.to_string())?
@@ -612,6 +737,7 @@ impl App {
             vault,
             dirty: created,
             selected: None,
+            disk_stamp,
         });
         Ok(if created {
             format!(
@@ -634,6 +760,7 @@ impl App {
             vault,
             dirty: true,
             selected: None,
+            disk_stamp: stamp_of(&json_path),
         });
         Ok(format!(
             "imported legacy vault; saving writes {}",
@@ -658,6 +785,7 @@ impl App {
                 vault: empty,
                 dirty: false,
                 selected: None,
+                disk_stamp: stamp_of(&path),
             });
             return Ok(format!("created default vault at {}", path.display()));
         }
@@ -1174,8 +1302,11 @@ impl App {
         }
     }
 
-    fn save_character(&mut self) -> Result<(), String> {
+    fn save_character(&mut self) -> Result<SaveOutcome, String> {
         let pane = self.character.as_mut().ok_or("nothing to save")?;
+        if stamp_of(&pane.path) != pane.disk_stamp {
+            return Ok(SaveOutcome::Conflict);
+        }
         let spliced = chr::replace_inventory(&pane.original, &pane.character.sacks)
             .map_err(|error| error.to_string())?;
         let bytes = chr::replace_money(&spliced, pane.character.info.money)
@@ -1183,16 +1314,20 @@ impl App {
         write_through(&mut self.backed_up, &pane.path, &bytes)?;
         pane.original = bytes;
         pane.dirty = false;
-        Ok(())
+        pane.disk_stamp = stamp_of(&pane.path);
+        Ok(SaveOutcome::Saved)
     }
 
-    fn save_stash(&mut self, slot: StashSlot) -> Result<(), String> {
+    fn save_stash(&mut self, slot: StashSlot) -> Result<SaveOutcome, String> {
         let pane = match slot {
             StashSlot::Bank => self.bank.as_mut(),
             StashSlot::Shared => self.shared.as_mut(),
             StashSlot::Relic => self.relics.as_mut(),
         }
         .ok_or("nothing to save")?;
+        if stamp_of(&pane.path) != pane.disk_stamp {
+            return Ok(SaveOutcome::Conflict);
+        }
         let bytes = stash::replace_items(&pane.original, &pane.stash.items)
             .map_err(|error| error.to_string())?;
         write_through(&mut self.backed_up, &pane.path, &bytes)?;
@@ -1200,15 +1335,20 @@ impl App {
         std::fs::write(pane.path.with_extension("dxg"), twin).map_err(|error| error.to_string())?;
         pane.original = bytes;
         pane.dirty = false;
-        Ok(())
+        pane.disk_stamp = stamp_of(&pane.path);
+        Ok(SaveOutcome::Saved)
     }
 
-    fn save_vault(&mut self) -> Result<(), String> {
+    fn save_vault(&mut self) -> Result<SaveOutcome, String> {
         let pane = self.right.as_mut().ok_or("nothing to save")?;
+        if stamp_of(&pane.path) != pane.disk_stamp {
+            return Ok(SaveOutcome::Conflict);
+        }
         let json = pane.vault.to_json().map_err(|error| error.to_string())?;
         write_through(&mut self.backed_up, &pane.path, json.as_bytes())?;
         pane.dirty = false;
-        Ok(())
+        pane.disk_stamp = stamp_of(&pane.path);
+        Ok(SaveOutcome::Saved)
     }
 
     fn any_dirty(&self) -> bool {
@@ -1219,23 +1359,38 @@ impl App {
             || self.right.as_ref().is_some_and(|pane| pane.dirty)
     }
 
+    /// Saves everything dirty whose file is still as we left it; a
+    /// pane whose file changed underneath is skipped and queued as a
+    /// conflict instead — the app never overwrites an external
+    /// change without being told to.
     fn flush_dirty(&mut self) -> Result<(), String> {
-        if self.character.as_ref().is_some_and(|pane| pane.dirty) {
-            self.save_character()?;
+        if self.character.as_ref().is_some_and(|pane| pane.dirty)
+            && self.save_character()? == SaveOutcome::Conflict
+        {
+            self.push_conflict(DocId::Character);
         }
         for slot in [StashSlot::Bank, StashSlot::Shared, StashSlot::Relic] {
             if self
                 .stash_slot_mut(slot)
                 .as_ref()
                 .is_some_and(|pane| pane.dirty)
+                && self.save_stash(slot)? == SaveOutcome::Conflict
             {
-                self.save_stash(slot)?;
+                self.push_conflict(DocId::Stash(slot));
             }
         }
-        if self.right.as_ref().is_some_and(|pane| pane.dirty) {
-            self.save_vault()?;
+        if self.right.as_ref().is_some_and(|pane| pane.dirty)
+            && self.save_vault()? == SaveOutcome::Conflict
+        {
+            self.push_conflict(DocId::Vault);
         }
         Ok(())
+    }
+
+    fn push_conflict(&mut self, doc: DocId) {
+        if !self.conflicts.contains(&doc) {
+            self.conflicts.push(doc);
+        }
     }
 
     /// Autosave: once anything is dirty, writes land after a short
@@ -1244,6 +1399,12 @@ impl App {
     /// still in motion. A failed flush retries on a slower cadence
     /// and reports through the status line.
     fn drive_autosave(&mut self, ctx: &egui::Context) {
+        if !self.conflicts.is_empty() {
+            // Conflicted panes stay dirty until the user decides;
+            // retrying the flush would only re-detect the conflict.
+            self.autosave_at = None;
+            return;
+        }
         if !self.any_dirty() {
             self.autosave_at = None;
             return;
@@ -1267,6 +1428,205 @@ impl App {
             ctx.request_repaint_after(AUTOSAVE_RETRY);
         }
     }
+
+    /// The open document's path, live disk stamp baseline, and dirty
+    /// flag — what auto-refresh compares poll observations against.
+    fn doc_state(&self, doc: DocId) -> Option<(PathBuf, Option<SourceStamp>, bool)> {
+        match doc {
+            DocId::Character => self
+                .character
+                .as_ref()
+                .map(|pane| (pane.path.clone(), pane.disk_stamp.clone(), pane.dirty)),
+            DocId::Stash(slot) => match slot {
+                StashSlot::Bank => &self.bank,
+                StashSlot::Shared => &self.shared,
+                StashSlot::Relic => &self.relics,
+            }
+            .as_ref()
+            .map(|pane| (pane.path.clone(), pane.disk_stamp.clone(), pane.dirty)),
+            DocId::Vault => self
+                .right
+                .as_ref()
+                .map(|pane| (pane.path.clone(), pane.disk_stamp.clone(), pane.dirty)),
+        }
+    }
+
+    /// Auto-refresh: keeps the watcher pointed at the open documents,
+    /// drains its snapshots, and acts once a change has settled —
+    /// clean panes reload silently, dirty ones raise the conflict
+    /// modal. Never acts mid-interaction.
+    fn drive_refresh(&mut self, ctx: &egui::Context) {
+        let watched: Vec<PathBuf> = DocId::ALL
+            .iter()
+            .filter_map(|doc| self.doc_state(*doc).map(|(path, _, _)| path))
+            .collect();
+        if let Ok(mut guard) = self.watcher.paths.lock() {
+            *guard = watched;
+        }
+        ctx.request_repaint_after(WATCH_INTERVAL);
+        let mut latest = None;
+        while let Ok(snapshot) = self.watcher.receiver.try_recv() {
+            latest = Some(snapshot);
+        }
+        let Some(snapshot) = latest else { return };
+        let busy = self.drag.is_some()
+            || ctx.input(|input| input.pointer.any_down())
+            || ctx.memory(|memory| memory.focused().is_some());
+        if busy {
+            return;
+        }
+        let mut reloaded = Vec::new();
+        let mut failed = Vec::new();
+        for doc in DocId::ALL {
+            let Some((path, ours, dirty)) = self.doc_state(doc) else {
+                continue;
+            };
+            let Some((_, observed)) = snapshot.iter().find(|(seen, _)| *seen == path) else {
+                continue;
+            };
+            if !self
+                .refresh
+                .settled(&path, observed.as_ref(), ours.as_ref())
+            {
+                continue;
+            }
+            if dirty {
+                self.push_conflict(doc);
+            } else {
+                match self.reload_doc(doc) {
+                    Ok(()) => reloaded.push(doc.label()),
+                    Err(error) => failed.push(format!("{}: {error}", doc.label())),
+                }
+            }
+        }
+        if !failed.is_empty() {
+            self.status = Some(Err(format!(
+                "changed on disk but could not reload {}",
+                failed.join("; ")
+            )));
+        } else if !reloaded.is_empty() {
+            self.status = Some(Ok(format!(
+                "auto-reloaded {} — changed on disk",
+                reloaded.join(", ")
+            )));
+        }
+    }
+
+    /// Re-reads one document from its own path, dropping in-memory
+    /// edits for it (callers decide when that is allowed).
+    fn reload_doc(&mut self, doc: DocId) -> Result<(), String> {
+        let (path, _, _) = self.doc_state(doc).ok_or("nothing loaded")?;
+        match doc {
+            DocId::Character => {
+                if let Some(pane) = &mut self.character {
+                    pane.dirty = false;
+                }
+                self.open_character_file(&path).map(|_| ())
+            }
+            DocId::Stash(slot) => {
+                if let Some(pane) = self.stash_slot_mut(slot).as_mut() {
+                    pane.dirty = false;
+                }
+                self.open_stash(slot, &path).map(|_| ())
+            }
+            DocId::Vault => {
+                if let Some(pane) = &mut self.right {
+                    pane.dirty = false;
+                }
+                self.open_vault(&path).map(|_| ())
+            }
+        }
+    }
+
+    /// Conflict resolution, disk wins: reload every conflicted
+    /// document, discarding the app's unsaved edits for them.
+    fn resolve_conflicts_reload(&mut self) {
+        let mut done = Vec::new();
+        let mut failed = Vec::new();
+        for doc in std::mem::take(&mut self.conflicts) {
+            match self.reload_doc(doc) {
+                Ok(()) => done.push(doc.label()),
+                Err(error) => failed.push(format!("{}: {error}", doc.label())),
+            }
+        }
+        self.status = Some(if failed.is_empty() {
+            Ok(format!("reloaded {} from disk", done.join(", ")))
+        } else {
+            Err(format!("reload failed — {}", failed.join("; ")))
+        });
+    }
+
+    /// Conflict resolution, app wins: the external version gets its
+    /// own fresh backup (re-arming backup-first — those bytes never
+    /// existed in this session), then autosave overwrites it.
+    fn resolve_conflicts_keep(&mut self) {
+        for doc in std::mem::take(&mut self.conflicts) {
+            let Some((path, _, _)) = self.doc_state(doc) else {
+                continue;
+            };
+            self.backed_up.remove(&path);
+            self.refresh.forget(&path);
+            let fresh = stamp_of(&path);
+            match doc {
+                DocId::Character => {
+                    if let Some(pane) = &mut self.character {
+                        pane.disk_stamp = fresh;
+                    }
+                }
+                DocId::Stash(slot) => {
+                    if let Some(pane) = self.stash_slot_mut(slot).as_mut() {
+                        pane.disk_stamp = fresh;
+                    }
+                }
+                DocId::Vault => {
+                    if let Some(pane) = &mut self.right {
+                        pane.disk_stamp = fresh;
+                    }
+                }
+            }
+        }
+        self.autosave_at = Some(Instant::now());
+        self.status = Some(Ok(
+            "keeping your edits — the external version is backed up before the next save"
+                .to_string(),
+        ));
+    }
+
+    fn show_conflict_modal(&mut self, ctx: &egui::Context) {
+        if self.conflicts.is_empty() {
+            return;
+        }
+        let labels: Vec<&str> = self
+            .conflicts
+            .iter()
+            .map(|doc| DocId::label(*doc))
+            .collect();
+        let mut reload = false;
+        let mut keep = false;
+        // Deliberately ignores Esc/outside-click: a conflict needs a
+        // decision — autosave stays suspended until one is made.
+        egui::Modal::new(egui::Id::new("conflict-modal")).show(ctx, |ui| {
+            ui.set_max_width(400.0);
+            ui.heading("Changed on disk");
+            ui.label(format!(
+                "The game (or another tool) changed {} on disk while you have \
+                 unsaved edits here. Saving is paused until you choose.",
+                labels.join(", ")
+            ));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                reload = ui.button("Reload from disk (drop my edits)").clicked();
+                keep = ui
+                    .button("Keep my edits (overwrites; backup kept)")
+                    .clicked();
+            });
+        });
+        if reload {
+            self.resolve_conflicts_reload();
+        } else if keep {
+            self.resolve_conflicts_keep();
+        }
+    }
 }
 
 /// Quiet period between the last edit and its autosave.
@@ -1274,6 +1634,17 @@ const AUTOSAVE_DELAY: Duration = Duration::from_millis(600);
 /// Backoff before an autosave that failed (e.g. an unreachable
 /// volume) is retried.
 const AUTOSAVE_RETRY: Duration = Duration::from_secs(5);
+/// Auto-refresh poll cadence; a change must also hold across two
+/// consecutive polls before the app acts on it.
+const WATCH_INTERVAL: Duration = Duration::from_secs(2);
+
+/// How one save attempt concluded: written, or skipped because the
+/// file changed externally since our baseline.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SaveOutcome {
+    Saved,
+    Conflict,
+}
 
 /// The write path behind autosave: the first write since `path` was
 /// last loaded goes backup-first; later writes reuse that backup so
@@ -1507,11 +1878,13 @@ impl eframe::App for App {
             Some(PaneAction::PreviewRespec(kind)) => self.preview_respec(kind),
             None => {}
         }
+        self.drive_refresh(ui.ctx());
         self.drive_autosave(ui.ctx());
         self.show_respec_modal(ui.ctx());
         self.show_reload_modal(ui.ctx());
         self.show_bonus_modal(ui.ctx());
         self.show_dll_patch_modal(ui.ctx());
+        self.show_conflict_modal(ui.ctx());
     }
 }
 
@@ -3417,6 +3790,57 @@ mod tests {
 
     fn args(raw: &[&str]) -> CliArgs {
         CliArgs::from_args(raw.iter().map(std::ffi::OsString::from))
+    }
+
+    fn stamp(size: i64, mtime: i64) -> SourceStamp {
+        SourceStamp {
+            path: "watched".to_string(),
+            size,
+            mtime_seconds: mtime,
+        }
+    }
+
+    #[test]
+    fn refresh_settles_only_after_two_matching_observations() {
+        let mut tracker = RefreshTracker::default();
+        let path = Path::new("watched");
+        let ours = stamp(10, 100);
+        let changed = stamp(20, 200);
+        // Matching the pane's stamp never fires.
+        assert!(!tracker.settled(path, Some(&ours), Some(&ours)));
+        // First sighting of a change arms; the second, identical
+        // sighting settles.
+        assert!(!tracker.settled(path, Some(&changed), Some(&ours)));
+        assert!(tracker.settled(path, Some(&changed), Some(&ours)));
+        // Once the pane catches up, the pending state clears.
+        assert!(!tracker.settled(path, Some(&changed), Some(&changed)));
+        assert!(!tracker.settled(path, Some(&changed), Some(&changed)));
+    }
+
+    #[test]
+    fn refresh_never_acts_on_a_file_still_being_written() {
+        let mut tracker = RefreshTracker::default();
+        let path = Path::new("watched");
+        let ours = stamp(10, 100);
+        // A file growing between polls (mid-write) keeps re-arming.
+        assert!(!tracker.settled(path, Some(&stamp(20, 200)), Some(&ours)));
+        assert!(!tracker.settled(path, Some(&stamp(30, 201)), Some(&ours)));
+        assert!(!tracker.settled(path, Some(&stamp(40, 202)), Some(&ours)));
+        // Only stability fires.
+        assert!(tracker.settled(path, Some(&stamp(40, 202)), Some(&ours)));
+    }
+
+    #[test]
+    fn refresh_ignores_unreachable_files() {
+        let mut tracker = RefreshTracker::default();
+        let path = Path::new("watched");
+        let ours = stamp(10, 100);
+        let changed = stamp(20, 200);
+        assert!(!tracker.settled(path, Some(&changed), Some(&ours)));
+        // The mount dropping mid-detection resets everything.
+        assert!(!tracker.settled(path, None, Some(&ours)));
+        assert!(!tracker.settled(path, Some(&changed), Some(&ours)));
+        assert!(tracker.settled(path, Some(&changed), Some(&ours)));
     }
 
     #[test]
