@@ -37,18 +37,14 @@ pub const FRAME_MARGIN: egui::Margin = egui::Margin {
     bottom: 30,
 };
 
-/// A clean stretch of the character screen's parchment — the
-/// backdrop fallback when the skills screen's stone is absent.
-const PARCHMENT: Src = Src::new(428.0, 448.0, 44.0, 44.0);
-
-/// Weathered stone from the mastery screen's big panel: cracks and
-/// rust veins, and large enough that tiling doesn't read as a
-/// pattern.
-const STONE: Src = Src::new(180.0, 226.0, 150.0, 100.0);
-
 /// The character screen's doll panel: dark-grey cracked stone — the
-/// game's own backdrop for contrast areas.
+/// game's own backdrop for contrast areas, and the source the beige
+/// window backdrop is derived from.
 const DOLL_STONE: Src = Src::new(110.0, 104.0, 178.0, 322.0);
+
+/// The inventory panel's plain olive margin — near-uniform, so it
+/// tiles without a visible pattern; the framed panes' interior.
+const INVENTORY_MARGIN: Src = Src::new(24.0, 494.0, 44.0, 40.0);
 
 /// End-cap widths of the 3-sliced strips, in source pixels.
 const TITLE_CAPS: f32 = 24.0;
@@ -111,9 +107,12 @@ pub struct Chrome {
     title: TextureHandle,
     tab: TextureHandle,
     character: TextureHandle,
-    /// The mastery screen's stone panel; absent in caches imported
-    /// before it joined the manifest.
-    skills: Option<TextureHandle>,
+    /// The inventory panel art; absent in caches imported before it
+    /// joined the manifest.
+    inventory: Option<TextureHandle>,
+    /// The doll stone re-lit to yellow/beige at upload — the window
+    /// backdrop.
+    beige: TextureHandle,
     button_up: TextureHandle,
     button_over: TextureHandle,
     button_down: TextureHandle,
@@ -148,12 +147,14 @@ impl Chrome {
         ];
         let tooltip: Option<Vec<TextureHandle>> =
             tooltip_keys.iter().map(|key| load(key)).collect();
+        let beige = beige_stone(&cache.chrome("characterscreen/characterwindow01.tex")?)?;
         Some(Self {
             caravan: load("caravan/caravanwindow01.tex")?,
             title: load("caravan/caravantitle01.tex")?,
             tab: load("caravan/storageareatab01.tex")?,
             character: load("characterscreen/characterwindow01.tex")?,
-            skills: load("skills/skillsbackground01.tex"),
+            inventory: load("inventorytab01.tex"),
+            beige: ctx.load_texture("chrome:beige-stone", beige, egui::TextureOptions::LINEAR),
             button_up: load("optionswindow/buttonup01.tex")?,
             button_over: load("optionswindow/buttonover01.tex")?,
             button_down: load("optionswindow/buttondown01.tex")?,
@@ -398,12 +399,10 @@ impl Chrome {
         true
     }
 
-    /// The window backdrop: weathered tan stone, tiled.
+    /// The window backdrop: the cracked stone in beige, tiled with
+    /// alternating mirroring so the cracks don't read as a repeat.
     pub fn backdrop(&self, painter: &egui::Painter, rect: Rect, tint: Color32) {
-        match &self.skills {
-            Some(skills) => tile(painter, skills, STONE, rect, tint),
-            None => tile(painter, &self.character, PARCHMENT, rect, tint),
-        }
+        tile_mirrored(painter, &self.beige, rect, tint);
     }
 
     /// Dark-grey cracked stone stretched over a contrast area — the
@@ -412,20 +411,92 @@ impl Chrome {
         blit(painter, &self.character, DOLL_STONE, rect, Color32::WHITE);
     }
 
-    /// The same dark stone, tiled — a framed pane's interior fill.
+    /// A framed pane's interior: the inventory panel's plain olive,
+    /// or the painted theme surface for caches predating that art.
     pub fn interior(&self, painter: &egui::Painter, rect: Rect) {
-        tile(
-            painter,
-            &self.character,
-            DOLL_STONE,
-            rect,
-            Color32::from_gray(210),
-        );
+        match &self.inventory {
+            Some(inventory) => tile(
+                painter,
+                inventory,
+                INVENTORY_MARGIN,
+                rect,
+                Color32::from_gray(170),
+            ),
+            None => {
+                painter.rect_filled(rect, 0.0, crate::theme::SURFACE);
+            }
+        }
     }
 }
 
 fn blit(painter: &egui::Painter, texture: &TextureHandle, src: Src, dest: Rect, tint: Color32) {
     painter.image(texture.id(), dest, src.uv(texture), tint);
+}
+
+/// The doll stone re-lit toward yellow/beige: a per-channel
+/// multiply-and-lift chosen so the slab face lands near the game's
+/// beige stone while the cracks stay dark. `None` only if the art
+/// is smaller than the doll panel region.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // channel math clamps to 0..=255
+fn beige_stone(image: &univault_core::tex::RgbaImage) -> Option<egui::ColorImage> {
+    let (x0, y0, w, h) = (
+        DOLL_STONE.x as usize,
+        DOLL_STONE.y as usize,
+        DOLL_STONE.w as usize,
+        DOLL_STONE.h as usize,
+    );
+    if image.width < x0 + w || image.height < y0 + h {
+        return None;
+    }
+    let relit = |value: u8, factor: f32, lift: f32| -> u8 {
+        (f32::from(value).mul_add(factor, lift)).clamp(0.0, 255.0) as u8
+    };
+    let mut pixels = Vec::with_capacity(w * h * 4);
+    for y in y0..y0 + h {
+        for x in x0..x0 + w {
+            let i = (y * image.width + x) * 4;
+            pixels.push(relit(image.pixels[i], 2.0, 31.0));
+            pixels.push(relit(image.pixels[i + 1], 2.0, 30.0));
+            pixels.push(relit(image.pixels[i + 2], 1.9, 18.0));
+            pixels.push(255);
+        }
+    }
+    Some(egui::ColorImage::from_rgba_unmultiplied([w, h], &pixels))
+}
+
+/// Tiles a whole texture with alternating horizontal/vertical
+/// mirroring, so a strong feature (a crack) never lines up into a
+/// visible repeat.
+fn tile_mirrored(painter: &egui::Painter, texture: &TextureHandle, rect: Rect, tint: Color32) {
+    let clipped = painter.with_clip_rect(rect);
+    let size = texture.size_vec2();
+    let src = Src::full(texture);
+    let mut row = 0;
+    let mut y = rect.min.y;
+    while y < rect.max.y {
+        let mut column = 0;
+        let mut x = rect.min.x;
+        while x < rect.max.x {
+            let mut uv = if column % 2 == 0 {
+                src.uv(texture)
+            } else {
+                src.uv_mirrored(texture)
+            };
+            if row % 2 == 1 {
+                std::mem::swap(&mut uv.min.y, &mut uv.max.y);
+            }
+            clipped.image(
+                texture.id(),
+                Rect::from_min_size(pos2(x, y), size),
+                uv,
+                tint,
+            );
+            x += size.x;
+            column += 1;
+        }
+        y += size.y;
+        row += 1;
+    }
 }
 
 fn tile(painter: &egui::Painter, texture: &TextureHandle, src: Src, rect: Rect, tint: Color32) {

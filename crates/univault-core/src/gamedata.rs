@@ -33,6 +33,7 @@ pub const CHROME_TEXTURES: &[&str] = &[
     "caravan/storageareatab01.tex",
     "characterscreen/characterwindow01.tex",
     "skills/skillsbackground01.tex",
+    "inventorytab01.tex",
     "optionswindow/buttonup01.tex",
     "optionswindow/buttonover01.tex",
     "optionswindow/buttondown01.tex",

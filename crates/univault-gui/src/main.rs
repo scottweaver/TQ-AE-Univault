@@ -1265,6 +1265,26 @@ impl App {
         }
     }
 
+    /// The one-time game-data import, as a modal over the UI.
+    fn show_import_modal(&self, ctx: &egui::Context) {
+        let GameStatus::Importing(job) = &self.game else {
+            return;
+        };
+        egui::Modal::new(egui::Id::new("import-modal")).show(ctx, |ui| {
+            ui.set_width(420.0);
+            ui.label(theme::heading("Importing game data"));
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(&job.progress.label);
+            });
+            ui.add(egui::ProgressBar::new(job.progress.fraction.unwrap_or(0.0)).show_percentage());
+            ui.add_space(4.0);
+            ui.weak("One time after installing or updating the game — the cache remembers.");
+        });
+        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+    }
+
     /// The gestures-and-behaviors reference, sectioned — opened from
     /// the toolbar's Help button.
     fn show_help_modal(&mut self, ctx: &egui::Context) {
@@ -2256,7 +2276,7 @@ impl eframe::App for App {
 
 /// The stone backdrop is the character screen's parchment, darkened
 /// so cream text outside the panes stays readable.
-const STONE_TINT: egui::Color32 = egui::Color32::from_gray(105);
+const STONE_TINT: egui::Color32 = egui::Color32::from_gray(150);
 
 impl App {
     fn main_ui(&mut self, ui: &mut egui::Ui) {
@@ -2335,6 +2355,7 @@ impl App {
         self.show_bonus_modal(ui.ctx());
         self.show_dll_patch_modal(ui.ctx());
         self.show_help_modal(ui.ctx());
+        self.show_import_modal(ui.ctx());
         self.show_conflict_modal(ui.ctx());
         self.show_toasts(ui.ctx());
     }
@@ -2558,20 +2579,7 @@ impl App {
             ui.colored_label(ui.visuals().warn_fg_color, note);
         }
         match &self.game {
-            GameStatus::Loaded(_) => {}
-            GameStatus::Importing(job) => {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(&job.progress.label);
-                });
-                ui.add(
-                    egui::ProgressBar::new(job.progress.fraction.unwrap_or(0.0))
-                        .desired_width(360.0)
-                        .show_percentage(),
-                );
-                ui.ctx()
-                    .request_repaint_after(std::time::Duration::from_millis(100));
-            }
+            GameStatus::Loaded(_) | GameStatus::Importing(_) => {}
             GameStatus::Absent => {
                 ui.weak(
                     "No game data imported yet — use 'Import game data…' and pick your \
@@ -3621,6 +3629,25 @@ impl App {
     }
 }
 
+/// A doll slot's backdrop: a clipped window onto the one continuous
+/// sheet of dark flagstone spanning the canvas, or the painted
+/// fallback fill.
+fn paint_slot_inset(
+    painter: &egui::Painter,
+    doll_chrome: Option<&chrome::Chrome>,
+    canvas: egui::Rect,
+    box_rect: egui::Rect,
+) {
+    match doll_chrome {
+        Some(pane_chrome) => {
+            pane_chrome.doll_stone(&painter.with_clip_rect(box_rect), canvas);
+        }
+        None => {
+            painter.rect_filled(box_rect, 2.0, theme::SURFACE_DEEP.gamma_multiply(0.85));
+        }
+    }
+}
+
 /// One Help-modal section: a gold section title over bulleted,
 /// wrapping lines.
 fn help_section(ui: &mut egui::Ui, title: &str, lines: &[&str]) {
@@ -4355,8 +4382,11 @@ fn show_equipment_doll(
     }
     let painter = ui.painter_at(rect);
     let visuals = ui.visuals().clone();
-    match caches.chrome(ui.ctx(), db) {
-        Some(pane_chrome) => pane_chrome.doll_stone(&painter, rect),
+    let doll_chrome = caches.chrome(ui.ctx(), db);
+    // The game's layering: tan stone canvas, each slot a window
+    // onto one continuous sheet of dark flagstone.
+    match &doll_chrome {
+        Some(pane_chrome) => pane_chrome.backdrop(&painter, rect, egui::Color32::from_gray(200)),
         None => {
             painter.rect_filled(rect, 2.0, visuals.extreme_bg_color);
         }
@@ -4374,7 +4404,7 @@ fn show_equipment_doll(
         )
         .shrink(1.0);
         let grid = GridId::Equipment(slot);
-        painter.rect_filled(box_rect, 2.0, theme::SURFACE_DEEP.gamma_multiply(0.85));
+        paint_slot_inset(&painter, doll_chrome.as_ref(), rect, box_rect);
         painter.rect_stroke(
             box_rect,
             2.0,
