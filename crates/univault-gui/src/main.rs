@@ -4030,40 +4030,20 @@ fn grid_view(
 ) {
     let cell = fill_cell_size(ui.available_width(), dims.0);
     let size = egui::vec2(cells_at(dims.0, cell), cells_at(dims.1, cell));
-    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+    let pad = ((ui.available_width() - size.x) / 2.0).max(0.0);
+    let (rect, response) = ui
+        .horizontal(|ui| {
+            ui.add_space(pad);
+            ui.allocate_exact_size(size, egui::Sense::click_and_drag())
+        })
+        .inner;
     if !ui.is_rect_visible(rect) {
         return;
     }
     let painter = ui.painter_at(rect);
     let visuals = ui.visuals().clone();
-    if let Some(chrome) = caches.chrome(ui.ctx(), db) {
-        for row in 0..dims.1 {
-            for column in 0..dims.0 {
-                let tile = egui::Rect::from_min_size(
-                    rect.min + egui::vec2(cells_at(column, cell), cells_at(row, cell)),
-                    egui::vec2(cell, cell),
-                );
-                chrome.grid_cell(&painter, tile);
-            }
-        }
-    } else {
-        painter.rect_filled(rect, 2.0, theme::GRID_BG);
-        let grid_stroke = egui::Stroke::new(0.5, theme::GRID_LINE);
-        for column in 0..=dims.0 {
-            let x = rect.min.x + cells_at(column, cell);
-            painter.line_segment(
-                [egui::pos2(x, rect.min.y), egui::pos2(x, rect.max.y)],
-                grid_stroke,
-            );
-        }
-        for row in 0..=dims.1 {
-            let y = rect.min.y + cells_at(row, cell);
-            painter.line_segment(
-                [egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)],
-                grid_stroke,
-            );
-        }
-    }
+    let grid_chrome = caches.chrome(ui.ctx(), db);
+    paint_grid_background(&painter, grid_chrome.as_ref(), rect, dims, cell);
 
     // The grab position decides which item a starting drag lifts —
     // the pointer may already have moved past egui's drag threshold.
@@ -4120,7 +4100,9 @@ fn grid_view(
         }
     }
     if let Some(item) = hovered {
-        response.on_hover_ui(|ui| item_tooltip(ui, item, db, caches));
+        egui::Tooltip::for_widget(&response)
+            .at_pointer()
+            .show(|ui| item_tooltip(ui, item, db, caches));
     }
 
     if let Some(state) = drag
@@ -4130,6 +4112,44 @@ fn grid_view(
         frame.candidate = Some(paint_drop_preview(
             &painter, rect, cell, dims, entries, grid, state, pointer, db, caches,
         ));
+    }
+}
+
+/// The grid's cell art (or painted fallback lines) behind items.
+fn paint_grid_background(
+    painter: &egui::Painter,
+    grid_chrome: Option<&chrome::Chrome>,
+    rect: egui::Rect,
+    dims: (i32, i32),
+    cell: f32,
+) {
+    if let Some(grid_chrome) = grid_chrome {
+        for row in 0..dims.1 {
+            for column in 0..dims.0 {
+                let tile = egui::Rect::from_min_size(
+                    rect.min + egui::vec2(cells_at(column, cell), cells_at(row, cell)),
+                    egui::vec2(cell, cell),
+                );
+                grid_chrome.grid_cell(painter, tile);
+            }
+        }
+    } else {
+        painter.rect_filled(rect, 2.0, theme::GRID_BG);
+        let grid_stroke = egui::Stroke::new(0.5, theme::GRID_LINE);
+        for column in 0..=dims.0 {
+            let x = rect.min.x + cells_at(column, cell);
+            painter.line_segment(
+                [egui::pos2(x, rect.min.y), egui::pos2(x, rect.max.y)],
+                grid_stroke,
+            );
+        }
+        for row in 0..=dims.1 {
+            let y = rect.min.y + cells_at(row, cell);
+            painter.line_segment(
+                [egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)],
+                grid_stroke,
+            );
+        }
     }
 }
 
@@ -4671,7 +4691,9 @@ fn show_equipment_doll(
         }
     }
     if let Some(item) = hovered {
-        response.on_hover_ui(|ui| item_tooltip(ui, item, db, caches));
+        egui::Tooltip::for_widget(&response)
+            .at_pointer()
+            .show(|ui| item_tooltip(ui, item, db, caches));
     }
 }
 
@@ -4853,16 +4875,15 @@ fn show_left_tabs(
         *view.selected = None;
     }
     let mut active = None;
+    let strip_top = ui.available_rect_before_wrap().min;
+    let strip_width = ui.available_rect_before_wrap().width();
+    let backing = pane_chrome.map(|_| ui.painter().add(egui::Shape::Noop));
     if pane_chrome.is_some() {
-        let avail = ui.available_rect_before_wrap();
-        let backing = egui::Rect::from_min_size(avail.min, egui::vec2(avail.width(), 36.0));
-        ui.painter()
-            .rect_filled(backing, 0.0, egui::Color32::from_rgb(26, 21, 12));
-        ui.add_space(5.0);
+        ui.add_space(10.0);
     }
-    ui.horizontal(|ui| {
+    let row = ui.horizontal(|ui| {
         if pane_chrome.is_some() {
-            ui.add_space(8.0);
+            ui.add_space(10.0);
         }
         for tab in LeftTab::ALL {
             let loaded = view.loaded(tab);
@@ -4889,6 +4910,16 @@ fn show_left_tabs(
             }
         }
     });
+    if let Some(backing) = backing {
+        let rect = egui::Rect::from_min_max(
+            strip_top,
+            egui::pos2(strip_top.x + strip_width, row.response.rect.max.y + 4.0),
+        );
+        ui.painter().set(
+            backing,
+            egui::Shape::rect_filled(rect, 0.0, egui::Color32::from_rgb(26, 21, 12)),
+        );
+    }
     active
 }
 
@@ -5039,16 +5070,15 @@ fn show_vault_tabs(
     }
     let cursor = ui.ctx().pointer_latest_pos();
     let mut active = None;
+    let strip_top = ui.available_rect_before_wrap().min;
+    let strip_width = ui.available_rect_before_wrap().width();
+    let backing = pane_chrome.map(|_| ui.painter().add(egui::Shape::Noop));
     if pane_chrome.is_some() {
-        let avail = ui.available_rect_before_wrap();
-        let backing = egui::Rect::from_min_size(avail.min, egui::vec2(avail.width(), 36.0));
-        ui.painter()
-            .rect_filled(backing, 0.0, egui::Color32::from_rgb(26, 21, 12));
-        ui.add_space(5.0);
+        ui.add_space(10.0);
     }
-    ui.horizontal_wrapped(|ui| {
+    let row = ui.horizontal_wrapped(|ui| {
         if pane_chrome.is_some() {
-            ui.add_space(8.0);
+            ui.add_space(10.0);
         }
         for (tab, sack) in pane.vault.sacks.iter().enumerate() {
             let label = if sack.items.is_empty() {
@@ -5074,6 +5104,16 @@ fn show_vault_tabs(
             }
         }
     });
+    if let Some(backing) = backing {
+        let rect = egui::Rect::from_min_max(
+            strip_top,
+            egui::pos2(strip_top.x + strip_width, row.response.rect.max.y + 4.0),
+        );
+        ui.painter().set(
+            backing,
+            egui::Shape::rect_filled(rect, 0.0, egui::Color32::from_rgb(26, 21, 12)),
+        );
+    }
     active
 }
 
