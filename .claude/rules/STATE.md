@@ -119,9 +119,6 @@ that's better") and merged as PR #7.
 UIX queue (user-listed 2026-08-27, to address after the theme work;
 order not yet prioritized):
 
-- Inventory tab becomes an exclusive sub-tabbed view — Player
-  (doll) | Main Sack | Sack 1…n — one at a time, replacing the
-  stacked collapsing sections.
 - On launch with no file argument, auto-open the last viewed
   character (recents already persist; open the newest).
 - Toolbar order: "Recent" directly right of "Open character…".

@@ -25,12 +25,12 @@ const FRAME_TL: Src = Src::new(0.0, 0.0, 14.0, 14.0);
 const FRAME_TC: Src = Src::new(16.0, 0.0, 150.0, 14.0);
 const FRAME_LC: Src = Src::new(0.0, 150.0, 14.0, 320.0);
 const FRAME_RC: Src = Src::new(551.0, 150.0, 14.0, 320.0);
-// Bottom pieces start at the ornate band (y 612+): rows 606..612 in
+// Bottom pieces start at the ornate band (y 618+): rows 606..618 in
 // the art are the caravan's interior rim and gutter, which read as a
 // stray dark border inside the pane.
-const FRAME_BL: Src = Src::new(0.0, 612.0, 29.0, 25.0);
+const FRAME_BL: Src = Src::new(0.0, 618.0, 29.0, 19.0);
 const FRAME_BC: Src = Src::new(150.0, 618.0, 240.0, 19.0);
-const FRAME_BR: Src = Src::new(536.0, 612.0, 29.0, 25.0);
+const FRAME_BR: Src = Src::new(536.0, 618.0, 29.0, 19.0);
 
 /// Content inset that keeps a pane's widgets off the frame bands.
 pub const FRAME_MARGIN: egui::Margin = egui::Margin {
@@ -40,13 +40,14 @@ pub const FRAME_MARGIN: egui::Margin = egui::Margin {
     bottom: 24,
 };
 
-/// A clean block of the mastery screen's light flagstone; a 2×2
-/// mirrored collage of it becomes the stretched backdrop.
-const LIGHT_BLOCK: Src = Src::new(604.0, 144.0, 144.0, 192.0);
+/// A clean strip of the character screen's light flagstone — the
+/// reference's exact surface; a mirrored collage of it becomes the
+/// stretched backdrop.
+const LIGHT_BLOCK: Src = Src::new(417.0, 424.0, 39.0, 196.0);
 
-/// The fallback block from the character screen, for caches
-/// predating the mastery-panel art.
-const LIGHT_BLOCK_FALLBACK: Src = Src::new(258.0, 16.0, 125.0, 42.0);
+/// Mirror repetitions assembling the collage from [`LIGHT_BLOCK`].
+const LIGHT_COLS: usize = 8;
+const LIGHT_ROWS: usize = 2;
 
 /// The inventory panel's plain olive margin — the "dark smooth
 /// stone" of the reference; the framed panes' interior.
@@ -481,6 +482,51 @@ impl Chrome {
     }
 }
 
+/// A soft inner shadow the frame casts onto the content — the
+/// reference screens shade their borders for depth.
+pub fn inner_shadow(painter: &egui::Painter, rect: Rect, depth: f32) {
+    let dark = Color32::from_black_alpha(90);
+    let clear = Color32::TRANSPARENT;
+    let mut mesh = egui::Mesh::default();
+    let mut quad = |corners: [(egui::Pos2, Color32); 4]| {
+        let base = u32::try_from(mesh.vertices.len()).unwrap_or(0);
+        for (pos, color) in corners {
+            mesh.vertices.push(egui::epaint::Vertex {
+                pos,
+                uv: egui::epaint::WHITE_UV,
+                color,
+            });
+        }
+        mesh.indices
+            .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+    };
+    quad([
+        (rect.left_top(), dark),
+        (rect.right_top(), dark),
+        (pos2(rect.max.x, rect.min.y + depth), clear),
+        (pos2(rect.min.x, rect.min.y + depth), clear),
+    ]);
+    quad([
+        (pos2(rect.min.x, rect.max.y - depth), clear),
+        (pos2(rect.max.x, rect.max.y - depth), clear),
+        (rect.right_bottom(), dark),
+        (rect.left_bottom(), dark),
+    ]);
+    quad([
+        (rect.left_top(), dark),
+        (pos2(rect.min.x + depth, rect.min.y), clear),
+        (pos2(rect.min.x + depth, rect.max.y), clear),
+        (rect.left_bottom(), dark),
+    ]);
+    quad([
+        (pos2(rect.max.x - depth, rect.min.y), clear),
+        (rect.right_top(), dark),
+        (rect.right_bottom(), dark),
+        (pos2(rect.max.x - depth, rect.max.y), clear),
+    ]);
+    painter.add(egui::Shape::mesh(mesh));
+}
+
 fn blit(painter: &egui::Painter, texture: &TextureHandle, src: Src, dest: Rect, tint: Color32) {
     painter.image(texture.id(), dest, src.uv(texture), tint);
 }
@@ -490,35 +536,39 @@ fn blit(painter: &egui::Painter, texture: &TextureHandle, src: Src, dest: Rect, 
 /// smaller than the block.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // slice coordinates are small positive integers
 fn light_stone(cache: &GameCache) -> Option<egui::ColorImage> {
-    let (image, block) = match cache.chrome("skills/skillsbackground01.tex") {
-        Some(image) => (image, LIGHT_BLOCK),
-        None => (
-            cache.chrome("characterscreen/characterwindow01.tex")?,
-            LIGHT_BLOCK_FALLBACK,
-        ),
-    };
-    let image = &image;
+    let image = &cache.chrome("characterscreen/characterwindow01.tex")?;
     let (x0, y0, w, h) = (
-        block.x as usize,
-        block.y as usize,
-        block.w as usize,
-        block.h as usize,
+        LIGHT_BLOCK.x as usize,
+        LIGHT_BLOCK.y as usize,
+        LIGHT_BLOCK.w as usize,
+        LIGHT_BLOCK.h as usize,
     );
     if image.width < x0 + w || image.height < y0 + h {
         return None;
     }
-    let mut pixels = vec![0_u8; (2 * w) * (2 * h) * 4];
-    for y in 0..2 * h {
-        for x in 0..2 * w {
-            let sx = if x < w { x } else { 2 * w - 1 - x };
-            let sy = if y < h { y } else { 2 * h - 1 - y };
+    let (out_w, out_h) = (LIGHT_COLS * w, LIGHT_ROWS * h);
+    let mut pixels = vec![0_u8; out_w * out_h * 4];
+    for y in 0..out_h {
+        for x in 0..out_w {
+            let (tile_x, offset_x) = (x / w, x % w);
+            let (tile_y, offset_y) = (y / h, y % h);
+            let sx = if tile_x % 2 == 0 {
+                offset_x
+            } else {
+                w - 1 - offset_x
+            };
+            let sy = if tile_y % 2 == 0 {
+                offset_y
+            } else {
+                h - 1 - offset_y
+            };
             let from = ((y0 + sy) * image.width + x0 + sx) * 4;
-            let to = (y * 2 * w + x) * 4;
+            let to = (y * out_w + x) * 4;
             pixels[to..to + 4].copy_from_slice(&image.pixels[from..from + 4]);
         }
     }
     Some(egui::ColorImage::from_rgba_unmultiplied(
-        [2 * w, 2 * h],
+        [out_w, out_h],
         &pixels,
     ))
 }

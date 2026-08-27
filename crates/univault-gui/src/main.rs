@@ -539,6 +539,7 @@ struct App {
     /// while open.
     dll_patch: Option<DllPatchDialog>,
     show_help: bool,
+    inventory_tab: InventoryTab,
     watcher: FileWatcher,
     refresh: RefreshTracker,
     /// Documents whose file changed on disk while they hold unsaved
@@ -604,6 +605,7 @@ impl App {
             pending_zoom: 1.0,
             dll_patch: None,
             show_help: false,
+            inventory_tab: InventoryTab::Equipment,
             watcher: start_watcher(),
             refresh: RefreshTracker::default(),
             conflicts: Vec::new(),
@@ -2361,6 +2363,13 @@ impl App {
     }
 }
 
+/// The Inventory view's exclusive sub-tab: the doll, or one sack.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InventoryTab {
+    Equipment,
+    Sack(usize),
+}
+
 enum PaneAction {
     MoveToVault,
     MoveAllToVault,
@@ -3589,6 +3598,7 @@ impl App {
                     shared: &mut self.shared,
                     relics: &mut self.relics,
                     active_tab: &mut self.active_tab,
+                    inventory_tab: &mut self.inventory_tab,
                     selected: &mut self.left_selected,
                 };
                 let pane_chrome = caches.chrome(columns[0].ctx(), db);
@@ -3627,6 +3637,47 @@ impl App {
         });
         (action, frame)
     }
+}
+
+/// The Inventory view's exclusive sub-tab strip:
+/// Equipment | Main Sack | Sack 1 | … | Sack n. Mid-drag, pointing
+/// at a tab switches to it so a drop can land in any sack or on the
+/// doll.
+fn show_inventory_tabs(
+    ui: &mut egui::Ui,
+    pane: &CharacterPane,
+    db: Option<&GameCache>,
+    caches: &mut Caches,
+    inventory_tab: &mut InventoryTab,
+    selected: &mut Option<(GridId, usize)>,
+    drag: Option<&DragState>,
+) {
+    let pane_chrome = caches.chrome(ui.ctx(), db);
+    let cursor = ui.ctx().pointer_latest_pos();
+    ui.horizontal_wrapped(|ui| {
+        let mut tab_button = |ui: &mut egui::Ui, target: InventoryTab, label: &str| {
+            let selected_tab = *inventory_tab == target;
+            let response = match pane_chrome.as_ref() {
+                Some(pane_chrome) => pane_chrome.tab(ui, selected_tab, true, label),
+                None => ui.add(egui::Button::selectable(selected_tab, label)),
+            };
+            let drag_over =
+                drag.is_some() && cursor.is_some_and(|cursor| response.rect.contains(cursor));
+            if (response.clicked() || drag_over) && *inventory_tab != target {
+                *inventory_tab = target;
+                *selected = None;
+            }
+        };
+        tab_button(ui, InventoryTab::Equipment, "Equipment");
+        for (index, sack) in pane.character.sacks.iter().enumerate() {
+            let label = if index == 0 {
+                format!("Main Sack ({})", sack.items.len())
+            } else {
+                format!("Sack {} ({})", index, sack.items.len())
+            };
+            tab_button(ui, InventoryTab::Sack(index), &label);
+        }
+    });
 }
 
 /// Allocates the doll's canvas centered in the pane.
@@ -3746,7 +3797,9 @@ fn framed_pane(
             ui.set_min_height(ui.available_height());
             add(ui);
         });
-    pane_chrome.pane_frame(ui.painter(), response.response.rect);
+    let rect = response.response.rect;
+    chrome::inner_shadow(ui.painter(), rect.shrink(12.0), 14.0);
+    pane_chrome.pane_frame(ui.painter(), rect);
 }
 
 /// On-screen size of one grid cell — the textures' native 32 pixels.
@@ -4523,6 +4576,7 @@ fn show_character_section(
     db: Option<&GameCache>,
     caches: &mut Caches,
     can_move: bool,
+    inventory_tab: &mut InventoryTab,
     selected: &mut Option<(GridId, usize)>,
     drag: Option<&DragState>,
     frame: &mut DragFrame,
@@ -4580,9 +4634,15 @@ fn show_character_section(
         }
     });
     ui.label(theme::path_text(pane.path.display().to_string()));
-    egui::CollapsingHeader::new(theme::section("Equipment"))
-        .default_open(true)
-        .show(ui, |ui| {
+    if let InventoryTab::Sack(index) = *inventory_tab
+        && index >= pane.character.sacks.len()
+    {
+        *inventory_tab = InventoryTab::Equipment;
+    }
+    show_inventory_tabs(ui, pane, db, caches, inventory_tab, selected, drag);
+    ui.add_space(4.0);
+    match *inventory_tab {
+        InventoryTab::Equipment => {
             show_equipment_doll(
                 ui,
                 &pane.character.equipment,
@@ -4592,12 +4652,9 @@ fn show_character_section(
                 drag,
                 frame,
             );
-        });
-    for (index, sack) in pane.character.sacks.iter().enumerate() {
-        let title = format!("Sack {} ({} items)", index + 1, sack.items.len());
-        egui::CollapsingHeader::new(theme::section(title))
-            .default_open(true)
-            .show(ui, |ui| {
+        }
+        InventoryTab::Sack(index) => {
+            if let Some(sack) = pane.character.sacks.get(index) {
                 let entries: Vec<(usize, &Item)> = sack.items.iter().enumerate().collect();
                 grid_view(
                     ui,
@@ -4610,7 +4667,8 @@ fn show_character_section(
                     drag,
                     frame,
                 );
-            });
+            }
+        }
     }
     action
 }
@@ -4623,6 +4681,7 @@ struct LeftView<'a> {
     shared: &'a mut Option<StashPane>,
     relics: &'a mut Option<StashPane>,
     active_tab: &'a mut LeftTab,
+    inventory_tab: &'a mut InventoryTab,
     selected: &'a mut Option<(GridId, usize)>,
 }
 
@@ -4682,7 +4741,17 @@ fn show_left_column(
     ui.separator();
     match *view.active_tab {
         LeftTab::Inventory => view.character.as_mut().and_then(|pane| {
-            show_character_section(ui, pane, db, caches, can_move, view.selected, drag, frame)
+            show_character_section(
+                ui,
+                pane,
+                db,
+                caches,
+                can_move,
+                view.inventory_tab,
+                view.selected,
+                drag,
+                frame,
+            )
         }),
         LeftTab::Bank => view.bank.as_mut().and_then(|pane| {
             show_stash_section(
