@@ -26,9 +26,6 @@ const FRAME_BL: Src = Src::new(0.0, 606.0, 29.0, 31.0);
 const FRAME_BC: Src = Src::new(150.0, 606.0, 240.0, 31.0);
 const FRAME_BR: Src = Src::new(536.0, 606.0, 29.0, 31.0);
 
-/// On-screen height of [`Chrome::tab_band`] — [`FRAME_BC`]'s rows.
-pub const TAB_BAND_H: f32 = 31.0;
-
 /// Content inset that keeps a pane's widgets inside the gold rim.
 pub const FRAME_MARGIN: egui::Margin = egui::Margin {
     left: 30,
@@ -279,12 +276,6 @@ impl Chrome {
         );
     }
 
-    /// The tab strip's textured baseline: the caravan band flipped,
-    /// tiled across a panel's top — what the active tab merges into.
-    pub fn tab_band(&self, painter: &egui::Painter, span: Rect) {
-        tile_h_flipped(painter, &self.caravan, FRAME_BC, span, true);
-    }
-
     /// The iron nameplate with a title on it.
     pub fn nameplate(&self, ui: &mut egui::Ui, text: &str) {
         let galley = ui.painter().layout_no_wrap(
@@ -504,24 +495,6 @@ pub fn tab_anchor(chrome: &Chrome, painter: &egui::Painter, rect: Rect, text: &s
         rect.center().y - galley.size().y / 2.0,
     );
     painter.galley(pos, galley, Color32::from_rgb(250, 247, 238));
-}
-
-/// The thin border around a tab panel's content: black gap, then
-/// the content's gold rim — the textured band above carries the
-/// heavy edge.
-pub fn panel_border(painter: &egui::Painter, rect: Rect) {
-    painter.rect_stroke(
-        rect.expand(6.0),
-        0.0,
-        egui::Stroke::new(4.0, Color32::from_rgb(8, 6, 3)),
-        egui::StrokeKind::Inside,
-    );
-    painter.rect_stroke(
-        rect.expand(2.0),
-        0.0,
-        egui::Stroke::new(2.0, Color32::from_rgb(208, 174, 96)),
-        egui::StrokeKind::Inside,
-    );
 }
 
 /// A soft inner shadow the frame casts onto the content — the

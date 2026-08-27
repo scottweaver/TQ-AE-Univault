@@ -3696,8 +3696,15 @@ fn show_inventory_tabs(
 /// Allocates the doll's canvas centered in the pane, scaled to fill
 /// the available width.
 fn allocate_doll_canvas(ui: &mut egui::Ui) -> (egui::Rect, egui::Response, f32) {
-    let cell = fit_cell_size(ui.available_size() - egui::vec2(0.0, 12.0), DOLL_CELLS);
-    let size = egui::vec2(cells_at(DOLL_CELLS.0, cell), cells_at(DOLL_CELLS.1, cell));
+    let cell = fit_cell_size(
+        ui.available_size() - egui::vec2(0.0, 12.0),
+        (DOLL_CELLS.0 + 1, DOLL_CELLS.1 + 1),
+    );
+    let pad = cell * 0.5;
+    let size = egui::vec2(
+        cells_at(DOLL_CELLS.0, cell) + 2.0 * pad,
+        cells_at(DOLL_CELLS.1, cell) + 2.0 * pad,
+    );
     let pad = ((ui.available_width() - size.x) / 2.0).max(0.0);
     let (rect, response) = ui
         .horizontal(|ui| {
@@ -3792,10 +3799,10 @@ fn plate_button(
     }
 }
 
-/// The bordered panel a tab strip owns, rendered inside a framed
-/// pane: content wrapped in the game's border sandwich
-/// ([`chrome::panel_border`]), with the active tab repainted flowing
-/// into the panel's border line.
+/// The bordered panel a tab strip owns, inside a framed pane: the
+/// content wrapped in the caravan band on all four sides (the same
+/// frame the pane wears), with the active tab repainted merging
+/// into the band's top.
 fn anchored_panel(
     ui: &mut egui::Ui,
     pane_chrome: Option<&chrome::Chrome>,
@@ -3809,12 +3816,7 @@ fn anchored_panel(
     };
     ui.add_space(2.0);
     let inner = egui::Frame::NONE
-        .inner_margin(egui::Margin {
-            left: 12,
-            right: 12,
-            top: 40,
-            bottom: 12,
-        })
+        .inner_margin(chrome::FRAME_MARGIN)
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             ui.set_min_height(ui.available_height());
@@ -3822,15 +3824,11 @@ fn anchored_panel(
         });
     let rect = inner.response.rect;
     let content = egui::Rect::from_min_max(
-        rect.min + egui::vec2(12.0, 40.0),
-        rect.max - egui::vec2(12.0, 12.0),
-    );
-    pane_chrome.tab_band(
-        ui.painter(),
-        egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), chrome::TAB_BAND_H)),
+        rect.min + egui::vec2(30.0, 35.0),
+        rect.max - egui::vec2(30.0, 35.0),
     );
     chrome::inner_shadow(ui.painter(), content, 12.0);
-    chrome::panel_border(ui.painter(), content);
+    pane_chrome.pane_frame(ui.painter(), rect);
     if let Some((tab_rect, label)) = active {
         chrome::tab_anchor(
             pane_chrome,
@@ -4600,10 +4598,11 @@ fn show_equipment_doll(
     let cursor = ui.ctx().pointer_latest_pos();
     let mut hovered: Option<&Item> = None;
 
+    let origin = rect.min + egui::vec2(cell * 0.5, cell * 0.5);
     for slot in EquipSlot::ALL {
         let (x, y, w, h) = doll_geometry(slot);
         let box_rect = egui::Rect::from_min_size(
-            rect.min + egui::vec2(cells_at(x, cell), cells_at(y, cell)),
+            origin + egui::vec2(cells_at(x, cell), cells_at(y, cell)),
             egui::vec2(cells_at(w, cell), cells_at(h, cell)),
         )
         .shrink(1.0);
@@ -4760,42 +4759,10 @@ fn show_character_section(
         *inventory_tab = InventoryTab::Equipment;
     }
     let active = show_inventory_tabs(ui, pane, db, caches, inventory_tab, selected, drag);
-    if let Some(chrome_set) = caches.chrome(ui.ctx(), db) {
-        ui.add_space(2.0);
-        let inner = egui::Frame::NONE
-            .inner_margin(egui::Margin {
-                left: 12,
-                right: 12,
-                top: 40,
-                bottom: 12,
-            })
-            .show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                show_inventory_body(ui, pane, db, caches, *inventory_tab, selected, drag, frame);
-            });
-        let rect = inner.response.rect;
-        let content = egui::Rect::from_min_max(
-            rect.min + egui::vec2(12.0, 40.0),
-            rect.max - egui::vec2(12.0, 12.0),
-        );
-        chrome_set.tab_band(
-            ui.painter(),
-            egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), chrome::TAB_BAND_H)),
-        );
-        chrome::panel_border(ui.painter(), content);
-        if let Some((tab_rect, label)) = active {
-            chrome::tab_anchor(
-                &chrome_set,
-                ui.painter(),
-                tab_rect,
-                &label,
-                rect.min.y + 18.0,
-            );
-        }
-    } else {
-        ui.add_space(4.0);
+    let body_chrome = caches.chrome(ui.ctx(), db);
+    anchored_panel(ui, body_chrome.as_ref(), active, |ui| {
         show_inventory_body(ui, pane, db, caches, *inventory_tab, selected, drag, frame);
-    }
+    });
     action
 }
 
