@@ -26,6 +26,14 @@ const FRAME_BL: Src = Src::new(0.0, 606.0, 29.0, 31.0);
 const FRAME_BC: Src = Src::new(150.0, 606.0, 240.0, 31.0);
 const FRAME_BR: Src = Src::new(536.0, 606.0, 29.0, 31.0);
 
+/// The under-tabs leather strip of the caravan window (leather
+/// body, dark line, gold trim, black gap, gold rim — the reference
+/// "textured tab border"), tiled as the border of a tab's panel.
+const LEATHER_STRIP: Src = Src::new(200.0, 85.0, 240.0, 38.0);
+
+/// On-screen thickness of the leather panel border.
+pub const LEATHER_H: f32 = 24.0;
+
 /// Content inset that keeps a pane's widgets inside the gold rim.
 pub const FRAME_MARGIN: egui::Margin = egui::Margin {
     left: 30,
@@ -165,6 +173,10 @@ pub struct Chrome {
     /// The 2×2 mirrored light-flagstone collage — the stretched
     /// backdrop.
     light_stone: TextureHandle,
+    /// The under-tabs leather strip, and its transpose for the
+    /// vertical edges (rim facing the content).
+    leather_h: TextureHandle,
+    leather_v: TextureHandle,
     button_up: TextureHandle,
     button_over: TextureHandle,
     button_down: TextureHandle,
@@ -200,6 +212,7 @@ impl Chrome {
         let tooltip: Option<Vec<TextureHandle>> =
             tooltip_keys.iter().map(|key| load(key)).collect();
         let light = light_stone(cache)?;
+        let (strip, strip_t) = leather_strips(&cache.chrome("caravan/caravanwindow01.tex")?)?;
         Some(Self {
             caravan: load("caravan/caravanwindow01.tex")?,
             title: load("caravan/caravantitle01.tex")?,
@@ -211,6 +224,8 @@ impl Chrome {
                 light,
                 egui::TextureOptions::LINEAR,
             ),
+            leather_h: ctx.load_texture("chrome:leather-h", strip, egui::TextureOptions::LINEAR),
+            leather_v: ctx.load_texture("chrome:leather-v", strip_t, egui::TextureOptions::LINEAR),
             button_up: load("optionswindow/buttonup01.tex")?,
             button_over: load("optionswindow/buttonover01.tex")?,
             button_down: load("optionswindow/buttondown01.tex")?,
@@ -273,6 +288,46 @@ impl Chrome {
                 pos2(rect.max.x - FRAME_RC.w, rect.min.y + band),
                 pos2(rect.max.x, rect.max.y - band),
             ),
+        );
+    }
+
+    /// The leather panel border — the reference's textured tab
+    /// border on all four sides, gold rim facing the content. Sides
+    /// first, so the horizontal strips own the corners.
+    pub fn leather_frame(&self, painter: &egui::Painter, rect: Rect) {
+        let side = Src::full(&self.leather_v);
+        tile_v(
+            painter,
+            &self.leather_v,
+            side,
+            Rect::from_min_max(rect.min, pos2(rect.min.x + LEATHER_H, rect.max.y)),
+        );
+        let span = Rect::from_min_max(pos2(rect.max.x - LEATHER_H, rect.min.y), rect.max);
+        let clipped = painter.with_clip_rect(span);
+        let mut y = span.min.y;
+        while y < span.max.y {
+            clipped.image(
+                self.leather_v.id(),
+                Rect::from_min_size(pos2(span.min.x, y), vec2(LEATHER_H, side.h)),
+                side.uv_flipped(&self.leather_v, true, false),
+                Color32::WHITE,
+            );
+            y += side.h;
+        }
+        let strip = Src::full(&self.leather_h);
+        tile_h_flipped(
+            painter,
+            &self.leather_h,
+            strip,
+            Rect::from_min_max(rect.min, pos2(rect.max.x, rect.min.y + LEATHER_H)),
+            false,
+        );
+        tile_h_flipped(
+            painter,
+            &self.leather_h,
+            strip,
+            Rect::from_min_max(pos2(rect.min.x, rect.max.y - LEATHER_H), rect.max),
+            true,
         );
     }
 
@@ -495,6 +550,39 @@ pub fn tab_anchor(chrome: &Chrome, painter: &egui::Painter, rect: Rect, text: &s
         rect.center().y - galley.size().y / 2.0,
     );
     painter.galley(pos, galley, Color32::from_rgb(250, 247, 238));
+}
+
+/// The under-tabs leather strip and its transpose (for vertical
+/// edges), cropped from the caravan window. `None` only if the art
+/// is smaller than the strip.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // slice coordinates are small positive integers
+fn leather_strips(
+    image: &univault_core::tex::RgbaImage,
+) -> Option<(egui::ColorImage, egui::ColorImage)> {
+    let (x0, y0, w, h) = (
+        LEATHER_STRIP.x as usize,
+        LEATHER_STRIP.y as usize,
+        LEATHER_STRIP.w as usize,
+        LEATHER_STRIP.h as usize,
+    );
+    if image.width < x0 + w || image.height < y0 + h {
+        return None;
+    }
+    let mut strip = vec![0_u8; w * h * 4];
+    let mut transposed = vec![0_u8; w * h * 4];
+    for y in 0..h {
+        for x in 0..w {
+            let from = ((y0 + y) * image.width + x0 + x) * 4;
+            let to = (y * w + x) * 4;
+            strip[to..to + 4].copy_from_slice(&image.pixels[from..from + 4]);
+            let to_t = (x * h + y) * 4;
+            transposed[to_t..to_t + 4].copy_from_slice(&image.pixels[from..from + 4]);
+        }
+    }
+    Some((
+        egui::ColorImage::from_rgba_unmultiplied([w, h], &strip),
+        egui::ColorImage::from_rgba_unmultiplied([h, w], &transposed),
+    ))
 }
 
 /// A soft inner shadow the frame casts onto the content — the

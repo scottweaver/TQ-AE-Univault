@@ -3816,26 +3816,23 @@ fn anchored_panel(
     };
     ui.add_space(2.0);
     let inner = egui::Frame::NONE
-        .inner_margin(chrome::FRAME_MARGIN)
+        .inner_margin(egui::Margin::same(28))
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             ui.set_min_height(ui.available_height());
             add(ui);
         });
     let rect = inner.response.rect;
-    let content = egui::Rect::from_min_max(
-        rect.min + egui::vec2(30.0, 35.0),
-        rect.max - egui::vec2(30.0, 35.0),
-    );
+    let content = rect.shrink(28.0);
     chrome::inner_shadow(ui.painter(), content, 12.0);
-    pane_chrome.pane_frame(ui.painter(), rect);
+    pane_chrome.leather_frame(ui.painter(), rect);
     if let Some((tab_rect, label)) = active {
         chrome::tab_anchor(
             pane_chrome,
             ui.painter(),
             tab_rect,
             &label,
-            rect.min.y + 18.0,
+            rect.min.y + 16.0,
         );
     }
 }
