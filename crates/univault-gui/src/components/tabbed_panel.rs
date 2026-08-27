@@ -44,6 +44,12 @@ const CORNER_TR: Src = Src::new(725.0, 35.0, 24.0, 24.0);
 const CORNER_BL: Src = Src::new(0.0, 721.0, 24.0, 24.0);
 const CORNER_BR: Src = Src::new(725.0, 721.0, 24.0, 24.0);
 
+/// The art's own top-left corner carries a bright nub of the flush
+/// first tab's rim (cols 0–2, rows 35–36) that reads as a stray
+/// vertical line once our tabs are inset; the top-right corner's
+/// clean outer-edge turn, mirrored, papers over it.
+const CORNER_TL_PATCH: Src = Src::new(744.0, 35.0, 5.0, 5.0);
+
 /// The panel interior — the art's flat fill.
 const INTERIOR: Color32 = Color32::BLACK;
 
@@ -193,6 +199,11 @@ impl TabbedPanel {
                 Rect::from_min_size(corner, vec2(CORNER, CORNER)),
             );
         }
+        self.blit_mirrored_h(
+            painter,
+            CORNER_TL_PATCH,
+            Rect::from_min_size(rect.min, vec2(CORNER_TL_PATCH.w, CORNER_TL_PATCH.h)),
+        );
         let h_span = rect.width() - 2.0 * CORNER;
         if h_span > 0.0 {
             self.blit(
@@ -265,12 +276,24 @@ impl TabbedPanel {
     }
 
     fn blit(&self, painter: &egui::Painter, src: Src, dest: Rect) {
+        painter.image(self.texture.id(), dest, self.uv(src), Color32::WHITE);
+    }
+
+    fn blit_mirrored_h(&self, painter: &egui::Painter, src: Src, dest: Rect) {
+        let uv = self.uv(src);
+        let mirrored = Rect {
+            min: pos2(uv.max.x, uv.min.y),
+            max: pos2(uv.min.x, uv.max.y),
+        };
+        painter.image(self.texture.id(), dest, mirrored, Color32::WHITE);
+    }
+
+    fn uv(&self, src: Src) -> Rect {
         let size = self.texture.size_vec2();
-        let uv = Rect::from_min_max(
+        Rect::from_min_max(
             pos2(src.x / size.x, src.y / size.y),
             pos2((src.x + src.w) / size.x, (src.y + src.h) / size.y),
-        );
-        painter.image(self.texture.id(), dest, uv, Color32::WHITE);
+        )
     }
 }
 
