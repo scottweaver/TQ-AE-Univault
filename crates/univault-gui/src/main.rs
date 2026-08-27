@@ -929,6 +929,95 @@ impl App {
         }
     }
 
+    /// Sends every item in the active left tab to the vault — the
+    /// open tab first, spilling into the others as they fill. The
+    /// inventory tab covers all sacks; equipped gear stays worn.
+    fn bulk_left_to_vault(&mut self, mode: BulkMode) -> Result<String, String> {
+        if self.right.is_none() {
+            return Err("load a vault first".to_string());
+        }
+        let db = match &self.game {
+            GameStatus::Loaded(data) => Some(data),
+            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
+        };
+        let vault_pane = self.right.as_mut().expect("checked above");
+        let tab = vault_pane.open_tab;
+        let vault = &mut vault_pane.vault;
+        let (outcome, source_grid, label) = match self.active_tab {
+            LeftTab::Inventory => {
+                let pane = self.character.as_mut().ok_or("no character loaded")?;
+                let outcome = pane
+                    .character
+                    .sacks
+                    .iter_mut()
+                    .map(|sack| bulk_into_vault(&mut sack.items, vault, tab, db, mode))
+                    .fold(
+                        transfer::BulkOutcome::default(),
+                        transfer::BulkOutcome::merge,
+                    );
+                (outcome, GridId::Sack(0), "the inventory")
+            }
+            LeftTab::Bank => {
+                let pane = self.bank.as_mut().ok_or("no bank loaded")?;
+                let outcome = bulk_into_vault(&mut pane.stash.items, vault, tab, db, mode);
+                (outcome, GridId::Bank, "the bank")
+            }
+            LeftTab::Shared => {
+                let pane = self.shared.as_mut().ok_or("no shared bank loaded")?;
+                let outcome = bulk_into_vault(&mut pane.stash.items, vault, tab, db, mode);
+                (outcome, GridId::Shared, "the shared bank")
+            }
+            LeftTab::Relic => {
+                let pane = self.relics.as_mut().ok_or("no relic bank loaded")?;
+                let outcome = bulk_into_vault(&mut pane.stash.items, vault, tab, db, mode);
+                (outcome, GridId::Relic, "the relic bank")
+            }
+        };
+        if outcome.placed > 0 {
+            self.mark_dirty(GridId::VaultTab(tab));
+            if mode == BulkMode::Move {
+                self.mark_dirty(source_grid);
+                self.left_selected = None;
+            }
+        }
+        let total = outcome.placed + outcome.left_behind;
+        if total == 0 {
+            return Err(format!("{label} has no items"));
+        }
+        let verb = match mode {
+            BulkMode::Move => "Moved",
+            BulkMode::Copy => "Copied",
+        };
+        if outcome.placed == 0 {
+            return Err(format!(
+                "no room in any vault tab — nothing fits from {label}"
+            ));
+        }
+        let spill_note = if outcome.spilled > 0 {
+            format!(
+                " ({} spilled into other tabs)",
+                count_items(outcome.spilled)
+            )
+        } else {
+            String::new()
+        };
+        let message = if outcome.left_behind > 0 {
+            format!(
+                "{verb} {} of {} from {label} → vault; {} fit in no tab{spill_note}",
+                outcome.placed,
+                count_items(total),
+                outcome.left_behind
+            )
+        } else {
+            format!(
+                "{verb} {} from {label} → vault tab {}{spill_note}",
+                count_items(outcome.placed),
+                tab + 1
+            )
+        };
+        Ok(message)
+    }
+
     /// The grid the active left tab addresses — where vault → left
     /// sends land. The inventory tab prefers the selected sack.
     /// `None` when the tab's document isn't loaded.
@@ -2052,6 +2141,12 @@ impl eframe::App for App {
                 self.update_drag(ui.ctx(), drag_frame);
                 match action {
                     Some(PaneAction::MoveToVault) => self.status = Some(self.move_left_to_vault()),
+                    Some(PaneAction::MoveAllToVault) => {
+                        self.status = Some(self.bulk_left_to_vault(BulkMode::Move));
+                    }
+                    Some(PaneAction::CopyAllToVault) => {
+                        self.status = Some(self.bulk_left_to_vault(BulkMode::Copy));
+                    }
                     Some(PaneAction::MoveToFile) => self.status = Some(self.move_vault_to_left()),
                     Some(PaneAction::PreviewRespec(kind)) => self.preview_respec(kind),
                     None => {}
@@ -2092,8 +2187,35 @@ impl eframe::App for App {
 
 enum PaneAction {
     MoveToVault,
+    MoveAllToVault,
+    CopyAllToVault,
     MoveToFile,
     PreviewRespec(RespecKind),
+}
+
+/// Whether a bulk send drains the source or leaves it untouched.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BulkMode {
+    Move,
+    Copy,
+}
+
+fn bulk_into_vault(
+    items: &mut Vec<Item>,
+    vault: &mut Vault,
+    tab: usize,
+    db: Option<&GameCache>,
+    mode: BulkMode,
+) -> transfer::BulkOutcome {
+    match mode {
+        BulkMode::Move => transfer::move_all_into_vault(items, vault, tab, db),
+        BulkMode::Copy => transfer::copy_all_into_vault(items, vault, tab, db),
+    }
+}
+
+fn count_items(count: usize) -> String {
+    let plural = if count == 1 { "" } else { "s" };
+    format!("{count} item{plural}")
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -4123,6 +4245,28 @@ fn show_character_section(
         {
             action = Some(PaneAction::MoveToVault);
         }
+        let has_items = pane
+            .character
+            .sacks
+            .iter()
+            .any(|sack| !sack.items.is_empty());
+        if ui
+            .add_enabled(can_move && has_items, egui::Button::new("All → Vault"))
+            .on_hover_text(
+                "Move every item from all sacks into the open vault tab, \
+                 spilling into the other tabs as it fills; equipped gear stays on",
+            )
+            .clicked()
+        {
+            action = Some(PaneAction::MoveAllToVault);
+        }
+        if ui
+            .add_enabled(can_move && has_items, egui::Button::new("Copy all → Vault"))
+            .on_hover_text("The same, as copies — every item stays in its sack")
+            .clicked()
+        {
+            action = Some(PaneAction::CopyAllToVault);
+        }
         if ui.button("Respec attributes").clicked() {
             action = Some(PaneAction::PreviewRespec(RespecKind::Attributes));
         }
@@ -4296,6 +4440,24 @@ fn show_stash_section(
             .clicked()
         {
             action = Some(PaneAction::MoveToVault);
+        }
+        let has_items = !pane.stash.items.is_empty();
+        if ui
+            .add_enabled(can_move && has_items, egui::Button::new("All → Vault"))
+            .on_hover_text(
+                "Move every item in this bank into the open vault tab, \
+                 spilling into the other tabs as it fills",
+            )
+            .clicked()
+        {
+            action = Some(PaneAction::MoveAllToVault);
+        }
+        if ui
+            .add_enabled(can_move && has_items, egui::Button::new("Copy all → Vault"))
+            .on_hover_text("The same, as copies — every item stays in the bank")
+            .clicked()
+        {
+            action = Some(PaneAction::CopyAllToVault);
         }
     });
     ui.monospace(pane.path.display().to_string());

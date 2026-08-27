@@ -15,11 +15,14 @@ the user's direction; wrap-up done. In-game acceptance still open:
 meet a tripled base-game star hero after restarting the game
 session. Ragnarök/Atlantis wild heroes spawn via champion-slot
 pools the rule deliberately skips — extend when the user reaches
-those acts. Now in flight: `feat/move-all-to-vault` — move/copy
-every item from the active left tab into the vault in one click
-(design settled with the user 2026-08-26: transfers start in the
-open vault tab and spill into later tabs when it fills; inventory
-scope is all sacks, never the equipped doll). Before that: PR #33 (all-vaults
+those acts. Now in flight: `feat/move-all-to-vault` (PR open,
+code + tests done): "All → Vault" / "Copy all → Vault" buttons on
+the character and bank section headers — transfers start in the
+open vault tab and spill into the other tabs as each fills;
+inventory means all sacks, never the equipped doll. Acceptance:
+with a vault open, click each button on a full bank and watch the
+toast counts (moved / spilled / left behind); on a pass, merge and
+wrap up. Before that: PR #33 (all-vaults
 search view) merged 2026-08-26; wrap-up done. The user already
 steered the feature twice in-session (filter bar reworked to dynamic
 criteria rows + ranges + suggestions, then a Clear-all button —
@@ -88,7 +91,7 @@ only). No issue tracker is bound yet (deliberately deferred).
 | Branch | Purpose | Status |
 |---|---|---|
 | `main` | trunk | PRs #1–#35 all merged; all gates green |
-| `feat/move-all-to-vault` | bulk move/copy of the active left tab into the vault | starting — design settled, code not yet begun |
+| `feat/move-all-to-vault` | bulk move/copy of the active left tab into the vault | PR open; awaiting in-app acceptance |
 
 ## Next up
 
@@ -120,6 +123,21 @@ that's better") and merged as PR #7.
 
 ## Most recent meaningful progress
 
+- **2026-08-26 — Bulk send: whole tab → vault (feat/move-all-to-vault,
+  PR open).** User ask: move or copy every item in the active game
+  storage tab into the vault without per-item clicks. Design
+  settled in-dialog: transfers start in the open vault tab and
+  spill into the other tabs as each fills (the pre-existing
+  `transfer::place_in_vault` cycle, which single sends deliberately
+  stopped using in PR #31 — bulk is the sanctioned spill case);
+  inventory means all sacks, never the doll. Core:
+  `move_all_into_vault`/`copy_all_into_vault` over any item Vec plus
+  `BulkOutcome` counts (placed / left-behind / spilled) — an
+  unfittable item stays in place while the rest keep moving. GUI:
+  "All → Vault" and "Copy all → Vault" buttons on the character and
+  bank section headers; one toast summarizes the counts. 221 tests.
+  Risk: in-app acceptance pending — header-button feel and toast
+  wording; a full vault leaves the remainder behind by design.
 - **2026-08-26 — Mod: star heroes actually triple (mod/hero-pools-x3,
   PR open).** User report: quest bosses 3x (Leucus) but star heroes
   never multiplied in the base game. Root cause via record dumps:
@@ -271,24 +289,6 @@ that's better") and merged as PR #7.
   of a relic-on-epic item forged here is the acceptance test; a
   Game.dll patcher (guide-based, backup + toggle) is the agreed
   next feature.
-- **2026-08-26 — Shard encoding fix + Enchanter-free extraction.**
-  User-reported bug: fresh single-shard drops refused to combine —
-  the game encodes one shard as `var1 = 0`, a rule the stats
-  renderer already carried but `can_combine` did not. New
-  `transfer::shard_count` (= `var1.max(1)`) is the one home for the
-  encoding; combine works on effective counts, display (GUI + MCP)
-  now shows 1/N like the game, and completed pieces are no longer
-  valid pour sources (PR #24, diagnosed from live data via the MCP
-  record tools). Then the user ask "keep both at the Enchanter":
-  the database interrogation proved the destroy-one-side rule is
-  engine code (two fixed template slots, no data hook — only
-  `enchanterRecoveryFactor` scales cost), so the app does it
-  instead: Alt+Click an item with a socketed relic/charm extracts
-  the piece — shard count and bonus preserved, Atlantis second
-  socket handled (its var2 stores a completed-sentinel, clamped),
-  piece auto-placed, gear committed only after the piece has a
-  home. 175 tests. Risk: in-app acceptance pending; gesture is
-  Alt+Click (documented in the header hint).
 ## Blocked / waiting
 
 - *(nothing)*
