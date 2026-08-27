@@ -3816,14 +3816,14 @@ fn anchored_panel(
     };
     ui.add_space(2.0);
     let inner = egui::Frame::NONE
-        .inner_margin(egui::Margin::same(28))
+        .inner_margin(egui::Margin::same(20))
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             ui.set_min_height(ui.available_height());
             add(ui);
         });
     let rect = inner.response.rect;
-    let content = rect.shrink(28.0);
+    let content = rect.shrink(20.0);
     chrome::inner_shadow(ui.painter(), content, 12.0);
     pane_chrome.leather_frame(ui.painter(), rect);
     if let Some((tab_rect, label)) = active {
@@ -3832,7 +3832,7 @@ fn anchored_panel(
             ui.painter(),
             tab_rect,
             &label,
-            rect.min.y + 16.0,
+            rect.min.y + 11.0,
         );
     }
 }

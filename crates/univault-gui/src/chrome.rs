@@ -29,10 +29,11 @@ const FRAME_BR: Src = Src::new(536.0, 606.0, 29.0, 31.0);
 /// The under-tabs leather strip of the caravan window (leather
 /// body, dark line, gold trim, black gap, gold rim — the reference
 /// "textured tab border"), tiled as the border of a tab's panel.
-const LEATHER_STRIP: Src = Src::new(200.0, 85.0, 240.0, 38.0);
+const LEATHER_STRIP: Src = Src::new(150.0, 108.0, 240.0, 15.0);
 
-/// On-screen thickness of the leather panel border.
-pub const LEATHER_H: f32 = 24.0;
+/// On-screen thickness of the leather panel border — the strip's
+/// native rows.
+pub const LEATHER_H: f32 = 15.0;
 
 /// Content inset that keeps a pane's widgets inside the gold rim.
 pub const FRAME_MARGIN: egui::Margin = egui::Margin {
