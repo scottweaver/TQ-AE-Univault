@@ -24,6 +24,7 @@
 
 mod safe_write;
 mod search;
+mod theme;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -52,6 +53,7 @@ fn main() -> eframe::Result {
         "TQ UniVault",
         options,
         Box::new(move |cc| {
+            theme::apply(&cc.egui_ctx);
             cc.egui_ctx
                 .all_styles_mut(|style| style.interaction.tooltip_delay = 0.0);
             Ok(Box::new(App::new(args)))
@@ -1200,7 +1202,7 @@ impl App {
         let mut confirm = false;
         let modal = egui::Modal::new(egui::Id::new("reload-modal")).show(ctx, |ui| {
             ui.set_max_width(340.0);
-            ui.heading("Reload from disk?");
+            ui.label(theme::heading("Reload from disk?"));
             ui.label(format!(
                 "Unsaved changes to {} will be lost.",
                 dirty.join(", ")
@@ -1853,7 +1855,7 @@ impl App {
         // decision — autosave stays suspended until one is made.
         egui::Modal::new(egui::Id::new("conflict-modal")).show(ctx, |ui| {
             ui.set_max_width(400.0);
-            ui.heading("Changed on disk");
+            ui.label(theme::heading("Changed on disk"));
             ui.label(format!(
                 "The game (or another tool) changed {} on disk while you have \
                  unsaved edits here. Saving is paused until you choose.",
@@ -2429,7 +2431,7 @@ impl App {
             && self.shared.is_none()
             && self.relics.is_none()
         {
-            ui.heading("TQ UniVault");
+            ui.label(theme::heading("TQ UniVault"));
             ui.label(
                 "Open (or drop) a Player.chr — its bank and the shared and relic banks load \
                  with it as tabs. A stash (.dxb/.dxg) or another vault (.json / legacy \
@@ -2875,12 +2877,12 @@ impl App {
         let mut apply: Option<bool> = None;
         egui::Modal::new(egui::Id::new("dll-patch-modal")).show(ctx, |ui| {
             ui.set_max_width(440.0);
-            ui.heading("Game.dll socket patch");
+            ui.label(theme::heading("Game.dll socket patch"));
             ui.label(format!("{}", dialog.path.display()));
             ui.add_space(6.0);
             match &dialog.outcome {
                 Err(error) => {
-                    ui.colored_label(egui::Color32::from_rgb(230, 130, 120), error);
+                    ui.colored_label(ui.visuals().error_fg_color, error);
                 }
                 Ok((_, state)) => {
                     match state {
@@ -3063,7 +3065,10 @@ impl App {
         let mut close = false;
         let modal = egui::Modal::new(egui::Id::new("bonus-modal")).show(ctx, |ui| {
             ui.set_max_width(440.0);
-            ui.heading(format!("Completion bonus — {}", pending.name));
+            ui.label(theme::heading(format!(
+                "Completion bonus — {}",
+                pending.name
+            )));
             ui.weak("The game would roll one of these; pick yours (odds shown).");
             ui.add_space(6.0);
             egui::ScrollArea::vertical()
@@ -3349,7 +3354,7 @@ impl App {
         let mut confirm = false;
         let modal = egui::Modal::new(egui::Id::new("respec-modal")).show(ctx, |ui| {
             ui.set_max_width(340.0);
-            ui.heading(title);
+            ui.label(theme::heading(title));
             if nothing_to_do {
                 ui.label("Nothing to refund — this character is already respecced.");
             } else {
@@ -3605,8 +3610,8 @@ fn grid_view(
     }
     let painter = ui.painter_at(rect);
     let visuals = ui.visuals().clone();
-    painter.rect_filled(rect, 2.0, visuals.extreme_bg_color);
-    let grid_stroke = egui::Stroke::new(0.5, visuals.widgets.noninteractive.bg_stroke.color);
+    painter.rect_filled(rect, 2.0, theme::GRID_BG);
+    let grid_stroke = egui::Stroke::new(0.5, theme::GRID_LINE);
     for column in 0..=dims.0 {
         let x = rect.min.x + cells_to_points(column);
         painter.line_segment(
@@ -3706,7 +3711,7 @@ fn paint_item_tile(
     let fill = if is_selected {
         visuals.selection.bg_fill
     } else {
-        visuals.widgets.inactive.bg_fill
+        theme::TILE_BG
     };
     painter.rect_filled(item_rect, 2.0, fill);
     if let Some(texture) = caches.icon(ui.ctx(), db, item) {
@@ -3734,7 +3739,7 @@ fn paint_item_tile(
     let outline = if is_selected {
         egui::Stroke::new(2.0, visuals.selection.stroke.color)
     } else {
-        egui::Stroke::new(1.0, visuals.widgets.inactive.fg_stroke.color)
+        egui::Stroke::new(1.0, theme::TILE_EDGE)
     };
     painter.rect_stroke(item_rect, 2.0, outline, egui::StrokeKind::Inside);
     if item.stack_size > 1 {
@@ -3909,11 +3914,12 @@ fn item_tooltip(ui: &mut egui::Ui, item: &Item, db: Option<&GameCache>, caches: 
     let item_style = style::item_style(db, item);
     let details = db.map(|db| stats::item_details(db, item));
     egui::Frame::NONE
-        .fill(egui::Color32::from_rgb(24, 20, 16))
-        .corner_radius(egui::CornerRadius::same(4))
+        .fill(theme::POPUP)
+        .stroke(egui::Stroke::new(1.0, theme::GOLD_DIM))
+        .corner_radius(egui::CornerRadius::same(3))
         .inner_margin(egui::Margin::same(8))
         .show(ui, |ui| {
-            ui.style_mut().visuals.override_text_color = Some(egui::Color32::from_gray(190));
+            ui.style_mut().visuals.override_text_color = Some(theme::TEXT);
             ui.spacing_mut().item_spacing.y = 2.0;
             ui.label(
                 egui::RichText::new(tooltip_title(item, db, details.as_ref(), caches))
@@ -3922,7 +3928,7 @@ fn item_tooltip(ui: &mut egui::Ui, item: &Item, db: Option<&GameCache>, caches: 
             );
             ui.label(
                 egui::RichText::new(item_style.label())
-                    .color(egui::Color32::from_gray(140))
+                    .color(theme::TEXT_WEAK)
                     .size(11.0),
             );
             let Some(details) = details else { return };
@@ -4223,13 +4229,13 @@ fn show_character_section(
 ) -> Option<PaneAction> {
     let mut action = None;
     ui.horizontal(|ui| {
-        ui.heading(
+        ui.label(theme::heading(
             pane.character
                 .info
                 .name
                 .as_deref()
                 .unwrap_or("Unnamed character"),
-        );
+        ));
         let gold = ui.add(
             egui::DragValue::new(&mut pane.character.info.money)
                 .range(0..=i32::MAX)
@@ -4430,10 +4436,10 @@ fn show_stash_section(
         StashSlot::Relic => ("Relic bank", GridId::Relic),
     };
     ui.horizontal(|ui| {
-        ui.heading(format!(
+        ui.label(theme::heading(format!(
             "{title} {}×{}",
             pane.stash.width, pane.stash.height
-        ));
+        )));
         let selection_here = matches!(*selected, Some((current, _)) if current == grid);
         if ui
             .add_enabled(can_move && selection_here, egui::Button::new("→ Vault"))
@@ -4488,7 +4494,7 @@ fn show_vault_pane(
 ) -> Option<PaneAction> {
     let mut action = None;
     ui.horizontal(|ui| {
-        ui.heading("Vault");
+        ui.label(theme::heading("Vault"));
         if ui
             .add_enabled(
                 can_move && pane.selected.is_some(),
