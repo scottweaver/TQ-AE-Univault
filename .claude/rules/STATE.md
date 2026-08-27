@@ -10,8 +10,13 @@ Last updated: 2026-08-26
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** PR #33 (all-vaults search view) merged 2026-08-26;
-wrap-up done; branch deleted; nothing is in flight. The user already
+**Resume here:** `mod/hero-pools-x3` is in flight (PR open): both
+installed bundles recomposed so star-hero pools triple on every
+difficulty band — acceptance is the user meeting a tripled base-game
+hero after restarting their session. Ragnarök/Atlantis wild heroes
+spawn via champion-slot pools the rule deliberately skips — extend
+when the user reaches those acts. Before that: PR #33 (all-vaults
+search view) merged 2026-08-26; wrap-up done. The user already
 steered the feature twice in-session (filter bar reworked to dynamic
 criteria rows + ranges + suggestions, then a Clear-all button —
 "Much nicer!"), so partial acceptance is in hand; the full in-app
@@ -78,7 +83,8 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#33 all merged; all gates green |
+| `main` | trunk | PRs #1–#34 all merged; all gates green |
+| `mod/hero-pools-x3` | triple star-hero pools in both bundles | PR open; bundles already recomposed + installed |
 
 ## Next up
 
@@ -110,6 +116,23 @@ that's better") and merged as PR #7.
 
 ## Most recent meaningful progress
 
+- **2026-08-26 — Mod: star heroes actually triple (mod/hero-pools-x3,
+  PR open).** User report: quest bosses 3x (Leucus) but star heroes
+  never multiplied in the base game. Root cause via record dumps:
+  the x3 base duplicates only each hero pool's top-two level
+  variants — under the engine's level-band eligibility that adds
+  zero heroes on Normal (bosses got every entry duplicated, hence
+  visible). New `multiply_hero_pools` modforge rule: every vanilla
+  `ProxyPool` under the proxy trees whose entries are hero-evidenced
+  (explicit `monsterClassification: Hero`, or `HERO_*` stem when the
+  variant omits it — most do) and carry no explicit Boss/Quest entry
+  gets its vanilla entry list repeated ×3. 71 pools per bundle; both
+  bundles recomposed + installed; dump-verified (Wheedletongue/Hanif
+  9 entries; Euryale 6 in x3, 1 in 1xBoss; Thrym untouched). Risks:
+  in-game acceptance after session restart; side-quest stars triple
+  too (consistent with the mod's spirit); Ragnarök/Atlantis wild
+  heroes use champion-slot pools — deliberately skipped, extend when
+  the user reaches those acts.
 - **2026-08-26 — All-vaults search view (PR #33).** User ask,
   design-dialogued (full-window mode / all vault
   files / full row actions): "Search vaults…" (⌘F) swaps the panes
@@ -262,23 +285,6 @@ that's better") and merged as PR #7.
   piece auto-placed, gear committed only after the piece has a
   home. 175 tests. Risk: in-app acceptance pending; gesture is
   Alt+Click (documented in the header hint).
-- **2026-08-26 — MCP: the whole database, mods included.** User
-  ask ("expose ALL internal game file data, monster info, my mod
-  changes"): six new tools — search_records (path or localized-name
-  search over every record, class filter, lazy full-decode index),
-  get_record (any record, template-default noise omitted unless
-  everything: true, tags translated inline), list_mods,
-  diff_record / diff_mod (vanilla vs bundle, per-variable), and
-  translate_tag. The installed CustomMaps bundle (auto-discovered
-  beside the save tree, UNIVAULT_CUSTOMMAPS override) overlays
-  every record tool by default — "what the game actually plays" —
-  with mod: "vanilla" opting out and provenance on every response.
-  Verified live: 58 Ratman monsters with names and per-difficulty
-  arrays; Provoke reads radius 5.0 as mod-override vs 3.0 vanilla;
-  diff_mod sweeps 8,866 bundle records (290 added) in ~2s. 173
-  tests. Risk: none new — read-only reads of already-sanctioned
-  formats; user acceptance from their buildcrafting project
-  pending.
 ## Blocked / waiting
 
 - *(nothing)*

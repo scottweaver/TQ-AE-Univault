@@ -63,6 +63,14 @@ enum Rule {
         #[serde(default)]
         set: BTreeMap<String, serde_json::Value>,
     },
+    /// Repeats the vanilla entry list of every spawn pool whose
+    /// monsters are all Hero-classified (the star-marked ones)
+    /// `factor` times — pool entry count is the engine's spawn
+    /// multiplier for these records. Pools holding any Boss/Quest
+    /// monster are untouched, wherever they live (Ragnarök files
+    /// quest bosses under its hero-pool folder). Replaces whatever
+    /// the base mod did to a qualifying pool.
+    MultiplyHeroPools { factor: usize },
 }
 
 /// A single record path or a list — `record` rules accept both.
@@ -204,6 +212,102 @@ fn main() {
                 }
                 patched.insert(key, target);
             }
+            Rule::MultiplyHeroPools { factor } => {
+                // A hero's higher-level variants often omit
+                // monsterClassification, so the test is: at least one
+                // entry explicitly Hero, none explicitly anything
+                // else (Boss/Quest pools stay untouched).
+                let mut class_cache: BTreeMap<String, Option<String>> = BTreeMap::new();
+                let mut classification = |raw: &str| -> Option<String> {
+                    let key = normalize(raw);
+                    if let Some(known) = class_cache.get(&key) {
+                        return known.clone();
+                    }
+                    let class = RecordId::parse(raw.to_string())
+                        .and_then(|id| main_db.record(&id).and_then(Result::ok))
+                        .and_then(|monster| {
+                            monster.string("monsterClassification").map(str::to_string)
+                        });
+                    class_cache.insert(key, class.clone());
+                    class
+                };
+                let targets: Vec<RecordId> = main_db
+                    .record_ids()
+                    .filter(|id| normalize(id.as_str()).contains("PROXIES"))
+                    .cloned()
+                    .collect();
+                for id in targets {
+                    let key = normalize(id.as_str());
+                    let Some(vanilla) = main_db.record(&id).and_then(Result::ok) else {
+                        continue;
+                    };
+                    let pool = vanilla
+                        .string("templateName")
+                        .is_some_and(|template| template.to_uppercase().ends_with("PROXYPOOL.TPL"));
+                    if !pool {
+                        continue;
+                    }
+                    let entries = pool_entries(&vanilla);
+                    if entries.is_empty() {
+                        continue;
+                    }
+                    let classes: Vec<Option<String>> = entries
+                        .iter()
+                        .map(|(name, _)| classification(name))
+                        .collect();
+                    // Some heroes (all Slobberjaw variants, higher
+                    // levels of most others) omit the classification;
+                    // the database's HERO_* stem convention fills the
+                    // gap.
+                    let hero_stem = |name: &str| {
+                        Path::new(&name.replace('\\', "/"))
+                            .file_stem()
+                            .is_some_and(|stem| {
+                                stem.to_string_lossy().to_uppercase().contains("HERO")
+                            })
+                    };
+                    let any_hero =
+                        classes
+                            .iter()
+                            .zip(&entries)
+                            .any(|(class, (name, _))| match class {
+                                Some(class) => class.eq_ignore_ascii_case("Hero"),
+                                None => hero_stem(name),
+                            });
+                    let any_other = classes
+                        .iter()
+                        .flatten()
+                        .any(|class| !class.eq_ignore_ascii_case("Hero"));
+                    if !any_hero || any_other {
+                        continue;
+                    }
+                    let mut record = vanilla.clone();
+                    for (slot, (name, weight)) in entries
+                        .iter()
+                        .cycle()
+                        .take(entries.len() * factor)
+                        .enumerate()
+                    {
+                        let n = slot + 1;
+                        record.set_variable(DbVariable {
+                            name: format!("name{n}"),
+                            values: DbValues::Strings(vec![name.clone()]),
+                        });
+                        if let Some(weight) = weight {
+                            record.set_variable(DbVariable {
+                                name: format!("weight{n}"),
+                                values: DbValues::Integers(vec![*weight]),
+                            });
+                        }
+                    }
+                    report.push(format!(
+                        "{key}: hero pool {} -> {} entries",
+                        entries.len(),
+                        entries.len() * factor
+                    ));
+                    patched.insert(key, record);
+                }
+            }
             Rule::Record {
                 record,
                 multiply,
@@ -330,6 +434,30 @@ fn player_skill(normalized: &str) -> bool {
     .iter()
     .any(|junk| normalized.contains(junk));
     in_skills && !enemy && !leftover
+}
+
+/// A spawn pool's entry list: consecutive `nameN` record paths with
+/// their `weightN` (when present), stopping at the first missing or
+/// empty slot.
+fn pool_entries(record: &DbRecord) -> Vec<(String, Option<i32>)> {
+    let mut entries = Vec::new();
+    for n in 1.. {
+        let Some(name) = record.string(&format!("name{n}")) else {
+            break;
+        };
+        if name.trim().is_empty() {
+            break;
+        }
+        let weight =
+            record
+                .variable(&format!("weight{n}"))
+                .and_then(|variable| match &variable.values {
+                    DbValues::Integers(values) => values.first().copied(),
+                    DbValues::Floats(_) | DbValues::Strings(_) | DbValues::Booleans(_) => None,
+                });
+        entries.push((name.to_string(), weight));
+    }
+    entries
 }
 
 /// Multiplies every value of `variable`; `None` when the record has
