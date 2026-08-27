@@ -497,31 +497,6 @@ pub fn tab_anchor(chrome: &Chrome, painter: &egui::Painter, rect: Rect, text: &s
     painter.galley(pos, galley, Color32::from_rgb(250, 247, 238));
 }
 
-/// The thin outer border enclosing a whole tabbed pane — tab strip
-/// included, per the reference screens.
-pub fn outer_border(painter: &egui::Painter, rect: Rect) {
-    let dark = Color32::from_rgb(12, 9, 4);
-    let gold = Color32::from_rgb(158, 128, 66);
-    painter.rect_stroke(
-        rect,
-        0.0,
-        egui::Stroke::new(1.5, dark),
-        egui::StrokeKind::Inside,
-    );
-    painter.rect_stroke(
-        rect.shrink(1.5),
-        0.0,
-        egui::Stroke::new(2.0, gold),
-        egui::StrokeKind::Inside,
-    );
-    painter.rect_stroke(
-        rect.shrink(3.5),
-        0.0,
-        egui::Stroke::new(1.5, dark),
-        egui::StrokeKind::Inside,
-    );
-}
-
 /// The border sandwich around a tab's owned sub-panel, echoing the
 /// window frame: gold outer trim, leather band (the tabs' fill),
 /// black gap, then the content's gold rim.

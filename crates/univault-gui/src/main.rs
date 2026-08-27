@@ -3602,14 +3602,9 @@ impl App {
                     selected: &mut self.left_selected,
                 };
                 let pane_chrome = caches.chrome(columns[0].ctx(), db);
-                let outer_top = columns[0].available_rect_before_wrap().min.y;
-                let active = show_left_tabs(&mut columns[0], &mut view, pane_chrome.as_ref());
-                framed_pane_anchored(
-                    &mut columns[0],
-                    pane_chrome.as_ref(),
-                    outer_top,
-                    active,
-                    |ui| {
+                framed_pane(&mut columns[0], pane_chrome.as_ref(), |ui| {
+                    let active = show_left_tabs(ui, &mut view, pane_chrome.as_ref());
+                    anchored_panel(ui, pane_chrome.as_ref(), active, |ui| {
                         egui::ScrollArea::vertical()
                             .id_salt("file-pane")
                             .show(ui, |ui| {
@@ -3625,22 +3620,16 @@ impl App {
                                     action = Some(chosen);
                                 }
                             });
-                    },
-                );
+                    });
+                });
             } else {
                 columns[0].weak("No game file loaded.");
             }
             if let Some(pane) = &mut self.right {
                 let pane_chrome = caches.chrome(columns[1].ctx(), db);
-                let outer_top = columns[1].available_rect_before_wrap().min.y;
-                let active =
-                    show_vault_tabs(&mut columns[1], pane, pane_chrome.as_ref(), drag.as_ref());
-                framed_pane_anchored(
-                    &mut columns[1],
-                    pane_chrome.as_ref(),
-                    outer_top,
-                    active,
-                    |ui| {
+                framed_pane(&mut columns[1], pane_chrome.as_ref(), |ui| {
+                    let active = show_vault_tabs(ui, pane, pane_chrome.as_ref(), drag.as_ref());
+                    anchored_panel(ui, pane_chrome.as_ref(), active, |ui| {
                         if let Some(chosen) = show_vault_pane(
                             ui,
                             pane,
@@ -3652,8 +3641,8 @@ impl App {
                         ) {
                             action = Some(chosen);
                         }
-                    },
-                );
+                    });
+                });
             } else {
                 columns[1].weak("No vault loaded.");
             }
@@ -3807,13 +3796,13 @@ fn plate_button(
     }
 }
 
-/// [`framed_pane`], with a tab strip already rendered above: the
-/// frame tucks up under the strip and the active tab is repainted
-/// joined through the frame's top band — the game's anchored tabs.
-fn framed_pane_anchored(
+/// The bordered panel a tab strip owns, rendered inside a framed
+/// pane: content wrapped in the game's border sandwich
+/// ([`chrome::panel_border`]), with the active tab repainted flowing
+/// into the panel's border line.
+fn anchored_panel(
     ui: &mut egui::Ui,
     pane_chrome: Option<&chrome::Chrome>,
-    outer_top: f32,
     active: Option<(egui::Rect, String)>,
     add: impl FnOnce(&mut egui::Ui),
 ) {
@@ -3822,34 +3811,26 @@ fn framed_pane_anchored(
         add(ui);
         return;
     };
-    ui.add_space(-4.0);
-    pane_chrome.interior(ui.painter(), ui.available_rect_before_wrap());
-    let response = egui::Frame::NONE
-        .inner_margin(chrome::FRAME_MARGIN)
+    ui.add_space(2.0);
+    let inner = egui::Frame::NONE
+        .inner_margin(egui::Margin::same(14))
         .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
             ui.set_min_height(ui.available_height());
             add(ui);
         });
-    let rect = response.response.rect;
-    let content = egui::Rect::from_min_max(
-        rect.min + egui::vec2(30.0, 35.0),
-        rect.max - egui::vec2(30.0, 35.0),
-    );
-    chrome::inner_shadow(ui.painter(), content, 14.0);
-    pane_chrome.pane_frame(ui.painter(), rect);
+    let panel = inner.response.rect.shrink(2.0);
+    chrome::inner_shadow(ui.painter(), panel.shrink(6.0), 12.0);
+    chrome::panel_border(ui.painter(), panel);
     if let Some((tab_rect, label)) = active {
         chrome::tab_anchor(
             pane_chrome,
             ui.painter(),
             tab_rect,
             &label,
-            rect.min.y + 10.0,
+            panel.min.y - 10.0,
         );
     }
-    chrome::outer_border(
-        ui.painter(),
-        egui::Rect::from_min_max(egui::pos2(rect.min.x, outer_top), rect.max),
-    );
 }
 
 /// Wraps a pane in the caravan window frame when chrome is loaded:
@@ -4784,7 +4765,7 @@ fn show_character_section(
                 ui.painter(),
                 tab_rect,
                 &label,
-                panel.min.y - 6.0,
+                panel.min.y - 10.0,
             );
         }
     } else {
