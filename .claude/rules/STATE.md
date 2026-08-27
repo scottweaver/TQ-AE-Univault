@@ -10,34 +10,44 @@ Last updated: 2026-08-27
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** everything merged 2026-08-27 evening at the
-user's direction: PR #39 (the TQ chrome epic, ~20 commits of
-live-review iteration), PR #40 (skilltree unlock levels, parallel
-session), PR #41 (nymph cooldown mod, parallel session; its STATE
-conflict was resolved to main's and superseded by this refresh).
-No branches in flight. First items next session: the user rebuilds
-release and gives the merged chrome a fresh full pass (the final
-leather-strip border fix landed without an in-app review), then
-pick from the UIX queue in "Next up". Border law, settled after
-many annotated rounds: the ornate caravan frame belongs to a
-pane's outermost edge ONLY; tab-owned panels wear the flat
-under-tabs leather strip (art rows 108–122) on all four sides,
-the active tab merging into it (`chrome::tab_anchor`). Method
-lesson, twice-earned: measure game art programmatically AND view
-every crop — single-column profiles lie. All slice coordinates
-live in gui `chrome.rs`; tuning them never forces a re-import.
+**Resume here:** PR #43 (the component-workshop epic) merged
+2026-08-27 night at the user's direction, right after the chrome
+epic. New direction, user-initiated: UI chrome now grows as
+distinct components, previewed in isolation before app
+integration — `cargo run -p univault-gui --bin preview --
+<component> [--review]` (components so far: `gilded-border`,
+`tabbed-panel`), each drawn from the user's own art under
+`crates/univault-gui/assets/components/`, sliced from designs the
+user authors in GIMP (`~/Documents/tq-desgins/`, XCF masters).
+The **in-app review loop** replaced GIMP-markup rounds and is the
+expected iteration mode: user arms a tool in the preview's review
+bar, drags shapes, notes each one, hits export → annotated PNG +
+JSON (component-space coords per shape) land in gitignored
+`review/` — keep a Monitor armed on that dir and act on exports
+as they arrive; it fixed four findings this session. Immediately
+next: wire the components into the real app panes (in flight on
+`feat/components-in-app` if a branch exists; otherwise start it).
+Chrome epic residual, still open: the user rebuilds release and
+gives the merged PR #39 chrome a fresh full pass.
 
 - Capture loop (works, keep using it): Screen Recording is granted
   to iTerm; find the window id by pid via a CGWindowList swift
-  one-liner, then `screencapture -x -l <id>`. Fully occluded
-  windows freeze egui repaints (imports look "stuck at 2%"). The
-  user often runs their own release build — only ever
+  one-liner, then `screencapture -x -l <id>` (`-o` drops the
+  shadow for exact coordinate mapping). Fully occluded windows
+  freeze egui repaints (imports look "stuck at 2%"). The user
+  often runs their own release build — only ever
   `pkill -f target/debug/…`; each debug relaunch steals focus, so
   the user's in-flight clicks can land in the test instance.
-- Reference screenshots from the user live in
-  `/Volumes/scott-games/tq-ae-designs` (tabs.png,
-  annotated-stone.png, in-game shots) — ask for annotated images
-  when a look note is ambiguous; they resolved every stall.
+  **Never post synthetic CGEvents into a live window**: this
+  session's synthetic-input test interleaved with the user's real
+  typing and garbled their annotation.
+- Design sources: new-look component art is authored by the user
+  in GIMP at `~/Documents/tq-desgins/` (XCF masters; PNG exports
+  live beside them). GIMP batch export mostly hangs on this
+  machine (script-fu and python-fu both; the save can land before
+  the hang) — prefer asking the user to export. Game-art
+  reference screenshots live in `/Volumes/scott-games/
+  tq-ae-designs` (mount required).
 - Parallel-session leftovers under `.claude/worktrees/`:
   `mod-nymph-cooldown` and `skilltree-unlock` (locked, their
   sessions may still be open) and `chrome-outer-frame` (stale at
@@ -106,7 +116,7 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#41 all merged; all gates green |
+| `main` | trunk | PRs #1–#43 all merged; all gates green |
 
 ## Next up
 
@@ -129,6 +139,13 @@ and open our vault JSON in TQVaultAE.
 Default vault + bank tabs + autosave ACCEPTED 2026-08-25 ("Ah,
 that's better") and merged as PR #7.
 
+0. **Components into the app (next, user-directed 2026-08-27):**
+   wire `GildedBorder` and `TabbedPanel` into the real panes,
+   iterating each surface through the preview + review loop first
+   where possible. Where the new user-authored art meets the
+   PR #39 game-art chrome is an open look question — expect
+   annotated rounds.
+
 UIX queue (user-listed 2026-08-27, to address after the theme work;
 order not yet prioritized):
 
@@ -147,6 +164,20 @@ order not yet prioritized):
 
 ## Most recent meaningful progress
 
+- **2026-08-27 — Component workshop + in-app review loop (PR #43,
+  merged).** User pivot after the chrome epic: UI parts now grow as
+  distinct components (gui lib target, `components/`), previewed in
+  isolation (`preview` bin, checkerboard transparency proof) from
+  the user's own GIMP art — first two: the gilded border
+  (nine-patch, transparent interior) and the tabbed bronze panel
+  (3-sliced plates, open plate merging through a rail frame made
+  symmetric by flipping the art's good sides). The review overlay
+  (armable shape tools, per-shape notes, badge edit/delete, export
+  → annotated PNG + component-space JSON in `review/`) replaced
+  GIMP markup and caught four real fixes this session. Risk: the
+  components are preview-proven but not yet in the app; black
+  panel interior is baked from the design — confirm it's wanted
+  once composited over the app backdrop.
 - **2026-08-27 — Chrome live-review marathon (PR #39, merged).** A
   dozen rounds of screenshot-annotated iteration with the user on
   top of the phase-2 base: two border vocabularies settled (ornate
@@ -266,18 +297,6 @@ order not yet prioritized):
   deliberately: its toasts are clickable widgets, which would
   obstruct drops underneath. Risk: in-app feel — drop an item and
   watch nothing move but the toast.
-- **2026-08-26 — Vault sends land where you look (bug fix).** User
-  report: right-click sent items to the earliest vault tab with
-  room, not the one on screen — and the stacked collapsible tab
-  list let many tabs look "open" at once. The vault pane is now a
-  tab strip like the left pane: exactly one tab visible
-  (`VaultPane::open_tab`, kept across auto-refresh reloads), and
-  every send/copy/duplicate/extract lands in that tab via the new
-  `transfer::place_in_vault_tab` — a full tab reports "no free
-  space" instead of silently spilling elsewhere. Mid-drag, pointing
-  at a tab button switches to it, so drag-into-any-tab still works.
-  192 tests. Risk: in-app acceptance pending — right-click a bank
-  item with tab 3 open and watch it land there.
 ## Blocked / waiting
 
 - *(nothing)*
