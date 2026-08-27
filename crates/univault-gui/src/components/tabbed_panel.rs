@@ -216,8 +216,11 @@ impl TabbedPanel {
                 egui::TextStyle::Button.resolve(ui.style()),
                 ink,
             );
-            let response =
-                ui.interact(*rect, ui.id().with(("tabbed-panel", index)), Sense::click());
+            let response = ui.interact(
+                *rect,
+                inner.response.id.with(("tabbed-panel", index)),
+                Sense::click(),
+            );
             if tab.enabled {
                 let response = response.on_hover_cursor(CursorIcon::PointingHand);
                 if response.clicked() {
