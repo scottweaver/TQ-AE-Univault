@@ -3810,10 +3810,14 @@ fn framed_pane_anchored(
             add(ui);
         });
     let rect = response.response.rect;
-    chrome::inner_shadow(ui.painter(), rect.shrink(12.0), 14.0);
+    let content = egui::Rect::from_min_max(
+        rect.min + egui::vec2(30.0, 35.0),
+        rect.max - egui::vec2(30.0, 35.0),
+    );
+    chrome::inner_shadow(ui.painter(), content, 14.0);
     pane_chrome.pane_frame(ui.painter(), rect);
     if let Some((tab_rect, label)) = active {
-        chrome::tab_anchor(pane_chrome, ui.painter(), tab_rect, &label, 14.0);
+        chrome::tab_anchor(pane_chrome, ui.painter(), tab_rect, &label, 18.0);
     }
 }
 
@@ -3840,7 +3844,11 @@ fn framed_pane(
             add(ui);
         });
     let rect = response.response.rect;
-    chrome::inner_shadow(ui.painter(), rect.shrink(12.0), 14.0);
+    let content = egui::Rect::from_min_max(
+        rect.min + egui::vec2(30.0, 35.0),
+        rect.max - egui::vec2(30.0, 35.0),
+    );
+    chrome::inner_shadow(ui.painter(), content, 14.0);
     pane_chrome.pane_frame(ui.painter(), rect);
 }
 
@@ -4708,16 +4716,16 @@ fn show_character_section(
     }
     let active = show_inventory_tabs(ui, pane, db, caches, inventory_tab, selected, drag);
     if let Some(chrome_set) = caches.chrome(ui.ctx(), db) {
-        ui.add_space(-2.0);
+        ui.add_space(8.0);
         let inner = egui::Frame::NONE
-            .inner_margin(egui::Margin::same(10))
+            .inner_margin(egui::Margin::same(12))
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 show_inventory_body(ui, pane, db, caches, *inventory_tab, selected, drag, frame);
             });
-        chrome::panel_border(ui.painter(), inner.response.rect);
+        chrome::panel_border(ui.painter(), inner.response.rect.shrink(2.0));
         if let Some((tab_rect, label)) = active {
-            chrome::tab_anchor(&chrome_set, ui.painter(), tab_rect, &label, 10.0);
+            chrome::tab_anchor(&chrome_set, ui.painter(), tab_rect, &label, 12.0);
         }
     } else {
         ui.add_space(4.0);

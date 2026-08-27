@@ -15,29 +15,23 @@ use univault_core::cache::GameCache;
 /// right and bottom edges, so tiles chain into the game's grid.
 const CELL: Src = Src::new(27.0, 126.0, 32.0, 32.0);
 
-/// The caravan window frame, as eight nine-patch pieces. The bottom
-/// corners are wider: they carry the ornamental brackets.
-// The top-right corner is the top-left mirrored: the art's own
-// top-right carries the baked-in close button.
-const FRAME_TL: Src = Src::new(0.0, 0.0, 14.0, 14.0);
-// The tile span stops short of the art's title notch, whose bands
-// brighten mid-strip.
-const FRAME_TC: Src = Src::new(16.0, 0.0, 150.0, 14.0);
-const FRAME_LC: Src = Src::new(0.0, 150.0, 14.0, 320.0);
-const FRAME_RC: Src = Src::new(551.0, 150.0, 14.0, 320.0);
-// Bottom pieces start at the ornate band (y 618+): rows 606..618 in
-// the art are the caravan's interior rim and gutter, which read as a
-// stray dark border inside the pane.
-const FRAME_BL: Src = Src::new(0.0, 618.0, 29.0, 19.0);
-const FRAME_BC: Src = Src::new(150.0, 618.0, 240.0, 19.0);
-const FRAME_BR: Src = Src::new(536.0, 618.0, 29.0, 19.0);
+/// The caravan window frame as full border bands, gutter and all:
+/// leather outer band (the tabs' own material), black gap, then the
+/// content's bright gold rim — the game's border sandwich. The top
+/// band is the bottom band flipped vertically (the art's own top is
+/// the caravan header). Bottom corners carry the ornament brackets.
+const FRAME_LC: Src = Src::new(0.0, 150.0, 26.0, 320.0);
+const FRAME_RC: Src = Src::new(539.0, 150.0, 26.0, 320.0);
+const FRAME_BL: Src = Src::new(0.0, 606.0, 29.0, 31.0);
+const FRAME_BC: Src = Src::new(150.0, 606.0, 240.0, 31.0);
+const FRAME_BR: Src = Src::new(536.0, 606.0, 29.0, 31.0);
 
-/// Content inset that keeps a pane's widgets off the frame bands.
+/// Content inset that keeps a pane's widgets inside the gold rim.
 pub const FRAME_MARGIN: egui::Margin = egui::Margin {
-    left: 16,
-    right: 16,
-    top: 16,
-    bottom: 24,
+    left: 30,
+    right: 30,
+    top: 35,
+    bottom: 35,
 };
 
 /// A clean strip of the character screen's light flagstone — the
@@ -130,14 +124,23 @@ impl Src {
         )
     }
 
-    /// Horizontally mirrored texture coordinates — for reusing a
-    /// left-side piece on the right (the art's own top-right corner
-    /// carries the baked-in close button).
-    fn uv_mirrored(self, texture: &TextureHandle) -> Rect {
-        let size = texture.size_vec2();
+    /// Texture coordinates with optional mirroring, for reusing a
+    /// piece on the opposite edge of the frame.
+    fn uv_flipped(self, texture: &TextureHandle, flip_h: bool, flip_v: bool) -> Rect {
+        let plain = self.uv(texture);
+        let (u0, u1) = if flip_h {
+            (plain.max.x, plain.min.x)
+        } else {
+            (plain.min.x, plain.max.x)
+        };
+        let (v0, v1) = if flip_v {
+            (plain.max.y, plain.min.y)
+        } else {
+            (plain.min.y, plain.max.y)
+        };
         Rect {
-            min: pos2((self.x + self.w) / size.x, self.y / size.y),
-            max: pos2(self.x / size.x, (self.y + self.h) / size.y),
+            min: pos2(u0, v0),
+            max: pos2(u1, v1),
         }
     }
 
@@ -224,62 +227,42 @@ impl Chrome {
     /// content — the pieces only cover the [`FRAME_MARGIN`] bands.
     pub fn pane_frame(&self, painter: &egui::Painter, rect: Rect) {
         let texture = &self.caravan;
-        let tl = vec2(FRAME_TL.w, FRAME_TL.h);
-        let tr = tl;
-        let bl = vec2(FRAME_BL.w, FRAME_BL.h);
-        let br = vec2(FRAME_BR.w, FRAME_BR.h);
-        blit(
-            painter,
-            texture,
-            FRAME_TL,
-            Rect::from_min_size(rect.min, tl),
-            Color32::WHITE,
+        let corner = vec2(FRAME_BL.w, FRAME_BL.h);
+        let band = FRAME_BC.h;
+        for (piece, flip_h, x) in [
+            (FRAME_BL, false, rect.min.x),
+            (FRAME_BR, false, rect.max.x - corner.x),
+        ] {
+            painter.image(
+                texture.id(),
+                Rect::from_min_size(pos2(x, rect.max.y - band), corner),
+                piece.uv_flipped(texture, flip_h, false),
+                Color32::WHITE,
+            );
+            painter.image(
+                texture.id(),
+                Rect::from_min_size(pos2(x, rect.min.y), corner),
+                piece.uv_flipped(texture, flip_h, true),
+                Color32::WHITE,
+            );
+        }
+        let span = Rect::from_min_max(
+            pos2(rect.min.x + corner.x, rect.max.y - band),
+            pos2(rect.max.x - corner.x, rect.max.y),
         );
-        painter.image(
-            texture.id(),
-            Rect::from_min_size(pos2(rect.max.x - tr.x, rect.min.y), tr),
-            FRAME_TL.uv_mirrored(texture),
-            Color32::WHITE,
+        tile_h_flipped(painter, texture, FRAME_BC, span, false);
+        let span = Rect::from_min_max(
+            pos2(rect.min.x + corner.x, rect.min.y),
+            pos2(rect.max.x - corner.x, rect.min.y + band),
         );
-        blit(
-            painter,
-            texture,
-            FRAME_BL,
-            Rect::from_min_size(pos2(rect.min.x, rect.max.y - bl.y), bl),
-            Color32::WHITE,
-        );
-        blit(
-            painter,
-            texture,
-            FRAME_BR,
-            Rect::from_min_size(pos2(rect.max.x - br.x, rect.max.y - br.y), br),
-            Color32::WHITE,
-        );
-        tile_h(
-            painter,
-            texture,
-            FRAME_TC,
-            Rect::from_min_max(
-                pos2(rect.min.x + tl.x, rect.min.y),
-                pos2(rect.max.x - tr.x, rect.min.y + FRAME_TC.h),
-            ),
-        );
-        tile_h(
-            painter,
-            texture,
-            FRAME_BC,
-            Rect::from_min_max(
-                pos2(rect.min.x + bl.x, rect.max.y - FRAME_BC.h),
-                pos2(rect.max.x - br.x, rect.max.y),
-            ),
-        );
+        tile_h_flipped(painter, texture, FRAME_BC, span, true);
         tile_v(
             painter,
             texture,
             FRAME_LC,
             Rect::from_min_max(
-                pos2(rect.min.x, rect.min.y + tl.y),
-                pos2(rect.min.x + FRAME_LC.w, rect.max.y - bl.y),
+                pos2(rect.min.x, rect.min.y + band),
+                pos2(rect.min.x + FRAME_LC.w, rect.max.y - band),
             ),
         );
         tile_v(
@@ -287,8 +270,8 @@ impl Chrome {
             texture,
             FRAME_RC,
             Rect::from_min_max(
-                pos2(rect.max.x - FRAME_RC.w, rect.min.y + tr.y),
-                pos2(rect.max.x, rect.max.y - br.y),
+                pos2(rect.max.x - FRAME_RC.w, rect.min.y + band),
+                pos2(rect.max.x, rect.max.y - band),
             ),
         );
     }
@@ -514,27 +497,35 @@ pub fn tab_anchor(chrome: &Chrome, painter: &egui::Painter, rect: Rect, text: &s
     painter.galley(pos, galley, Color32::from_rgb(250, 247, 238));
 }
 
-/// The simple gold panel border the game draws around a tab's owned
-/// content: dark outer trim, gold band, dark inner trim.
+/// The border sandwich around a tab's owned sub-panel, echoing the
+/// window frame: gold outer trim, leather band (the tabs' fill),
+/// black gap, then the content's gold rim.
 pub fn panel_border(painter: &egui::Painter, rect: Rect) {
-    let dark = Color32::from_rgb(52, 42, 20);
-    let gold = Color32::from_rgb(172, 140, 74);
+    let gold = Color32::from_rgb(208, 174, 96);
+    let leather = Color32::from_rgb(92, 74, 46);
+    let black = Color32::from_rgb(8, 6, 3);
     painter.rect_stroke(
-        rect.expand(3.0),
-        2.0,
-        egui::Stroke::new(1.0, dark),
-        egui::StrokeKind::Inside,
-    );
-    painter.rect_stroke(
-        rect.expand(2.0),
+        rect.expand(14.0),
         2.0,
         egui::Stroke::new(2.0, gold),
         egui::StrokeKind::Inside,
     );
     painter.rect_stroke(
-        rect,
-        2.0,
-        egui::Stroke::new(1.0, dark),
+        rect.expand(12.0),
+        1.0,
+        egui::Stroke::new(6.0, leather),
+        egui::StrokeKind::Inside,
+    );
+    painter.rect_stroke(
+        rect.expand(6.0),
+        0.0,
+        egui::Stroke::new(4.0, black),
+        egui::StrokeKind::Inside,
+    );
+    painter.rect_stroke(
+        rect.expand(2.0),
+        0.0,
+        egui::Stroke::new(2.0, gold),
         egui::StrokeKind::Inside,
     );
 }
@@ -630,15 +621,21 @@ fn light_stone(cache: &GameCache) -> Option<egui::ColorImage> {
     ))
 }
 
-fn tile_h(painter: &egui::Painter, texture: &TextureHandle, src: Src, dest: Rect) {
+fn tile_h_flipped(
+    painter: &egui::Painter,
+    texture: &TextureHandle,
+    src: Src,
+    dest: Rect,
+    flip_v: bool,
+) {
     let clipped = painter.with_clip_rect(dest);
+    let uv = src.uv_flipped(texture, false, flip_v);
     let mut x = dest.min.x;
     while x < dest.max.x {
-        blit(
-            &clipped,
-            texture,
-            src,
+        clipped.image(
+            texture.id(),
             Rect::from_min_size(pos2(x, dest.min.y), vec2(src.w, dest.height())),
+            uv,
             Color32::WHITE,
         );
         x += src.w;
