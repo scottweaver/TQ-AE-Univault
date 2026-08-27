@@ -10,13 +10,16 @@ Last updated: 2026-08-26
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** `mod/hero-pools-x3` is in flight (PR #35 open, CI
-green): both installed bundles recomposed so star-hero pools triple
-on every difficulty band — acceptance is the user meeting a tripled
-base-game hero after restarting their session; on a pass, merge
-PR #35 and run the wrap-up. Ragnarök/Atlantis wild heroes
-spawn via champion-slot pools the rule deliberately skips — extend
-when the user reaches those acts. Before that: PR #33 (all-vaults
+**Resume here:** PR #35 (star-hero pools ×3) merged 2026-08-26 at
+the user's direction; wrap-up done. In-game acceptance still open:
+meet a tripled base-game star hero after restarting the game
+session. Ragnarök/Atlantis wild heroes spawn via champion-slot
+pools the rule deliberately skips — extend when the user reaches
+those acts. Now in flight: `feat/move-all-to-vault` — move/copy
+every item from the active left tab into the vault in one click
+(design settled with the user 2026-08-26: transfers start in the
+open vault tab and spill into later tabs when it fills; inventory
+scope is all sacks, never the equipped doll). Before that: PR #33 (all-vaults
 search view) merged 2026-08-26; wrap-up done. The user already
 steered the feature twice in-session (filter bar reworked to dynamic
 criteria rows + ranges + suggestions, then a Clear-all button —
@@ -84,8 +87,8 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#34 all merged; all gates green |
-| `mod/hero-pools-x3` | triple star-hero pools in both bundles | PR open; bundles already recomposed + installed |
+| `main` | trunk | PRs #1–#35 all merged; all gates green |
+| `feat/move-all-to-vault` | bulk move/copy of the active left tab into the vault | starting — design settled, code not yet begun |
 
 ## Next up
 
