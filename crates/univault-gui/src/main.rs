@@ -3629,22 +3629,63 @@ impl App {
     }
 }
 
-/// A doll slot's backdrop: a clipped window onto the one continuous
-/// sheet of dark flagstone spanning the canvas, or the painted
-/// fallback fill.
+/// Allocates the doll's canvas centered in the pane.
+fn allocate_doll_canvas(ui: &mut egui::Ui) -> (egui::Rect, egui::Response) {
+    let size = egui::vec2(cells_to_points(DOLL_CELLS.0), cells_to_points(DOLL_CELLS.1));
+    let pad = ((ui.available_width() - size.x) / 2.0).max(0.0);
+    ui.horizontal(|ui| {
+        ui.add_space(pad);
+        ui.allocate_exact_size(size, egui::Sense::click_and_drag())
+    })
+    .inner
+}
+
+/// The doll's canvas: light flagstone near full brightness, or the
+/// painted fallback.
+fn paint_doll_canvas(
+    painter: &egui::Painter,
+    doll_chrome: Option<&chrome::Chrome>,
+    rect: egui::Rect,
+    visuals: &egui::Visuals,
+) {
+    match doll_chrome {
+        Some(pane_chrome) => pane_chrome.backdrop(painter, rect, egui::Color32::from_gray(235)),
+        None => {
+            painter.rect_filled(rect, 2.0, visuals.extreme_bg_color);
+        }
+    }
+}
+
+/// A doll slot's backdrop: the slot's own engraved plate from the
+/// character screen, or the painted fallback fill.
 fn paint_slot_inset(
     painter: &egui::Painter,
     doll_chrome: Option<&chrome::Chrome>,
-    canvas: egui::Rect,
+    slot: EquipSlot,
     box_rect: egui::Rect,
 ) {
     match doll_chrome {
         Some(pane_chrome) => {
-            pane_chrome.doll_stone(&painter.with_clip_rect(box_rect), canvas);
+            pane_chrome.slot_plate(painter, slot_plate_of(slot), box_rect);
         }
         None => {
             painter.rect_filled(box_rect, 2.0, theme::SURFACE_DEEP.gamma_multiply(0.85));
         }
+    }
+}
+
+/// The engraved character-screen plate that backs each doll slot.
+fn slot_plate_of(slot: EquipSlot) -> chrome::SlotPlate {
+    match slot {
+        EquipSlot::Head => chrome::SlotPlate::Helm,
+        EquipSlot::Neck => chrome::SlotPlate::Amulet,
+        EquipSlot::Torso => chrome::SlotPlate::Torso,
+        EquipSlot::Legs => chrome::SlotPlate::Legs,
+        EquipSlot::Arms => chrome::SlotPlate::Arms,
+        EquipSlot::Ring1 | EquipSlot::Ring2 => chrome::SlotPlate::Ring,
+        EquipSlot::LeftHand | EquipSlot::LeftHandAlternate => chrome::SlotPlate::WeaponLeft,
+        EquipSlot::RightHand | EquipSlot::RightHandAlternate => chrome::SlotPlate::WeaponRight,
+        EquipSlot::Artifact => chrome::SlotPlate::Artifact,
     }
 }
 
@@ -4238,7 +4279,7 @@ fn game_color(rgb: style::Rgb) -> egui::Color32 {
 }
 
 /// The paper doll's canvas in grid cells.
-const DOLL_CELLS: (i32, i32) = (9, 14);
+const DOLL_CELLS: (i32, i32) = (10, 14);
 
 /// `TQVaultAE`'s paper-doll geometry (MIT, `SackCollection.cs`): a
 /// slot's top-left cell and size on the doll canvas.
@@ -4375,22 +4416,14 @@ fn show_equipment_doll(
     drag: Option<&DragState>,
     frame: &mut DragFrame,
 ) {
-    let size = egui::vec2(cells_to_points(DOLL_CELLS.0), cells_to_points(DOLL_CELLS.1));
-    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+    let (rect, response) = allocate_doll_canvas(ui);
     if !ui.is_rect_visible(rect) {
         return;
     }
     let painter = ui.painter_at(rect);
     let visuals = ui.visuals().clone();
     let doll_chrome = caches.chrome(ui.ctx(), db);
-    // The game's layering: tan stone canvas, each slot a window
-    // onto one continuous sheet of dark flagstone.
-    match &doll_chrome {
-        Some(pane_chrome) => pane_chrome.backdrop(&painter, rect, egui::Color32::from_gray(200)),
-        None => {
-            painter.rect_filled(rect, 2.0, visuals.extreme_bg_color);
-        }
-    }
+    paint_doll_canvas(&painter, doll_chrome.as_ref(), rect, &visuals);
 
     let press_origin = ui.ctx().input(|input| input.pointer.press_origin());
     let cursor = ui.ctx().pointer_latest_pos();
@@ -4404,13 +4437,15 @@ fn show_equipment_doll(
         )
         .shrink(1.0);
         let grid = GridId::Equipment(slot);
-        paint_slot_inset(&painter, doll_chrome.as_ref(), rect, box_rect);
-        painter.rect_stroke(
-            box_rect,
-            2.0,
-            egui::Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color),
-            egui::StrokeKind::Inside,
-        );
+        paint_slot_inset(&painter, doll_chrome.as_ref(), slot, box_rect);
+        if doll_chrome.is_none() {
+            painter.rect_stroke(
+                box_rect,
+                2.0,
+                egui::Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color),
+                egui::StrokeKind::Inside,
+            );
+        }
 
         match equipment.get(slot) {
             Some(item) => {

@@ -25,26 +25,74 @@ const FRAME_TL: Src = Src::new(0.0, 0.0, 14.0, 14.0);
 const FRAME_TC: Src = Src::new(16.0, 0.0, 150.0, 14.0);
 const FRAME_LC: Src = Src::new(0.0, 150.0, 14.0, 320.0);
 const FRAME_RC: Src = Src::new(551.0, 150.0, 14.0, 320.0);
-const FRAME_BL: Src = Src::new(0.0, 609.0, 29.0, 28.0);
-const FRAME_BC: Src = Src::new(150.0, 609.0, 240.0, 28.0);
-const FRAME_BR: Src = Src::new(536.0, 609.0, 29.0, 28.0);
+// Bottom pieces start at the ornate band (y 612+): rows 606..612 in
+// the art are the caravan's interior rim and gutter, which read as a
+// stray dark border inside the pane.
+const FRAME_BL: Src = Src::new(0.0, 612.0, 29.0, 25.0);
+const FRAME_BC: Src = Src::new(150.0, 618.0, 240.0, 19.0);
+const FRAME_BR: Src = Src::new(536.0, 612.0, 29.0, 25.0);
 
 /// Content inset that keeps a pane's widgets off the frame bands.
 pub const FRAME_MARGIN: egui::Margin = egui::Margin {
     left: 16,
     right: 16,
     top: 16,
-    bottom: 30,
+    bottom: 24,
 };
 
-/// The character screen's doll panel: dark-grey cracked stone — the
-/// game's own backdrop for contrast areas, and the source the beige
-/// window backdrop is derived from.
-const DOLL_STONE: Src = Src::new(110.0, 104.0, 178.0, 322.0);
+/// A clean block of the mastery screen's light flagstone; a 2×2
+/// mirrored collage of it becomes the stretched backdrop.
+const LIGHT_BLOCK: Src = Src::new(604.0, 144.0, 144.0, 192.0);
 
-/// The inventory panel's plain olive margin — near-uniform, so it
-/// tiles without a visible pattern; the framed panes' interior.
+/// The fallback block from the character screen, for caches
+/// predating the mastery-panel art.
+const LIGHT_BLOCK_FALLBACK: Src = Src::new(258.0, 16.0, 125.0, 42.0);
+
+/// The inventory panel's plain olive margin — the "dark smooth
+/// stone" of the reference; the framed panes' interior.
 const INVENTORY_MARGIN: Src = Src::new(24.0, 494.0, 44.0, 40.0);
+
+/// The engraved slot plates of the character screen, one per worn
+/// piece.
+const PLATE_HELM: Src = Src::new(161.0, 16.0, 74.0, 76.0);
+const PLATE_TORSO: Src = Src::new(13.0, 272.0, 74.0, 107.0);
+const PLATE_LEGS: Src = Src::new(310.0, 308.0, 73.0, 71.0);
+const PLATE_ARMS: Src = Src::new(310.0, 225.0, 73.0, 74.0);
+const PLATE_AMULET: Src = Src::new(327.0, 394.0, 39.0, 40.0);
+const PLATE_RING: Src = Src::new(29.0, 394.0, 39.0, 40.0);
+const PLATE_ARTIFACT: Src = Src::new(30.0, 205.0, 39.0, 50.0);
+const PLATE_WEAPON_LEFT: Src = Src::new(13.0, 65.0, 73.0, 128.0);
+const PLATE_WEAPON_RIGHT: Src = Src::new(310.0, 65.0, 73.0, 127.0);
+
+/// Which engraved plate backs a doll slot.
+#[derive(Clone, Copy)]
+pub enum SlotPlate {
+    Helm,
+    Torso,
+    Legs,
+    Arms,
+    Amulet,
+    Ring,
+    Artifact,
+    WeaponLeft,
+    WeaponRight,
+}
+
+impl SlotPlate {
+    const fn src(self) -> Src {
+        match self {
+            Self::Helm => PLATE_HELM,
+            Self::Torso => PLATE_TORSO,
+            Self::Legs => PLATE_LEGS,
+            Self::Arms => PLATE_ARMS,
+            Self::Amulet => PLATE_AMULET,
+            Self::Ring => PLATE_RING,
+            Self::Artifact => PLATE_ARTIFACT,
+            Self::WeaponLeft => PLATE_WEAPON_LEFT,
+            Self::WeaponRight => PLATE_WEAPON_RIGHT,
+        }
+    }
+}
 
 /// End-cap widths of the 3-sliced strips, in source pixels.
 const TITLE_CAPS: f32 = 24.0;
@@ -110,9 +158,9 @@ pub struct Chrome {
     /// The inventory panel art; absent in caches imported before it
     /// joined the manifest.
     inventory: Option<TextureHandle>,
-    /// The doll stone re-lit to yellow/beige at upload — the window
+    /// The 2×2 mirrored light-flagstone collage — the stretched
     /// backdrop.
-    beige: TextureHandle,
+    light_stone: TextureHandle,
     button_up: TextureHandle,
     button_over: TextureHandle,
     button_down: TextureHandle,
@@ -147,14 +195,18 @@ impl Chrome {
         ];
         let tooltip: Option<Vec<TextureHandle>> =
             tooltip_keys.iter().map(|key| load(key)).collect();
-        let beige = beige_stone(&cache.chrome("characterscreen/characterwindow01.tex")?)?;
+        let light = light_stone(cache)?;
         Some(Self {
             caravan: load("caravan/caravanwindow01.tex")?,
             title: load("caravan/caravantitle01.tex")?,
             tab: load("caravan/storageareatab01.tex")?,
             character: load("characterscreen/characterwindow01.tex")?,
             inventory: load("inventorytab01.tex"),
-            beige: ctx.load_texture("chrome:beige-stone", beige, egui::TextureOptions::LINEAR),
+            light_stone: ctx.load_texture(
+                "chrome:light-stone",
+                light,
+                egui::TextureOptions::LINEAR,
+            ),
             button_up: load("optionswindow/buttonup01.tex")?,
             button_over: load("optionswindow/buttonover01.tex")?,
             button_down: load("optionswindow/buttondown01.tex")?,
@@ -399,23 +451,23 @@ impl Chrome {
         true
     }
 
-    /// The window backdrop: the cracked stone in beige, tiled with
-    /// alternating mirroring so the cracks don't read as a repeat.
+    /// The window backdrop: light flagstone, stretched over the rect.
     pub fn backdrop(&self, painter: &egui::Painter, rect: Rect, tint: Color32) {
-        tile_mirrored(painter, &self.beige, rect, tint);
+        let full = Src::full(&self.light_stone);
+        blit(painter, &self.light_stone, full, rect, tint);
     }
 
-    /// Dark-grey cracked stone stretched over a contrast area — the
-    /// game's doll-panel backdrop.
-    pub fn doll_stone(&self, painter: &egui::Painter, rect: Rect) {
-        blit(painter, &self.character, DOLL_STONE, rect, Color32::WHITE);
+    /// One engraved slot plate, stretched into a doll slot box.
+    pub fn slot_plate(&self, painter: &egui::Painter, plate: SlotPlate, rect: Rect) {
+        blit(painter, &self.character, plate.src(), rect, Color32::WHITE);
     }
 
-    /// A framed pane's interior: the inventory panel's plain olive,
-    /// or the painted theme surface for caches predating that art.
+    /// A framed pane's interior: the inventory panel's plain olive
+    /// ("dark smooth stone"), or the painted theme surface for
+    /// caches predating that art.
     pub fn interior(&self, painter: &egui::Painter, rect: Rect) {
         match &self.inventory {
-            Some(inventory) => tile(
+            Some(inventory) => blit(
                 painter,
                 inventory,
                 INVENTORY_MARGIN,
@@ -433,89 +485,42 @@ fn blit(painter: &egui::Painter, texture: &TextureHandle, src: Src, dest: Rect, 
     painter.image(texture.id(), dest, src.uv(texture), tint);
 }
 
-/// The doll stone re-lit toward yellow/beige: a per-channel
-/// multiply-and-lift chosen so the slab face lands near the game's
-/// beige stone while the cracks stay dark. `None` only if the art
-/// is smaller than the doll panel region.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // channel math clamps to 0..=255
-fn beige_stone(image: &univault_core::tex::RgbaImage) -> Option<egui::ColorImage> {
+/// A 2×2 mirrored collage of [`LIGHT_BLOCK`], so the stretched
+/// backdrop has no hard collage seams. `None` only if the art is
+/// smaller than the block.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // slice coordinates are small positive integers
+fn light_stone(cache: &GameCache) -> Option<egui::ColorImage> {
+    let (image, block) = match cache.chrome("skills/skillsbackground01.tex") {
+        Some(image) => (image, LIGHT_BLOCK),
+        None => (
+            cache.chrome("characterscreen/characterwindow01.tex")?,
+            LIGHT_BLOCK_FALLBACK,
+        ),
+    };
+    let image = &image;
     let (x0, y0, w, h) = (
-        DOLL_STONE.x as usize,
-        DOLL_STONE.y as usize,
-        DOLL_STONE.w as usize,
-        DOLL_STONE.h as usize,
+        block.x as usize,
+        block.y as usize,
+        block.w as usize,
+        block.h as usize,
     );
     if image.width < x0 + w || image.height < y0 + h {
         return None;
     }
-    let relit = |value: u8, factor: f32, lift: f32| -> u8 {
-        (f32::from(value).mul_add(factor, lift)).clamp(0.0, 255.0) as u8
-    };
-    let mut pixels = Vec::with_capacity(w * h * 4);
-    for y in y0..y0 + h {
-        for x in x0..x0 + w {
-            let i = (y * image.width + x) * 4;
-            pixels.push(relit(image.pixels[i], 2.0, 31.0));
-            pixels.push(relit(image.pixels[i + 1], 2.0, 30.0));
-            pixels.push(relit(image.pixels[i + 2], 1.9, 18.0));
-            pixels.push(255);
+    let mut pixels = vec![0_u8; (2 * w) * (2 * h) * 4];
+    for y in 0..2 * h {
+        for x in 0..2 * w {
+            let sx = if x < w { x } else { 2 * w - 1 - x };
+            let sy = if y < h { y } else { 2 * h - 1 - y };
+            let from = ((y0 + sy) * image.width + x0 + sx) * 4;
+            let to = (y * 2 * w + x) * 4;
+            pixels[to..to + 4].copy_from_slice(&image.pixels[from..from + 4]);
         }
     }
-    Some(egui::ColorImage::from_rgba_unmultiplied([w, h], &pixels))
-}
-
-/// Tiles a whole texture with alternating horizontal/vertical
-/// mirroring, so a strong feature (a crack) never lines up into a
-/// visible repeat.
-fn tile_mirrored(painter: &egui::Painter, texture: &TextureHandle, rect: Rect, tint: Color32) {
-    let clipped = painter.with_clip_rect(rect);
-    let size = texture.size_vec2();
-    let src = Src::full(texture);
-    let mut row = 0;
-    let mut y = rect.min.y;
-    while y < rect.max.y {
-        let mut column = 0;
-        let mut x = rect.min.x;
-        while x < rect.max.x {
-            let mut uv = if column % 2 == 0 {
-                src.uv(texture)
-            } else {
-                src.uv_mirrored(texture)
-            };
-            if row % 2 == 1 {
-                std::mem::swap(&mut uv.min.y, &mut uv.max.y);
-            }
-            clipped.image(
-                texture.id(),
-                Rect::from_min_size(pos2(x, y), size),
-                uv,
-                tint,
-            );
-            x += size.x;
-            column += 1;
-        }
-        y += size.y;
-        row += 1;
-    }
-}
-
-fn tile(painter: &egui::Painter, texture: &TextureHandle, src: Src, rect: Rect, tint: Color32) {
-    let clipped = painter.with_clip_rect(rect);
-    let mut y = rect.min.y;
-    while y < rect.max.y {
-        let mut x = rect.min.x;
-        while x < rect.max.x {
-            blit(
-                &clipped,
-                texture,
-                src,
-                Rect::from_min_size(pos2(x, y), vec2(src.w, src.h)),
-                tint,
-            );
-            x += src.w;
-        }
-        y += src.h;
-    }
+    Some(egui::ColorImage::from_rgba_unmultiplied(
+        [2 * w, 2 * h],
+        &pixels,
+    ))
 }
 
 fn tile_h(painter: &egui::Painter, texture: &TextureHandle, src: Src, dest: Rect) {
