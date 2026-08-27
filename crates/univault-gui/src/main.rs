@@ -22,6 +22,7 @@
 //! write path; stashes also get their `.dxg` twin rewritten.
 //! Drag-and-drop routes files by extension.
 
+mod chrome;
 mod safe_write;
 mod search;
 mod theme;
@@ -363,9 +364,37 @@ struct Caches {
     names: NameCache,
     footprints: HashMap<String, (i32, i32)>,
     icons: HashMap<String, Option<egui::TextureHandle>>,
+    chrome: ChromeSlot,
+}
+
+/// Chrome upload state: tried-and-absent is remembered so a cache
+/// without chrome isn't re-asked every frame. Import completion
+/// resets `Caches`, which retries.
+#[derive(Default)]
+enum ChromeSlot {
+    #[default]
+    Untried,
+    Missing,
+    Ready(Box<chrome::Chrome>),
 }
 
 impl Caches {
+    /// The game-art chrome, uploaded once per session. A cheap clone
+    /// (texture handles are `Arc`s) so callers keep `Caches`
+    /// borrowable.
+    fn chrome(&mut self, ctx: &egui::Context, db: Option<&GameCache>) -> Option<chrome::Chrome> {
+        if matches!(self.chrome, ChromeSlot::Untried) {
+            self.chrome = match db.and_then(|db| chrome::Chrome::load(ctx, db)) {
+                Some(loaded) => ChromeSlot::Ready(Box::new(loaded)),
+                None => ChromeSlot::Missing,
+            };
+        }
+        match &self.chrome {
+            ChromeSlot::Ready(loaded) => Some((**loaded).clone()),
+            ChromeSlot::Untried | ChromeSlot::Missing => None,
+        }
+    }
+
     fn footprint(&mut self, db: Option<&GameCache>, item: &Item) -> (i32, i32) {
         if let Some(cached) = self.footprints.get(item.base.as_str()) {
             return *cached;
@@ -2065,6 +2094,17 @@ fn run_import(
             stamps.push(stamp);
         }
     }
+    // Immortal Throne's UI.arc first: it carries the caravan art the
+    // chrome manifest centers on.
+    for relative in ["Resources/XPack/UI.arc", "Resources/InGameUI.arc"] {
+        report(format!("Reading UI chrome ({relative})…"), None);
+        if let Ok((bytes, stamp)) = read_stamped(&dir.join(relative))
+            && let Ok(archive) = univault_core::arc::ArcFile::parse(bytes)
+        {
+            data.add_ui_archive(archive);
+            stamps.push(stamp);
+        }
+    }
     let cache = data.build_cache_with_progress(stamps, |scanned, total| {
         report(
             format!("Distilling item records… {scanned} / {total}"),
@@ -2322,42 +2362,45 @@ impl App {
             || self.bank.is_some()
             || self.shared.is_some()
             || self.relics.is_some();
+        let db = match &self.game {
+            GameStatus::Loaded(data) => Some(data),
+            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
+        };
+        let pane_chrome = self.caches.chrome(ui.ctx(), db);
+        let pane_chrome = pane_chrome.as_ref();
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Open character…").clicked() {
+            if plate_button(ui, pane_chrome, true, "Open character…").clicked() {
                 requested = pick_file(
                     "Character / stash",
                     &["chr", "dxb", "dxg"],
                     self.dialog_start_dir(),
                 );
             }
-            if ui
-                .add_enabled(has_left, egui::Button::new("Reload"))
+            if plate_button(ui, pane_chrome, has_left, "Reload")
                 .on_hover_text("Re-read the character and all banks from disk")
                 .clicked()
             {
                 reload_requested = true;
             }
-            if ui.button("Open vault…").clicked() {
+            if plate_button(ui, pane_chrome, true, "Open vault…").clicked() {
                 requested = pick_file("Vault", &["json", "vault"], self.dialog_start_dir());
             }
-            if ui
-                .add_enabled(
-                    matches!(self.game, GameStatus::Loaded(_)),
-                    egui::Button::new("Search vaults…"),
-                )
-                .on_hover_text(
-                    "One filterable table of every item in every vault (⌘F / Ctrl+F). \
-                     Needs imported game data.",
-                )
-                .clicked()
+            if plate_button(
+                ui,
+                pane_chrome,
+                matches!(self.game, GameStatus::Loaded(_)),
+                "Search vaults…",
+            )
+            .on_hover_text(
+                "One filterable table of every item in every vault (⌘F / Ctrl+F). \
+                 Needs imported game data.",
+            )
+            .clicked()
             {
                 self.enter_search();
             }
             let importing = matches!(self.game, GameStatus::Importing(_));
-            if ui
-                .add_enabled(!importing, egui::Button::new("Import game data…"))
-                .clicked()
-            {
+            if plate_button(ui, pane_chrome, !importing, "Import game data…").clicked() {
                 let start = stored_game_dir();
                 let mut dialog = rfd::FileDialog::new();
                 if let Some(start) = start {
@@ -2380,8 +2423,7 @@ impl App {
                 }
             });
             if stored_game_dir().is_some()
-                && ui
-                    .button("Socket patch…")
+                && plate_button(ui, pane_chrome, true, "Socket patch…")
                     .on_hover_text(
                         "Toggle the Game.dll socket-gate patch: lets the game itself \
                          accept relics/charms on Epic and Legendary items",
@@ -3447,42 +3489,89 @@ impl App {
                     active_tab: &mut self.active_tab,
                     selected: &mut self.left_selected,
                 };
-                egui::ScrollArea::vertical()
-                    .id_salt("file-pane")
-                    .show(&mut columns[0], |ui| {
-                        if let Some(chosen) = show_left_column(
-                            ui,
-                            &mut view,
-                            db,
-                            caches,
-                            can_move,
-                            drag.as_ref(),
-                            &mut frame,
-                        ) {
-                            action = Some(chosen);
-                        }
-                    });
+                let pane_chrome = caches.chrome(columns[0].ctx(), db);
+                framed_pane(&mut columns[0], pane_chrome.as_ref(), |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("file-pane")
+                        .show(ui, |ui| {
+                            if let Some(chosen) = show_left_column(
+                                ui,
+                                &mut view,
+                                db,
+                                caches,
+                                can_move,
+                                drag.as_ref(),
+                                &mut frame,
+                            ) {
+                                action = Some(chosen);
+                            }
+                        });
+                });
             } else {
                 columns[0].weak("No game file loaded.");
             }
             if let Some(pane) = &mut self.right {
-                if let Some(chosen) = show_vault_pane(
-                    &mut columns[1],
-                    pane,
-                    db,
-                    caches,
-                    can_move,
-                    drag.as_ref(),
-                    &mut frame,
-                ) {
-                    action = Some(chosen);
-                }
+                let pane_chrome = caches.chrome(columns[1].ctx(), db);
+                framed_pane(&mut columns[1], pane_chrome.as_ref(), |ui| {
+                    if let Some(chosen) =
+                        show_vault_pane(ui, pane, db, caches, can_move, drag.as_ref(), &mut frame)
+                    {
+                        action = Some(chosen);
+                    }
+                });
             } else {
                 columns[1].weak("No vault loaded.");
             }
         });
         (action, frame)
     }
+}
+
+/// A pane heading: the iron nameplate under chrome, gold classical
+/// text otherwise.
+fn pane_heading(ui: &mut egui::Ui, pane_chrome: Option<&chrome::Chrome>, text: &str) {
+    match pane_chrome {
+        Some(pane_chrome) => pane_chrome.nameplate(ui, text),
+        None => {
+            ui.label(theme::heading(text));
+        }
+    }
+}
+
+/// An action button: the game's gold plate under chrome, a themed
+/// egui button otherwise.
+fn plate_button(
+    ui: &mut egui::Ui,
+    pane_chrome: Option<&chrome::Chrome>,
+    enabled: bool,
+    text: &str,
+) -> egui::Response {
+    match pane_chrome {
+        Some(pane_chrome) => pane_chrome.button(ui, enabled, text),
+        None => ui.add_enabled(enabled, egui::Button::new(text)),
+    }
+}
+
+/// Wraps a pane in the caravan window frame when chrome is loaded:
+/// content sits inside [`chrome::FRAME_MARGIN`], the frame paints
+/// over the reserved bands, and the pane fills the viewport height
+/// so the frame encloses the whole column.
+fn framed_pane(
+    ui: &mut egui::Ui,
+    pane_chrome: Option<&chrome::Chrome>,
+    add: impl FnOnce(&mut egui::Ui),
+) {
+    let Some(pane_chrome) = pane_chrome else {
+        add(ui);
+        return;
+    };
+    let response = egui::Frame::NONE
+        .inner_margin(chrome::FRAME_MARGIN)
+        .show(ui, |ui| {
+            ui.set_min_height(ui.available_height());
+            add(ui);
+        });
+    pane_chrome.pane_frame(ui.painter(), response.response.rect);
 }
 
 /// On-screen size of one grid cell — the textures' native 32 pixels.
@@ -3622,21 +3711,33 @@ fn grid_view(
     }
     let painter = ui.painter_at(rect);
     let visuals = ui.visuals().clone();
-    painter.rect_filled(rect, 2.0, theme::GRID_BG);
-    let grid_stroke = egui::Stroke::new(0.5, theme::GRID_LINE);
-    for column in 0..=dims.0 {
-        let x = rect.min.x + cells_to_points(column);
-        painter.line_segment(
-            [egui::pos2(x, rect.min.y), egui::pos2(x, rect.max.y)],
-            grid_stroke,
-        );
-    }
-    for row in 0..=dims.1 {
-        let y = rect.min.y + cells_to_points(row);
-        painter.line_segment(
-            [egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)],
-            grid_stroke,
-        );
+    if let Some(chrome) = caches.chrome(ui.ctx(), db) {
+        for row in 0..dims.1 {
+            for column in 0..dims.0 {
+                let cell = egui::Rect::from_min_size(
+                    rect.min + egui::vec2(cells_to_points(column), cells_to_points(row)),
+                    egui::vec2(CELL_SIZE, CELL_SIZE),
+                );
+                chrome.grid_cell(&painter, cell);
+            }
+        }
+    } else {
+        painter.rect_filled(rect, 2.0, theme::GRID_BG);
+        let grid_stroke = egui::Stroke::new(0.5, theme::GRID_LINE);
+        for column in 0..=dims.0 {
+            let x = rect.min.x + cells_to_points(column);
+            painter.line_segment(
+                [egui::pos2(x, rect.min.y), egui::pos2(x, rect.max.y)],
+                grid_stroke,
+            );
+        }
+        for row in 0..=dims.1 {
+            let y = rect.min.y + cells_to_points(row);
+            painter.line_segment(
+                [egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)],
+                grid_stroke,
+            );
+        }
     }
 
     // The grab position decides which item a starting drag lifts —
@@ -3925,10 +4026,16 @@ fn point_to_cell(point: f32, grid_cells: i32, footprint_cells: i32) -> i32 {
 fn item_tooltip(ui: &mut egui::Ui, item: &Item, db: Option<&GameCache>, caches: &mut Caches) {
     let item_style = style::item_style(db, item);
     let details = db.map(|db| stats::item_details(db, item));
-    egui::Frame::NONE
+    let pane_chrome = caches.chrome(ui.ctx(), db);
+    let bordered = pane_chrome.is_some();
+    let response = egui::Frame::NONE
         .fill(theme::POPUP)
-        .stroke(egui::Stroke::new(1.0, theme::GOLD_DIM))
-        .corner_radius(egui::CornerRadius::same(3))
+        .stroke(if bordered {
+            egui::Stroke::NONE
+        } else {
+            egui::Stroke::new(1.0, theme::GOLD_DIM)
+        })
+        .corner_radius(egui::CornerRadius::same(if bordered { 0 } else { 3 }))
         .inner_margin(egui::Margin::same(8))
         .show(ui, |ui| {
             ui.style_mut().visuals.override_text_color = Some(theme::TEXT);
@@ -3959,6 +4066,9 @@ fn item_tooltip(ui: &mut egui::Ui, item: &Item, db: Option<&GameCache>, caches: 
                 }
             }
         });
+    if let Some(pane_chrome) = pane_chrome {
+        pane_chrome.tooltip_frame(ui.painter(), response.response.rect);
+    }
 }
 
 /// The game's full item name: prefix, quality, base, style, suffix,
@@ -4138,7 +4248,12 @@ fn show_equipment_doll(
     }
     let painter = ui.painter_at(rect);
     let visuals = ui.visuals().clone();
-    painter.rect_filled(rect, 2.0, visuals.extreme_bg_color);
+    match caches.chrome(ui.ctx(), db) {
+        Some(pane_chrome) => pane_chrome.parchment(&painter, rect),
+        None => {
+            painter.rect_filled(rect, 2.0, visuals.extreme_bg_color);
+        }
+    }
 
     let press_origin = ui.ctx().input(|input| input.pointer.press_origin());
     let cursor = ui.ctx().pointer_latest_pos();
@@ -4152,6 +4267,7 @@ fn show_equipment_doll(
         )
         .shrink(1.0);
         let grid = GridId::Equipment(slot);
+        painter.rect_filled(box_rect, 2.0, theme::SURFACE_DEEP.gamma_multiply(0.85));
         painter.rect_stroke(
             box_rect,
             2.0,
@@ -4240,14 +4356,18 @@ fn show_character_section(
     frame: &mut DragFrame,
 ) -> Option<PaneAction> {
     let mut action = None;
+    let pane_chrome = caches.chrome(ui.ctx(), db);
+    let pane_chrome = pane_chrome.as_ref();
     ui.horizontal_wrapped(|ui| {
-        ui.label(theme::heading(
+        pane_heading(
+            ui,
+            pane_chrome,
             pane.character
                 .info
                 .name
                 .as_deref()
                 .unwrap_or("Unnamed character"),
-        ));
+        );
         let gold = ui.add(
             egui::DragValue::new(&mut pane.character.info.money)
                 .range(0..=i32::MAX)
@@ -4257,10 +4377,7 @@ fn show_character_section(
             pane.dirty = true;
         }
         let selection_here = matches!(*selected, Some((GridId::Sack(_) | GridId::Equipment(_), _)));
-        if ui
-            .add_enabled(can_move && selection_here, egui::Button::new("→ Vault"))
-            .clicked()
-        {
+        if plate_button(ui, pane_chrome, can_move && selection_here, "→ Vault").clicked() {
             action = Some(PaneAction::MoveToVault);
         }
         let has_items = pane
@@ -4268,8 +4385,7 @@ fn show_character_section(
             .sacks
             .iter()
             .any(|sack| !sack.items.is_empty());
-        if ui
-            .add_enabled(can_move && has_items, egui::Button::new("All → Vault"))
+        if plate_button(ui, pane_chrome, can_move && has_items, "All → Vault")
             .on_hover_text(
                 "Move every item from all sacks into the open vault tab, \
                  spilling into the other tabs as it fills; equipped gear stays on",
@@ -4278,17 +4394,16 @@ fn show_character_section(
         {
             action = Some(PaneAction::MoveAllToVault);
         }
-        if ui
-            .add_enabled(can_move && has_items, egui::Button::new("Copy all → Vault"))
+        if plate_button(ui, pane_chrome, can_move && has_items, "Copy all → Vault")
             .on_hover_text("The same, as copies — every item stays in its sack")
             .clicked()
         {
             action = Some(PaneAction::CopyAllToVault);
         }
-        if ui.button("Respec attributes").clicked() {
+        if plate_button(ui, pane_chrome, true, "Respec attributes").clicked() {
             action = Some(PaneAction::PreviewRespec(RespecKind::Attributes));
         }
-        if ui.button("Respec skills & masteries").clicked() {
+        if plate_button(ui, pane_chrome, true, "Respec skills & masteries").clicked() {
             action = Some(PaneAction::PreviewRespec(RespecKind::Skills));
         }
     });
@@ -4368,15 +4483,25 @@ fn show_left_column(
         *view.active_tab = fallback;
         *view.selected = None;
     }
+    let pane_chrome = caches.chrome(ui.ctx(), db);
     ui.horizontal(|ui| {
         for tab in LeftTab::ALL {
-            let response = ui
-                .add_enabled(
-                    view.loaded(tab),
+            let loaded = view.loaded(tab);
+            let response = match pane_chrome.as_ref() {
+                Some(pane_chrome) => {
+                    pane_chrome.tab(ui, *view.active_tab == tab, loaded, tab.title())
+                }
+                None => ui.add_enabled(
+                    loaded,
                     egui::Button::selectable(*view.active_tab == tab, tab.title()),
-                )
-                .on_disabled_hover_text(tab.missing_hint());
-            if response.clicked() && *view.active_tab != tab {
+                ),
+            };
+            let response = if loaded {
+                response
+            } else {
+                response.on_hover_text(tab.missing_hint())
+            };
+            if loaded && response.clicked() && *view.active_tab != tab {
                 *view.active_tab = tab;
                 *view.selected = None;
             }
@@ -4447,21 +4572,20 @@ fn show_stash_section(
         StashSlot::Shared => ("Shared bank", GridId::Shared),
         StashSlot::Relic => ("Relic bank", GridId::Relic),
     };
+    let pane_chrome = caches.chrome(ui.ctx(), db);
+    let pane_chrome = pane_chrome.as_ref();
     ui.horizontal_wrapped(|ui| {
-        ui.label(theme::heading(format!(
-            "{title} {}×{}",
-            pane.stash.width, pane.stash.height
-        )));
+        pane_heading(
+            ui,
+            pane_chrome,
+            &format!("{title} {}×{}", pane.stash.width, pane.stash.height),
+        );
         let selection_here = matches!(*selected, Some((current, _)) if current == grid);
-        if ui
-            .add_enabled(can_move && selection_here, egui::Button::new("→ Vault"))
-            .clicked()
-        {
+        if plate_button(ui, pane_chrome, can_move && selection_here, "→ Vault").clicked() {
             action = Some(PaneAction::MoveToVault);
         }
         let has_items = !pane.stash.items.is_empty();
-        if ui
-            .add_enabled(can_move && has_items, egui::Button::new("All → Vault"))
+        if plate_button(ui, pane_chrome, can_move && has_items, "All → Vault")
             .on_hover_text(
                 "Move every item in this bank into the open vault tab, \
                  spilling into the other tabs as it fills",
@@ -4470,8 +4594,7 @@ fn show_stash_section(
         {
             action = Some(PaneAction::MoveAllToVault);
         }
-        if ui
-            .add_enabled(can_move && has_items, egui::Button::new("Copy all → Vault"))
+        if plate_button(ui, pane_chrome, can_move && has_items, "Copy all → Vault")
             .on_hover_text("The same, as copies — every item stays in the bank")
             .clicked()
         {
@@ -4505,14 +4628,17 @@ fn show_vault_pane(
     frame: &mut DragFrame,
 ) -> Option<PaneAction> {
     let mut action = None;
+    let pane_chrome = caches.chrome(ui.ctx(), db);
+    let pane_chrome = pane_chrome.as_ref();
     ui.horizontal(|ui| {
-        ui.label(theme::heading("Vault"));
-        if ui
-            .add_enabled(
-                can_move && pane.selected.is_some(),
-                egui::Button::new("← To file"),
-            )
-            .clicked()
+        pane_heading(ui, pane_chrome, "Vault");
+        if plate_button(
+            ui,
+            pane_chrome,
+            can_move && pane.selected.is_some(),
+            "← To file",
+        )
+        .clicked()
         {
             action = Some(PaneAction::MoveToFile);
         }
@@ -4529,7 +4655,10 @@ fn show_vault_pane(
             } else {
                 format!("{} ({})", tab + 1, sack.items.len())
             };
-            let response = ui.add(egui::Button::selectable(pane.open_tab == tab, label));
+            let response = match pane_chrome {
+                Some(pane_chrome) => pane_chrome.tab(ui, pane.open_tab == tab, true, &label),
+                None => ui.add(egui::Button::selectable(pane.open_tab == tab, label)),
+            };
             // Mid-drag, pointing at a tab switches to it so any tab
             // can receive the drop; egui suppresses hover while a
             // widget drags, so the check is by pointer position.
