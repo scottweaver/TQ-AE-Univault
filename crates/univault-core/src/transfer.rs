@@ -199,6 +199,82 @@ pub fn place_in_vault_tab(
     }
 }
 
+/// Counts from a bulk transfer into a vault: how many items landed,
+/// how many fit in no tab, and how many of the placed landed outside
+/// the tab the caller asked for first.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct BulkOutcome {
+    pub placed: usize,
+    pub left_behind: usize,
+    pub spilled: usize,
+}
+
+impl BulkOutcome {
+    #[must_use]
+    pub fn merge(self, other: Self) -> Self {
+        Self {
+            placed: self.placed + other.placed,
+            left_behind: self.left_behind + other.left_behind,
+            spilled: self.spilled + other.spilled,
+        }
+    }
+
+    fn placed_in(tab: usize, start_tab: usize) -> Self {
+        Self {
+            placed: 1,
+            left_behind: 0,
+            spilled: usize::from(tab != start_tab),
+        }
+    }
+}
+
+/// Moves every item out of `items` into the vault via
+/// [`place_in_vault`] — `start_tab` first, spilling into the other
+/// tabs as each fills. Items are placed in source order; an item no
+/// tab can fit stays in `items` at its original index and position
+/// while the rest keep moving.
+pub fn move_all_into_vault(
+    items: &mut Vec<Item>,
+    vault: &mut Vault,
+    start_tab: usize,
+    db: Option<&GameCache>,
+) -> BulkOutcome {
+    let mut outcome = BulkOutcome::default();
+    let mut index = 0;
+    while index < items.len() {
+        let item = items.remove(index);
+        match place_in_vault(vault, item, start_tab, db) {
+            Ok(tab) => outcome = outcome.merge(BulkOutcome::placed_in(tab, start_tab)),
+            Err(rejected) => {
+                items.insert(index, *rejected.item);
+                outcome.left_behind += 1;
+                index += 1;
+            }
+        }
+    }
+    outcome
+}
+
+/// Copies every item in `items` into the vault via
+/// [`place_in_vault`] — `start_tab` first, spilling into the other
+/// tabs as each fills — leaving the source untouched. An item no tab
+/// can fit is counted, not copied.
+pub fn copy_all_into_vault(
+    items: &[Item],
+    vault: &mut Vault,
+    start_tab: usize,
+    db: Option<&GameCache>,
+) -> BulkOutcome {
+    let mut outcome = BulkOutcome::default();
+    for item in items {
+        match place_in_vault(vault, item.clone(), start_tab, db) {
+            Ok(tab) => outcome = outcome.merge(BulkOutcome::placed_in(tab, start_tab)),
+            Err(_) => outcome.left_behind += 1,
+        }
+    }
+    outcome
+}
+
 /// Places an item into a character's inventory, trying
 /// `preferred_sack` first and then every sack. Returns the sack it
 /// landed in, or hands the item back on failure.
@@ -953,6 +1029,82 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(rejected.reason, TransferError::BadIndex);
+    }
+
+    #[test]
+    fn move_all_prefers_the_start_tab_and_spills_into_the_next() {
+        // 18×20 tab, 2×5 fallback footprint → 36 items fill a tab.
+        let mut vault = Vault::new(3);
+        let mut items: Vec<Item> = (0..40)
+            .map(|_| item(r"records\item\equipmentweapon\sword_01.dbr"))
+            .collect();
+        let outcome = move_all_into_vault(&mut items, &mut vault, 1, None);
+        assert_eq!(
+            outcome,
+            BulkOutcome {
+                placed: 40,
+                left_behind: 0,
+                spilled: 4,
+            }
+        );
+        assert!(items.is_empty());
+        assert_eq!(vault.sacks[1].items.len(), 36);
+        assert_eq!(vault.sacks[2].items.len(), 4);
+        assert!(vault.sacks[0].items.is_empty());
+    }
+
+    #[test]
+    fn move_all_wraps_to_earlier_tabs_and_leaves_the_overflow_in_place() {
+        let mut vault = Vault::new(2);
+        let mut items: Vec<Item> = (0..80)
+            .map(|_| item(r"records\item\equipmentweapon\sword_01.dbr"))
+            .collect();
+        let outcome = move_all_into_vault(&mut items, &mut vault, 1, None);
+        assert_eq!(
+            outcome,
+            BulkOutcome {
+                placed: 72,
+                left_behind: 8,
+                spilled: 36,
+            }
+        );
+        assert_eq!(items.len(), 8);
+        assert_eq!(vault.sacks[0].items.len(), 36);
+        assert_eq!(vault.sacks[1].items.len(), 36);
+    }
+
+    #[test]
+    fn copy_all_fills_the_vault_without_touching_the_source() {
+        let mut vault = Vault::new(1);
+        let items: Vec<Item> = (0..40)
+            .map(|_| item(r"records\item\equipmentweapon\sword_01.dbr"))
+            .collect();
+        let outcome = copy_all_into_vault(&items, &mut vault, 0, None);
+        assert_eq!(
+            outcome,
+            BulkOutcome {
+                placed: 36,
+                left_behind: 4,
+                spilled: 0,
+            }
+        );
+        assert_eq!(items.len(), 40);
+        assert_eq!(vault.sacks[0].items.len(), 36);
+    }
+
+    #[test]
+    fn bulk_transfers_of_an_empty_source_report_nothing() {
+        let mut vault = Vault::new(1);
+        let mut none: Vec<Item> = Vec::new();
+        assert_eq!(
+            move_all_into_vault(&mut none, &mut vault, 0, None),
+            BulkOutcome::default()
+        );
+        assert_eq!(
+            copy_all_into_vault(&none, &mut vault, 0, None),
+            BulkOutcome::default()
+        );
+        assert!(vault.sacks[0].items.is_empty());
     }
 
     #[test]
