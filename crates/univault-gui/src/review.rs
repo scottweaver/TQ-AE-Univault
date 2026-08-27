@@ -67,6 +67,13 @@ enum Draft {
         note: String,
         fresh: bool,
     },
+    /// Reopened via its badge: editing (or deleting) a committed
+    /// annotation.
+    Editing {
+        index: usize,
+        note: String,
+        fresh: bool,
+    },
 }
 
 struct Annotation {
@@ -103,7 +110,7 @@ impl ReviewOverlay {
             }
         }
         if self.tool.is_none() {
-            ui.label("pick a tool to annotate");
+            ui.label("arm a tool to draw; click a badge to edit");
         }
         ui.separator();
         if ui.button("undo").clicked() {
@@ -146,7 +153,10 @@ impl ReviewOverlay {
             let drag_pos = response.interact_pointer_pos();
             if response.drag_started()
                 && let Some(pos) = drag_pos
-                && !matches!(self.draft, Some(Draft::Noting { .. }))
+                && !matches!(
+                    self.draft,
+                    Some(Draft::Noting { .. } | Draft::Editing { .. })
+                )
             {
                 self.draft = Some(Draft::Dragging { from: pos, to: pos });
             }
@@ -182,43 +192,102 @@ impl ReviewOverlay {
                 paint_geom(painter, *geom);
                 paint_badge(painter, geom.anchor(), self.annotations.len() + 1);
             }
-            (Some(Draft::Dragging { .. }), None) | (None, _) => {}
+            (Some(Draft::Dragging { .. }), None) | (Some(Draft::Editing { .. }) | None, _) => {}
         }
+        self.badge_clicks(ui);
 
         self.note_editor(ui);
         self.finish_export(ui, component, component_name);
     }
 
-    /// The floating text field of a just-drawn shape. Enter commits
-    /// the annotation, Escape discards it.
+    /// A committed annotation's badge reopens it for editing (or
+    /// deleting). Badges are registered after everything else, so
+    /// they win the hit-test even over an armed tool's capture.
+    fn badge_clicks(&mut self, ui: &egui::Ui) {
+        if matches!(
+            self.draft,
+            Some(Draft::Noting { .. } | Draft::Editing { .. })
+        ) {
+            return;
+        }
+        for (index, annotation) in self.annotations.iter().enumerate() {
+            let hit = Rect::from_center_size(
+                annotation.geom.anchor(),
+                vec2(2.0 * BADGE_R, 2.0 * BADGE_R),
+            );
+            let response = ui
+                .interact(hit, ui.id().with(("review-badge", index)), Sense::click())
+                .on_hover_cursor(CursorIcon::PointingHand);
+            if response.clicked() {
+                self.draft = Some(Draft::Editing {
+                    index,
+                    note: annotation.note.clone(),
+                    fresh: true,
+                });
+                return;
+            }
+        }
+    }
+
+    /// The floating text field of a just-drawn shape or a reopened
+    /// badge. Enter commits, Escape discards the change; a reopened
+    /// annotation also offers deletion.
     fn note_editor(&mut self, ui: &mut egui::Ui) {
-        let Some(Draft::Noting { geom, note, fresh }) = &mut self.draft else {
+        let (anchor, deletable) = match &self.draft {
+            Some(Draft::Noting { geom, .. }) => (geom.anchor(), false),
+            Some(Draft::Editing { index, .. }) => (self.annotations[*index].geom.anchor(), true),
+            Some(Draft::Dragging { .. }) | None => return,
+        };
+        let Some(Draft::Noting { note, fresh, .. } | Draft::Editing { note, fresh, .. }) =
+            &mut self.draft
+        else {
             return;
         };
-        let at = geom.anchor() + vec2(BADGE_R + 4.0, BADGE_R + 4.0);
+        let at = anchor + vec2(BADGE_R + 4.0, BADGE_R + 4.0);
         let mut committed = false;
         let mut cancelled = false;
+        let mut deleted = false;
         egui::Area::new(ui.id().with("review-note"))
             .fixed_pos(at)
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    let edit = ui.add(
-                        egui::TextEdit::singleline(note)
-                            .hint_text("what's wrong here? (Enter saves, Esc discards)")
-                            .desired_width(300.0),
-                    );
-                    if *fresh {
-                        edit.request_focus();
-                        *fresh = false;
-                    }
-                    cancelled = ui.input(|i| i.key_pressed(egui::Key::Escape));
-                    committed = !cancelled
-                        && edit.lost_focus()
-                        && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    ui.horizontal(|ui| {
+                        let edit = ui.add(
+                            egui::TextEdit::singleline(note)
+                                .hint_text("what's wrong here? (Enter saves, Esc discards)")
+                                .desired_width(300.0),
+                        );
+                        if *fresh {
+                            edit.request_focus();
+                            *fresh = false;
+                        }
+                        if deletable {
+                            deleted = ui.button("delete").clicked();
+                        }
+                        cancelled = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                        committed = !cancelled
+                            && !deleted
+                            && edit.lost_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    });
                 });
             });
-        if committed && let Some(Draft::Noting { geom, note, .. }) = self.draft.take() {
-            self.annotations.push(Annotation { geom, note });
+        if deleted {
+            if let Some(Draft::Editing { index, .. }) = self.draft.take() {
+                self.annotations.remove(index);
+            }
+        } else if committed {
+            match self.draft.take() {
+                Some(Draft::Noting { geom, note, .. }) => {
+                    self.annotations.push(Annotation { geom, note });
+                }
+                Some(Draft::Editing { index, note, .. }) => {
+                    if let Some(annotation) = self.annotations.get_mut(index) {
+                        annotation.note = note;
+                    }
+                }
+                Some(Draft::Dragging { .. }) | None => {}
+            }
         } else if cancelled {
             self.draft = None;
         }
