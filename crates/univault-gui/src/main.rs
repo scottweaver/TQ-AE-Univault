@@ -2108,6 +2108,10 @@ fn staleness_warning(cache: &GameCache) -> Option<String> {
 }
 
 impl eframe::App for App {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        theme::SURFACE.to_normalized_gamma_f32()
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll_import();
         if let Some(dropped) = first_dropped_path(ui.ctx()) {
@@ -2310,7 +2314,7 @@ impl App {
             || self.bank.is_some()
             || self.shared.is_some()
             || self.relics.is_some();
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if ui.button("Open character…").clicked() {
                 requested = pick_file(
                     "Character / stash",
@@ -4228,7 +4232,7 @@ fn show_character_section(
     frame: &mut DragFrame,
 ) -> Option<PaneAction> {
     let mut action = None;
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label(theme::heading(
             pane.character
                 .info
@@ -4280,7 +4284,7 @@ fn show_character_section(
             action = Some(PaneAction::PreviewRespec(RespecKind::Skills));
         }
     });
-    ui.monospace(pane.path.display().to_string());
+    ui.label(theme::path_text(pane.path.display().to_string()));
     egui::CollapsingHeader::new("Equipment")
         .default_open(true)
         .show(ui, |ui| {
@@ -4435,7 +4439,7 @@ fn show_stash_section(
         StashSlot::Shared => ("Shared bank", GridId::Shared),
         StashSlot::Relic => ("Relic bank", GridId::Relic),
     };
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label(theme::heading(format!(
             "{title} {}×{}",
             pane.stash.width, pane.stash.height
@@ -4466,7 +4470,7 @@ fn show_stash_section(
             action = Some(PaneAction::CopyAllToVault);
         }
     });
-    ui.monospace(pane.path.display().to_string());
+    ui.label(theme::path_text(pane.path.display().to_string()));
     let entries: Vec<(usize, &Item)> = pane.stash.items.iter().enumerate().collect();
     grid_view(
         ui,
@@ -4505,7 +4509,7 @@ fn show_vault_pane(
             action = Some(PaneAction::MoveToFile);
         }
     });
-    ui.monospace(pane.path.display().to_string());
+    ui.label(theme::path_text(pane.path.display().to_string()));
     if pane.open_tab >= pane.vault.sacks.len() {
         pane.open_tab = 0;
     }

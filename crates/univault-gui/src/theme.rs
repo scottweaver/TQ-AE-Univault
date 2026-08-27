@@ -49,6 +49,15 @@ pub fn heading(text: impl Into<String>) -> egui::RichText {
         .color(HEADING_GOLD)
 }
 
+/// A file path under a pane heading: small, dim monospace, so it
+/// informs without competing with the panes.
+pub fn path_text(text: impl Into<String>) -> egui::RichText {
+    egui::RichText::new(text.into())
+        .monospace()
+        .size(10.5)
+        .color(TEXT_WEAK)
+}
+
 fn heading_family() -> FontFamily {
     FontFamily::Name("tq-heading".into())
 }
