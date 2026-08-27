@@ -2153,11 +2153,22 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let db = match &self.game {
+            GameStatus::Loaded(data) => Some(data),
+            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
+        };
+        if let Some(chrome) = self.caches.chrome(ui.ctx(), db) {
+            chrome.parchment(ui.painter(), ui.ctx().content_rect(), STONE_TINT);
+        }
         egui::Frame::NONE
             .inner_margin(egui::Margin::same(10))
             .show(ui, |ui| self.main_ui(ui));
     }
 }
+
+/// The stone backdrop is the character screen's parchment, darkened
+/// so cream text outside the panes stays readable.
+const STONE_TINT: egui::Color32 = egui::Color32::from_gray(105);
 
 impl App {
     fn main_ui(&mut self, ui: &mut egui::Ui) {
@@ -3565,6 +3576,10 @@ fn framed_pane(
         add(ui);
         return;
     };
+    // Painted up front over the predicted rect (the pane fills its
+    // column) so content never sits on the stone backdrop.
+    ui.painter()
+        .rect_filled(ui.available_rect_before_wrap(), 0.0, theme::SURFACE);
     let response = egui::Frame::NONE
         .inner_margin(chrome::FRAME_MARGIN)
         .show(ui, |ui| {
@@ -4249,7 +4264,7 @@ fn show_equipment_doll(
     let painter = ui.painter_at(rect);
     let visuals = ui.visuals().clone();
     match caches.chrome(ui.ctx(), db) {
-        Some(pane_chrome) => pane_chrome.parchment(&painter, rect),
+        Some(pane_chrome) => pane_chrome.parchment(&painter, rect, egui::Color32::WHITE),
         None => {
             painter.rect_filled(rect, 2.0, visuals.extreme_bg_color);
         }

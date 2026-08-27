@@ -17,11 +17,12 @@ const CELL: Src = Src::new(27.0, 126.0, 32.0, 32.0);
 
 /// The caravan window frame, as eight nine-patch pieces. The bottom
 /// corners are wider: they carry the ornamental brackets.
+// The top-right corner is the top-left mirrored: the art's own
+// top-right carries the baked-in close button.
 const FRAME_TL: Src = Src::new(0.0, 0.0, 14.0, 14.0);
 // The tile span stops short of the art's title notch, whose bands
 // brighten mid-strip.
 const FRAME_TC: Src = Src::new(16.0, 0.0, 150.0, 14.0);
-const FRAME_TR: Src = Src::new(551.0, 0.0, 14.0, 14.0);
 const FRAME_LC: Src = Src::new(0.0, 150.0, 14.0, 320.0);
 const FRAME_RC: Src = Src::new(551.0, 150.0, 14.0, 320.0);
 const FRAME_BL: Src = Src::new(0.0, 609.0, 29.0, 28.0);
@@ -73,6 +74,17 @@ impl Src {
             pos2(self.x / size.x, self.y / size.y),
             pos2((self.x + self.w) / size.x, (self.y + self.h) / size.y),
         )
+    }
+
+    /// Horizontally mirrored texture coordinates — for reusing a
+    /// left-side piece on the right (the art's own top-right corner
+    /// carries the baked-in close button).
+    fn uv_mirrored(self, texture: &TextureHandle) -> Rect {
+        let size = texture.size_vec2();
+        Rect {
+            min: pos2((self.x + self.w) / size.x, self.y / size.y),
+            max: pos2(self.x / size.x, (self.y + self.h) / size.y),
+        }
     }
 
     fn full(texture: &TextureHandle) -> Self {
@@ -146,7 +158,7 @@ impl Chrome {
     pub fn pane_frame(&self, painter: &egui::Painter, rect: Rect) {
         let texture = &self.caravan;
         let tl = vec2(FRAME_TL.w, FRAME_TL.h);
-        let tr = vec2(FRAME_TR.w, FRAME_TR.h);
+        let tr = tl;
         let bl = vec2(FRAME_BL.w, FRAME_BL.h);
         let br = vec2(FRAME_BR.w, FRAME_BR.h);
         blit(
@@ -156,11 +168,10 @@ impl Chrome {
             Rect::from_min_size(rect.min, tl),
             Color32::WHITE,
         );
-        blit(
-            painter,
-            texture,
-            FRAME_TR,
+        painter.image(
+            texture.id(),
             Rect::from_min_size(pos2(rect.max.x - tr.x, rect.min.y), tr),
+            FRAME_TL.uv_mirrored(texture),
             Color32::WHITE,
         );
         blit(
@@ -233,7 +244,8 @@ impl Chrome {
     }
 
     /// A leather tab plate; dim until selected, like the game's
-    /// caravan tabs.
+    /// caravan tabs — white lettering when active, dull white-grey
+    /// otherwise.
     pub fn tab(
         &self,
         ui: &mut egui::Ui,
@@ -241,10 +253,12 @@ impl Chrome {
         enabled: bool,
         text: &str,
     ) -> egui::Response {
-        let ink = if enabled {
-            PLATE_INK
+        let ink = if !enabled {
+            Color32::from_gray(115)
+        } else if selected {
+            Color32::from_rgb(250, 247, 238)
         } else {
-            Color32::from_rgb(70, 60, 45)
+            Color32::from_rgb(188, 182, 168)
         };
         let galley = ui.painter().layout_no_wrap(
             text.to_owned(),
@@ -372,7 +386,7 @@ impl Chrome {
     }
 
     /// The character screen's parchment, tiled across a rect.
-    pub fn parchment(&self, painter: &egui::Painter, rect: Rect) {
+    pub fn parchment(&self, painter: &egui::Painter, rect: Rect, tint: Color32) {
         let clipped = painter.with_clip_rect(rect);
         let mut y = rect.min.y;
         while y < rect.max.y {
@@ -383,7 +397,7 @@ impl Chrome {
                     &self.character,
                     PARCHMENT,
                     Rect::from_min_size(pos2(x, y), vec2(PARCHMENT.w, PARCHMENT.h)),
-                    Color32::WHITE,
+                    tint,
                 );
                 x += PARCHMENT.w;
             }
