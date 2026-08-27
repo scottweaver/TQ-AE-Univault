@@ -538,6 +538,7 @@ struct App {
     /// The Game.dll socket-patch dialog, holding the inspected file
     /// while open.
     dll_patch: Option<DllPatchDialog>,
+    show_help: bool,
     watcher: FileWatcher,
     refresh: RefreshTracker,
     /// Documents whose file changed on disk while they hold unsaved
@@ -602,6 +603,7 @@ impl App {
             drag: None,
             pending_zoom: 1.0,
             dll_patch: None,
+            show_help: false,
             watcher: start_watcher(),
             refresh: RefreshTracker::default(),
             conflicts: Vec::new(),
@@ -1260,6 +1262,92 @@ impl App {
             | GridId::Shared
             | GridId::Relic => self.send_left_to_vault(grid, index),
             GridId::VaultTab(_) | GridId::SearchDoc { .. } => self.send_vault_to_left(grid, index),
+        }
+    }
+
+    /// The gestures-and-behaviors reference, sectioned — opened from
+    /// the toolbar's Help button.
+    fn show_help_modal(&mut self, ctx: &egui::Context) {
+        if !self.show_help {
+            return;
+        }
+        let mut close = false;
+        let modal = egui::Modal::new(egui::Id::new("help-modal")).show(ctx, |ui| {
+            ui.set_max_width(560.0);
+            ui.label(theme::heading("How TQ UniVault works"));
+            egui::ScrollArea::vertical()
+                .max_height(440.0)
+                .show(ui, |ui| {
+                    help_section(
+                        ui,
+                        "Opening files",
+                        &[
+                            "Open (or drop) a Player.chr — its character bank and the \
+                         account's shared and relic banks load beside it as tabs.",
+                            "A stash (.dxb / .dxg) or another vault (.json, legacy .vault) \
+                         opens on its own.",
+                            "The default vault opens at launch; the vault pane shows one \
+                         tab at a time — pick it in the strip.",
+                        ],
+                    );
+                    help_section(
+                        ui,
+                        "Moving items",
+                        &[
+                            "Drag an item between any two grids.",
+                            "Right-click sends it to the other pane's open tab; \
+                         Shift+Right-click sends a copy.",
+                            "Shift+Click duplicates in place.",
+                            "\"All → Vault\" and \"Copy all → Vault\" move a whole tab, \
+                         spilling into the next vault tabs as each fills.",
+                        ],
+                    );
+                    help_section(
+                        ui,
+                        "Equipment",
+                        &[
+                            "The paper doll on the Inventory tab is the worn gear: drag \
+                         off it to unequip, drag onto a glowing slot to equip.",
+                        ],
+                    );
+                    help_section(
+                        ui,
+                        "Relics, charms & artifacts",
+                        &[
+                            "Drag a relic or charm onto gear its type rules allow to \
+                         socket it — any rarity, epics and legendaries included.",
+                            "Alt+Click an item with a socketed relic/charm to extract \
+                         it — both kept.",
+                            "Double-click a completed relic, charm, or artifact to \
+                         (re)pick its completion bonus.",
+                        ],
+                    );
+                    help_section(
+                        ui,
+                        "Search",
+                        &[
+                            "\"Search vaults…\" (⌘F) opens one filterable table over \
+                         every vault file.",
+                            "Rows take the same gestures as grid items; double-click \
+                         shows an item at home in its vault.",
+                        ],
+                    );
+                    help_section(
+                        ui,
+                        "Saving",
+                        &[
+                            "Every edit autosaves after a short quiet pause — there are \
+                         no save buttons.",
+                            "The first write since a file was loaded stores a backup \
+                         beside it; Reload re-reads everything from disk.",
+                        ],
+                    );
+                });
+            ui.add_space(8.0);
+            close = ui.button("Close").clicked();
+        });
+        if close || modal.should_close() {
+            self.show_help = false;
         }
     }
 
@@ -2158,7 +2246,7 @@ impl eframe::App for App {
             GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
         };
         if let Some(chrome) = self.caches.chrome(ui.ctx(), db) {
-            chrome.parchment(ui.painter(), ui.ctx().content_rect(), STONE_TINT);
+            chrome.backdrop(ui.painter(), ui.ctx().content_rect(), STONE_TINT);
         }
         egui::Frame::NONE
             .inner_margin(egui::Margin::same(10))
@@ -2213,6 +2301,7 @@ impl App {
                         self.status = Some(self.bulk_left_to_vault(BulkMode::Copy));
                     }
                     Some(PaneAction::MoveToFile) => self.status = Some(self.move_vault_to_left()),
+                    Some(PaneAction::OpenSearch) => self.enter_search(),
                     Some(PaneAction::PreviewRespec(kind)) => self.preview_respec(kind),
                     None => {}
                 }
@@ -2245,6 +2334,7 @@ impl App {
         self.show_reload_modal(ui.ctx());
         self.show_bonus_modal(ui.ctx());
         self.show_dll_patch_modal(ui.ctx());
+        self.show_help_modal(ui.ctx());
         self.show_conflict_modal(ui.ctx());
         self.show_toasts(ui.ctx());
     }
@@ -2256,6 +2346,7 @@ enum PaneAction {
     CopyAllToVault,
     MoveToFile,
     PreviewRespec(RespecKind),
+    OpenSearch,
 }
 
 /// Whether a bulk send drains the source or leaves it untouched.
@@ -2422,14 +2513,14 @@ impl App {
                     self.game_note = None;
                 }
             }
-            ui.menu_button("Recent", |ui| {
+            let recent = plate_button(ui, pane_chrome, true, "Recent");
+            egui::Popup::menu(&recent).show(|ui| {
                 if self.recents.entries.is_empty() {
                     ui.weak("nothing yet");
                 }
                 for path in &self.recents.entries {
                     if ui.button(Recents::label(path)).clicked() {
                         requested = Some(path.clone());
-                        ui.close();
                     }
                 }
             });
@@ -2442,6 +2533,9 @@ impl App {
                     .clicked()
             {
                 self.open_dll_patch_dialog();
+            }
+            if plate_button(ui, pane_chrome, true, "Help…").clicked() {
+                self.show_help = true;
             }
         });
         (requested, reload_requested)
@@ -2496,24 +2590,13 @@ impl App {
             && self.shared.is_none()
             && self.relics.is_none()
         {
+            ui.add_space(12.0);
             ui.label(theme::heading("TQ UniVault"));
             ui.label(
-                "Open (or drop) a Player.chr — its bank and the shared and relic banks load \
-                 with it as tabs. A stash (.dxb/.dxg) or another vault (.json / legacy \
-                 .vault) opens alone too. The vault shows one tab at a time — pick \
-                 it in the strip. Right-click sends an item to the other pane, \
-                 landing in that pane's open tab; Shift+Right-click sends a copy; \
-                 Shift+Click duplicates in place; double-click a completed relic, \
-                 charm, or artifact to change its completion bonus; Alt+Click an \
-                 item with a socketed relic/charm to extract it — both kept; drag \
-                 a relic/charm onto gear its type rules allow to socket it — any \
-                 rarity, epics and legendaries included. The character's worn \
-                 equipment is the paper doll on the Inventory tab: drag items off \
-                 it or onto a glowing slot to equip them. 'Search vaults…' (⌘F) \
-                 opens one filterable table over every vault file — the same \
-                 gestures work on its rows, and double-click shows an item at \
-                 home in its vault.",
+                "Open (or drop) a Player.chr to begin — its banks load beside it \
+                 as tabs, and the default vault is already open on the right.",
             );
+            ui.label("Every gesture and behavior is described under Help…");
         }
     }
 
@@ -3538,6 +3621,16 @@ impl App {
     }
 }
 
+/// One Help-modal section: a gold section title over bulleted,
+/// wrapping lines.
+fn help_section(ui: &mut egui::Ui, title: &str, lines: &[&str]) {
+    ui.add_space(10.0);
+    ui.label(theme::section(title));
+    for line in lines {
+        ui.label(format!("•  {line}"));
+    }
+}
+
 /// A pane heading: the iron nameplate under chrome, gold classical
 /// text otherwise.
 fn pane_heading(ui: &mut egui::Ui, pane_chrome: Option<&chrome::Chrome>, text: &str) {
@@ -3578,8 +3671,7 @@ fn framed_pane(
     };
     // Painted up front over the predicted rect (the pane fills its
     // column) so content never sits on the stone backdrop.
-    ui.painter()
-        .rect_filled(ui.available_rect_before_wrap(), 0.0, theme::SURFACE);
+    pane_chrome.interior(ui.painter(), ui.available_rect_before_wrap());
     let response = egui::Frame::NONE
         .inner_margin(chrome::FRAME_MARGIN)
         .show(ui, |ui| {
@@ -4264,7 +4356,7 @@ fn show_equipment_doll(
     let painter = ui.painter_at(rect);
     let visuals = ui.visuals().clone();
     match caches.chrome(ui.ctx(), db) {
-        Some(pane_chrome) => pane_chrome.parchment(&painter, rect, egui::Color32::WHITE),
+        Some(pane_chrome) => pane_chrome.doll_stone(&painter, rect),
         None => {
             painter.rect_filled(rect, 2.0, visuals.extreme_bg_color);
         }
@@ -4656,6 +4748,12 @@ fn show_vault_pane(
         .clicked()
         {
             action = Some(PaneAction::MoveToFile);
+        }
+        if plate_button(ui, pane_chrome, db.is_some(), "Filter…")
+            .on_hover_text("Search and filter every vault file (⌘F / Ctrl+F)")
+            .clicked()
+        {
+            action = Some(PaneAction::OpenSearch);
         }
     });
     ui.label(theme::path_text(pane.path.display().to_string()));

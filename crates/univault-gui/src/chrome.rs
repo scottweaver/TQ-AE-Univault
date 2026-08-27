@@ -37,9 +37,18 @@ pub const FRAME_MARGIN: egui::Margin = egui::Margin {
     bottom: 30,
 };
 
-/// A clean stretch of the character screen's parchment, tiled as a
-/// backdrop.
+/// A clean stretch of the character screen's parchment — the
+/// backdrop fallback when the skills screen's stone is absent.
 const PARCHMENT: Src = Src::new(428.0, 448.0, 44.0, 44.0);
+
+/// Weathered stone from the mastery screen's big panel: cracks and
+/// rust veins, and large enough that tiling doesn't read as a
+/// pattern.
+const STONE: Src = Src::new(180.0, 226.0, 150.0, 100.0);
+
+/// The character screen's doll panel: dark-grey cracked stone — the
+/// game's own backdrop for contrast areas.
+const DOLL_STONE: Src = Src::new(110.0, 104.0, 178.0, 322.0);
 
 /// End-cap widths of the 3-sliced strips, in source pixels.
 const TITLE_CAPS: f32 = 24.0;
@@ -102,6 +111,9 @@ pub struct Chrome {
     title: TextureHandle,
     tab: TextureHandle,
     character: TextureHandle,
+    /// The mastery screen's stone panel; absent in caches imported
+    /// before it joined the manifest.
+    skills: Option<TextureHandle>,
     button_up: TextureHandle,
     button_over: TextureHandle,
     button_down: TextureHandle,
@@ -141,6 +153,7 @@ impl Chrome {
             title: load("caravan/caravantitle01.tex")?,
             tab: load("caravan/storageareatab01.tex")?,
             character: load("characterscreen/characterwindow01.tex")?,
+            skills: load("skills/skillsbackground01.tex"),
             button_up: load("optionswindow/buttonup01.tex")?,
             button_over: load("optionswindow/buttonover01.tex")?,
             button_down: load("optionswindow/buttondown01.tex")?,
@@ -385,29 +398,53 @@ impl Chrome {
         true
     }
 
-    /// The character screen's parchment, tiled across a rect.
-    pub fn parchment(&self, painter: &egui::Painter, rect: Rect, tint: Color32) {
-        let clipped = painter.with_clip_rect(rect);
-        let mut y = rect.min.y;
-        while y < rect.max.y {
-            let mut x = rect.min.x;
-            while x < rect.max.x {
-                blit(
-                    &clipped,
-                    &self.character,
-                    PARCHMENT,
-                    Rect::from_min_size(pos2(x, y), vec2(PARCHMENT.w, PARCHMENT.h)),
-                    tint,
-                );
-                x += PARCHMENT.w;
-            }
-            y += PARCHMENT.h;
+    /// The window backdrop: weathered tan stone, tiled.
+    pub fn backdrop(&self, painter: &egui::Painter, rect: Rect, tint: Color32) {
+        match &self.skills {
+            Some(skills) => tile(painter, skills, STONE, rect, tint),
+            None => tile(painter, &self.character, PARCHMENT, rect, tint),
         }
+    }
+
+    /// Dark-grey cracked stone stretched over a contrast area — the
+    /// game's doll-panel backdrop.
+    pub fn doll_stone(&self, painter: &egui::Painter, rect: Rect) {
+        blit(painter, &self.character, DOLL_STONE, rect, Color32::WHITE);
+    }
+
+    /// The same dark stone, tiled — a framed pane's interior fill.
+    pub fn interior(&self, painter: &egui::Painter, rect: Rect) {
+        tile(
+            painter,
+            &self.character,
+            DOLL_STONE,
+            rect,
+            Color32::from_gray(210),
+        );
     }
 }
 
 fn blit(painter: &egui::Painter, texture: &TextureHandle, src: Src, dest: Rect, tint: Color32) {
     painter.image(texture.id(), dest, src.uv(texture), tint);
+}
+
+fn tile(painter: &egui::Painter, texture: &TextureHandle, src: Src, rect: Rect, tint: Color32) {
+    let clipped = painter.with_clip_rect(rect);
+    let mut y = rect.min.y;
+    while y < rect.max.y {
+        let mut x = rect.min.x;
+        while x < rect.max.x {
+            blit(
+                &clipped,
+                texture,
+                src,
+                Rect::from_min_size(pos2(x, y), vec2(src.w, src.h)),
+                tint,
+            );
+            x += src.w;
+        }
+        y += src.h;
+    }
 }
 
 fn tile_h(painter: &egui::Painter, texture: &TextureHandle, src: Src, dest: Rect) {
