@@ -28,6 +28,12 @@
       "value": 0.0
     },
     {
+      "kind": "fill_player_skills",
+      "class": "Skill_AttackProjectileSpawnPet",
+      "variable": "skillCooldownTime",
+      "value": 0.0
+    },
+    {
       "kind": "revert_variables",
       "record": "records\\xpack\\game\\gameengine.dbr",
       "variables": [

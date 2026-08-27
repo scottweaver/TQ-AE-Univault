@@ -93,6 +93,7 @@ only). No issue tracker is bound yet (deliberately deferred).
 |---|---|---|
 | `main` | trunk | PRs #1–#37 all merged; all gates green |
 | `feat/tq-theme` | Titan Quest AE look & feel, phase 1 (palette + fonts) | PR open; awaiting the user's in-app look review |
+| `mod/nymph-cooldown` | Mod: cooldown-free projectile-spawn summons (Sylvan Nymph) | PR open; both bundles recomposed + installed, in-game check pending |
 
 ## Next up
 
@@ -135,6 +136,19 @@ order not yet prioritized):
    search — would be additive, vault files stay the source of truth.
 
 ## Most recent meaningful progress
+
+- **2026-08-27 — Mod: Sylvan Nymph joins the cooldown-free summons
+  (mod/nymph-cooldown, PR open).** User report: summon cooldowns
+  were zeroed earlier, but the nymph still had hers. Root cause:
+  her summon skill is class `Skill_AttackProjectileSpawnPet` (she
+  is thrown as a seed projectile) — the fill rule targeted
+  `Skill_SpawnPet` only. One new `fill_player_skills` rule for the
+  projectile class; in player scope it also zeroes Lay Trap (12s),
+  Blood of Ouranos (30s), and Neidan's Terracotta Servants (35s) —
+  all summons, consistent with the mod's spirit. Both bundles
+  recomposed + installed; nymph `skillCooldownTime` dump-verified
+  0.0 in both. Risk: in-game acceptance after a session restart;
+  trap spam is now possible by design.
 
 - **2026-08-27 — TQ AE look, phase 1 (feat/tq-theme, PR open).** User
   ask: the app is feature-rich but looks stock — retheme toward the
@@ -278,25 +292,6 @@ order not yet prioritized):
   guides say several — consolidated since), 4 bytes change,
   reverse byte-identical. Risk: the user pressing Enable and
   socketing an epic in-game is the acceptance test.
-- **2026-08-26 — Auto-refresh: panes follow the files.** User ask
-  (no more Reload button pressing), design-dialogued: prompt on
-  conflict, silent reload when clean. A background thread polls the
-  open character/banks/vault stamps every 2s (stat can hang on SMB —
-  never on the UI thread); a change must hold across two polls
-  before acting (never read the game's file mid-write — the relic
-  bank truncation lesson); own autosaves are recognized by stamp and
-  ignored; reloads defer while a drag/press/text-edit is live.
-  Conflicts: an external change to a dirty pane — or an autosave
-  about to land on an externally-changed file (every save now
-  re-checks freshness first) — suspends autosave and prompts:
-  reload-from-disk or keep-mine (keep-mine re-arms backup-first so
-  the external bytes are backed up before being overwritten; the
-  recorded exception to one-backup-per-load). ARCHITECTURE data-flow
-  amended in-PR. The manual Reload button stays. 170 tests. Risk:
-  feel unverified against the real SMB tree (poll cost, false
-  settles) until the user runs it; a reload that fails mid-conflict
-  leaves the pane clean-but-stale (same as manual Reload).
-
 ## Blocked / waiting
 
 - *(nothing)*
