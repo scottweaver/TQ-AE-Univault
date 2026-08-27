@@ -26,6 +26,9 @@ const FRAME_BL: Src = Src::new(0.0, 606.0, 29.0, 31.0);
 const FRAME_BC: Src = Src::new(150.0, 606.0, 240.0, 31.0);
 const FRAME_BR: Src = Src::new(536.0, 606.0, 29.0, 31.0);
 
+/// On-screen height of [`Chrome::tab_band`] — [`FRAME_BC`]'s rows.
+pub const TAB_BAND_H: f32 = 31.0;
+
 /// Content inset that keeps a pane's widgets inside the gold rim.
 pub const FRAME_MARGIN: egui::Margin = egui::Margin {
     left: 30,
@@ -276,6 +279,12 @@ impl Chrome {
         );
     }
 
+    /// The tab strip's textured baseline: the caravan band flipped,
+    /// tiled across a panel's top — what the active tab merges into.
+    pub fn tab_band(&self, painter: &egui::Painter, span: Rect) {
+        tile_h_flipped(painter, &self.caravan, FRAME_BC, span, true);
+    }
+
     /// The iron nameplate with a title on it.
     pub fn nameplate(&self, ui: &mut egui::Ui, text: &str) {
         let galley = ui.painter().layout_no_wrap(
@@ -497,35 +506,20 @@ pub fn tab_anchor(chrome: &Chrome, painter: &egui::Painter, rect: Rect, text: &s
     painter.galley(pos, galley, Color32::from_rgb(250, 247, 238));
 }
 
-/// The border sandwich around a tab's owned sub-panel, echoing the
-/// window frame: gold outer trim, leather band (the tabs' fill),
-/// black gap, then the content's gold rim.
+/// The thin border around a tab panel's content: black gap, then
+/// the content's gold rim — the textured band above carries the
+/// heavy edge.
 pub fn panel_border(painter: &egui::Painter, rect: Rect) {
-    let gold = Color32::from_rgb(208, 174, 96);
-    let leather = Color32::from_rgb(92, 74, 46);
-    let black = Color32::from_rgb(8, 6, 3);
-    painter.rect_stroke(
-        rect.expand(14.0),
-        2.0,
-        egui::Stroke::new(2.0, gold),
-        egui::StrokeKind::Inside,
-    );
-    painter.rect_stroke(
-        rect.expand(12.0),
-        1.0,
-        egui::Stroke::new(6.0, leather),
-        egui::StrokeKind::Inside,
-    );
     painter.rect_stroke(
         rect.expand(6.0),
         0.0,
-        egui::Stroke::new(4.0, black),
+        egui::Stroke::new(4.0, Color32::from_rgb(8, 6, 3)),
         egui::StrokeKind::Inside,
     );
     painter.rect_stroke(
         rect.expand(2.0),
         0.0,
-        egui::Stroke::new(2.0, gold),
+        egui::Stroke::new(2.0, Color32::from_rgb(208, 174, 96)),
         egui::StrokeKind::Inside,
     );
 }

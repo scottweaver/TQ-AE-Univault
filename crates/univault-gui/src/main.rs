@@ -3605,21 +3605,17 @@ impl App {
                 framed_pane(&mut columns[0], pane_chrome.as_ref(), |ui| {
                     let active = show_left_tabs(ui, &mut view, pane_chrome.as_ref());
                     anchored_panel(ui, pane_chrome.as_ref(), active, |ui| {
-                        egui::ScrollArea::vertical()
-                            .id_salt("file-pane")
-                            .show(ui, |ui| {
-                                if let Some(chosen) = show_left_column(
-                                    ui,
-                                    &mut view,
-                                    db,
-                                    caches,
-                                    can_move,
-                                    drag.as_ref(),
-                                    &mut frame,
-                                ) {
-                                    action = Some(chosen);
-                                }
-                            });
+                        if let Some(chosen) = show_left_column(
+                            ui,
+                            &mut view,
+                            db,
+                            caches,
+                            can_move,
+                            drag.as_ref(),
+                            &mut frame,
+                        ) {
+                            action = Some(chosen);
+                        }
                     });
                 });
             } else {
@@ -3700,7 +3696,7 @@ fn show_inventory_tabs(
 /// Allocates the doll's canvas centered in the pane, scaled to fill
 /// the available width.
 fn allocate_doll_canvas(ui: &mut egui::Ui) -> (egui::Rect, egui::Response, f32) {
-    let cell = fill_cell_size(ui.available_width(), DOLL_CELLS.0);
+    let cell = fit_cell_size(ui.available_size(), DOLL_CELLS);
     let size = egui::vec2(cells_at(DOLL_CELLS.0, cell), cells_at(DOLL_CELLS.1, cell));
     let pad = ((ui.available_width() - size.x) / 2.0).max(0.0);
     let (rect, response) = ui
@@ -3813,22 +3809,35 @@ fn anchored_panel(
     };
     ui.add_space(2.0);
     let inner = egui::Frame::NONE
-        .inner_margin(egui::Margin::same(14))
+        .inner_margin(egui::Margin {
+            left: 12,
+            right: 12,
+            top: 40,
+            bottom: 12,
+        })
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             ui.set_min_height(ui.available_height());
             add(ui);
         });
-    let panel = inner.response.rect.shrink(2.0);
-    chrome::inner_shadow(ui.painter(), panel.shrink(6.0), 12.0);
-    chrome::panel_border(ui.painter(), panel);
+    let rect = inner.response.rect;
+    let content = egui::Rect::from_min_max(
+        rect.min + egui::vec2(12.0, 40.0),
+        rect.max - egui::vec2(12.0, 12.0),
+    );
+    pane_chrome.tab_band(
+        ui.painter(),
+        egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), chrome::TAB_BAND_H)),
+    );
+    chrome::inner_shadow(ui.painter(), content, 12.0);
+    chrome::panel_border(ui.painter(), content);
     if let Some((tab_rect, label)) = active {
         chrome::tab_anchor(
             pane_chrome,
             ui.painter(),
             tab_rect,
             &label,
-            panel.min.y - 10.0,
+            rect.min.y + 18.0,
         );
     }
 }
@@ -3868,12 +3877,14 @@ fn framed_pane(
 /// scale their on-screen cell up from this to fill their pane.
 const CELL_SIZE: f32 = 32.0;
 
-/// The on-screen cell size that fills the available width with
-/// `columns` cells: never below native, capped at 2× so icons stay
-/// crisp.
-#[allow(clippy::cast_precision_loss)] // column counts are tiny
-fn fill_cell_size(available: f32, columns: i32) -> f32 {
-    (((available - 4.0) / columns.max(1) as f32).floor()).clamp(CELL_SIZE, CELL_SIZE * 2.0)
+/// The on-screen cell size that fits `dims` into the available
+/// space with no scrolling: bounded by width and height, capped at
+/// 2× native so icons stay crisp, floored so cells stay integral.
+#[allow(clippy::cast_precision_loss)] // grid dimensions are tiny
+fn fit_cell_size(available: egui::Vec2, dims: (i32, i32)) -> f32 {
+    let by_width = (available.x - 4.0) / dims.0.max(1) as f32;
+    let by_height = (available.y - 4.0) / dims.1.max(1) as f32;
+    by_width.min(by_height).floor().clamp(20.0, CELL_SIZE * 2.0)
 }
 
 // Grid coordinates are small integers; f32 represents them exactly.
@@ -4009,7 +4020,7 @@ fn grid_view(
     drag: Option<&DragState>,
     frame: &mut DragFrame,
 ) {
-    let cell = fill_cell_size(ui.available_width(), dims.0);
+    let cell = fit_cell_size(ui.available_size(), dims);
     let size = egui::vec2(cells_at(dims.0, cell), cells_at(dims.1, cell));
     let pad = ((ui.available_width() - size.x) / 2.0).max(0.0);
     let (rect, response) = ui
@@ -4750,22 +4761,35 @@ fn show_character_section(
     }
     let active = show_inventory_tabs(ui, pane, db, caches, inventory_tab, selected, drag);
     if let Some(chrome_set) = caches.chrome(ui.ctx(), db) {
-        ui.add_space(10.0);
+        ui.add_space(2.0);
         let inner = egui::Frame::NONE
-            .inner_margin(egui::Margin::same(14))
+            .inner_margin(egui::Margin {
+                left: 12,
+                right: 12,
+                top: 40,
+                bottom: 12,
+            })
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 show_inventory_body(ui, pane, db, caches, *inventory_tab, selected, drag, frame);
             });
-        let panel = inner.response.rect.shrink(2.0);
-        chrome::panel_border(ui.painter(), panel);
+        let rect = inner.response.rect;
+        let content = egui::Rect::from_min_max(
+            rect.min + egui::vec2(12.0, 40.0),
+            rect.max - egui::vec2(12.0, 12.0),
+        );
+        chrome_set.tab_band(
+            ui.painter(),
+            egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), chrome::TAB_BAND_H)),
+        );
+        chrome::panel_border(ui.painter(), content);
         if let Some((tab_rect, label)) = active {
             chrome::tab_anchor(
                 &chrome_set,
                 ui.painter(),
                 tab_rect,
                 &label,
-                panel.min.y - 10.0,
+                rect.min.y + 18.0,
             );
         }
     } else {
@@ -5134,30 +5158,26 @@ fn show_vault_pane(
         ui.weak("This vault file has no tabs.");
         return action;
     };
-    egui::ScrollArea::vertical()
-        .id_salt("vault-pane")
-        .show(ui, |ui| {
-            let entries: Vec<(usize, &Item)> = sack
-                .items
-                .iter()
-                .enumerate()
-                .map(|(index, entry)| (index, &entry.item))
-                .collect();
-            grid_view(
-                ui,
-                (
-                    univault_core::vault::TAB_WIDTH,
-                    univault_core::vault::TAB_HEIGHT,
-                ),
-                &entries,
-                GridId::VaultTab(pane.open_tab),
-                &mut pane.selected,
-                db,
-                caches,
-                drag,
-                frame,
-            );
-        });
+    let entries: Vec<(usize, &Item)> = sack
+        .items
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| (index, &entry.item))
+        .collect();
+    grid_view(
+        ui,
+        (
+            univault_core::vault::TAB_WIDTH,
+            univault_core::vault::TAB_HEIGHT,
+        ),
+        &entries,
+        GridId::VaultTab(pane.open_tab),
+        &mut pane.selected,
+        db,
+        caches,
+        drag,
+        frame,
+    );
     action
 }
 
