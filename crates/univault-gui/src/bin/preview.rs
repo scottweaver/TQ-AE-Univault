@@ -9,6 +9,7 @@
 use eframe::egui::{self, Color32, Rect, pos2, vec2};
 use univault_gui::components::gilded_border::GildedBorder;
 use univault_gui::components::tabbed_panel::TabbedPanel;
+use univault_gui::review::ReviewOverlay;
 
 #[derive(Clone, Copy)]
 enum Subject {
@@ -38,15 +39,18 @@ impl Subject {
 }
 
 fn main() -> eframe::Result {
-    let subject = std::env::args().nth(1).and_then(|name| {
-        let found = Subject::from_name(&name);
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let review_mode = args.iter().any(|arg| arg == "--review");
+    args.retain(|arg| arg != "--review");
+    let subject = args.first().and_then(|name| {
+        let found = Subject::from_name(name);
         if found.is_none() {
             eprintln!("unknown component: {name}");
         }
         found
     });
     let Some(subject) = subject else {
-        eprintln!("usage: cargo run -p univault-gui --bin preview -- <component>");
+        eprintln!("usage: cargo run -p univault-gui --bin preview -- <component> [--review]");
         eprintln!("components:");
         for (name, _) in Subject::ALL {
             eprintln!("  {name}");
@@ -60,7 +64,11 @@ fn main() -> eframe::Result {
     eframe::run_native(
         &format!("univault preview — {}", subject.name()),
         options,
-        Box::new(move |cc| Ok(Box::new(PreviewApp::new(cc, subject)))),
+        Box::new(move |cc| {
+            let mut app = PreviewApp::new(cc, subject);
+            app.review_mode = review_mode;
+            Ok(Box::new(app))
+        }),
     )
 }
 
@@ -70,6 +78,8 @@ struct PreviewApp {
     tabbed_panel: TabbedPanel,
     selected_tab: usize,
     checkerboard: bool,
+    review_mode: bool,
+    review: ReviewOverlay,
 }
 
 impl PreviewApp {
@@ -80,6 +90,8 @@ impl PreviewApp {
             tabbed_panel: TabbedPanel::load(&cc.egui_ctx),
             selected_tab: 0,
             checkerboard: true,
+            review_mode: false,
+            review: ReviewOverlay::default(),
         }
     }
 }
@@ -92,7 +104,13 @@ impl eframe::App for PreviewApp {
                 ui.separator();
                 ui.checkbox(&mut self.checkerboard, "checkerboard backdrop");
                 ui.separator();
-                ui.label("resize the window to test edge stretch");
+                ui.checkbox(&mut self.review_mode, "review");
+                if self.review_mode {
+                    self.review.toolbar(ui);
+                } else {
+                    ui.separator();
+                    ui.label("resize the window to test edge stretch");
+                }
             });
         });
         egui::CentralPanel::default()
@@ -132,6 +150,10 @@ impl eframe::App for PreviewApp {
                             self.selected_tab = index;
                         }
                     }
+                }
+                if self.review_mode {
+                    self.review
+                        .overlay(ui, canvas, canvas.shrink(24.0), self.subject.name());
                 }
             });
     }

@@ -3598,6 +3598,7 @@ dependencies = [
  "egui_extras",
  "image",
  "rfd",
+ "serde_json",
  "univault-core",
 ]
 
