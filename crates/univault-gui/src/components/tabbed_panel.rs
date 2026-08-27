@@ -12,14 +12,19 @@ const ART: &[u8] = include_bytes!("../../assets/components/tabs.png");
 /// Tab plate height above the rail, in source pixels.
 const TAB_H: f32 = 35.0;
 
-/// Rail band thicknesses, in source pixels. The art is asymmetric —
-/// its left rail is thicker than its right.
+/// Rail band thicknesses, in source pixels. The art's own right and
+/// bottom rails are thinner afterthoughts (user-confirmed), so the
+/// frame is symmetric by construction: the right rail is the left
+/// mirrored, the bottom rail is the top flipped.
 const RAIL_TOP: f32 = 13.0;
 const RAIL_LEFT: f32 = 10.0;
-const RAIL_RIGHT: f32 = 6.0;
-const RAIL_BOTTOM: f32 = 8.0;
+const RAIL_RIGHT: f32 = RAIL_LEFT;
+const RAIL_BOTTOM: f32 = RAIL_TOP;
 
-/// Mitered rail corner slice, in source pixels.
+/// Mitered rail corner slice, in source pixels. All four corners
+/// derive from the art's top-left corner — the only one whose two
+/// rails both carry the full outer treatment — mirrored/flipped
+/// into place.
 const CORNER: f32 = 24.0;
 
 /// The inactive plate (the art's right tab — the only one with both
@@ -34,21 +39,16 @@ const ACTIVE_CAPS: f32 = 26.0;
 const ACTIVE_WING: f32 = 10.0;
 
 /// Clean rail strips (the top one sampled right of the last tab,
-/// clear of any plate merge) and the corner origins.
+/// clear of any plate merge) and the master corner.
 const TOP_STRIP: Src = Src::new(680.0, 35.0, 60.0, 13.0);
 const LEFT_STRIP: Src = Src::new(0.0, 100.0, 10.0, 500.0);
-const RIGHT_STRIP: Src = Src::new(743.0, 100.0, 6.0, 500.0);
-const BOTTOM_STRIP: Src = Src::new(100.0, 737.0, 500.0, 8.0);
 const CORNER_TL: Src = Src::new(0.0, 35.0, 24.0, 24.0);
-const CORNER_TR: Src = Src::new(725.0, 35.0, 24.0, 24.0);
-const CORNER_BL: Src = Src::new(0.0, 721.0, 24.0, 24.0);
-const CORNER_BR: Src = Src::new(725.0, 721.0, 24.0, 24.0);
 
-/// The art's own top-left corner carries a bright nub of the flush
+/// The art's top-left corner carries a bright nub of the flush
 /// first tab's rim (cols 0–2, rows 35–36) that reads as a stray
 /// vertical line once our tabs are inset; the top-right corner's
-/// clean outer-edge turn, mirrored, papers over it.
-const CORNER_TL_PATCH: Src = Src::new(744.0, 35.0, 5.0, 5.0);
+/// clean outer-edge turn, oriented per corner, papers over it.
+const CORNER_PATCH: Src = Src::new(744.0, 35.0, 5.0, 5.0);
 
 /// The panel interior — the art's flat fill.
 const INTERIOR: Color32 = Color32::BLACK;
@@ -64,10 +64,19 @@ const TAB_MIN_W: f32 = 80.0;
 /// room inside the interior.
 pub const MARGIN: egui::Margin = egui::Margin {
     left: 18,
-    right: 14,
+    right: 18,
     top: 56,
-    bottom: 16,
+    bottom: 21,
 };
+
+/// How a slice is oriented when blitted.
+#[derive(Clone, Copy)]
+enum Flip {
+    None,
+    H,
+    V,
+    Hv,
+}
 
 /// A pixel rectangle inside the source art.
 #[derive(Clone, Copy)]
@@ -184,63 +193,61 @@ impl TabbedPanel {
         }
     }
 
-    /// The mitered rail frame around `rect`: corners native, strips
-    /// stretched between them.
+    /// The mitered rail frame around `rect`: the master corner
+    /// oriented into each corner (native scale), strips stretched
+    /// between them.
     fn rail_frame(&self, painter: &egui::Painter, rect: Rect) {
-        for (src, corner) in [
-            (CORNER_TL, rect.min),
-            (CORNER_TR, pos2(rect.max.x - CORNER, rect.min.y)),
-            (CORNER_BL, pos2(rect.min.x, rect.max.y - CORNER)),
-            (CORNER_BR, pos2(rect.max.x - CORNER, rect.max.y - CORNER)),
+        let corner = vec2(CORNER, CORNER);
+        let patch = vec2(CORNER_PATCH.w, CORNER_PATCH.h);
+        let far = rect.max - patch;
+        for (flip, patch_flip, at, patch_at) in [
+            (Flip::None, Flip::H, rect.min, rect.min),
+            (
+                Flip::H,
+                Flip::None,
+                pos2(rect.max.x - CORNER, rect.min.y),
+                pos2(far.x, rect.min.y),
+            ),
+            (
+                Flip::V,
+                Flip::Hv,
+                pos2(rect.min.x, rect.max.y - CORNER),
+                pos2(rect.min.x, far.y),
+            ),
+            (Flip::Hv, Flip::V, rect.max - corner, far),
         ] {
-            self.blit(
+            self.blit_flipped(painter, CORNER_TL, Rect::from_min_size(at, corner), flip);
+            self.blit_flipped(
                 painter,
-                src,
-                Rect::from_min_size(corner, vec2(CORNER, CORNER)),
+                CORNER_PATCH,
+                Rect::from_min_size(patch_at, patch),
+                patch_flip,
             );
         }
-        self.blit_mirrored_h(
-            painter,
-            CORNER_TL_PATCH,
-            Rect::from_min_size(rect.min, vec2(CORNER_TL_PATCH.w, CORNER_TL_PATCH.h)),
-        );
         let h_span = rect.width() - 2.0 * CORNER;
         if h_span > 0.0 {
-            self.blit(
-                painter,
-                TOP_STRIP,
-                Rect::from_min_size(
-                    pos2(rect.min.x + CORNER, rect.min.y),
-                    vec2(h_span, RAIL_TOP),
-                ),
-            );
-            self.blit(
-                painter,
-                BOTTOM_STRIP,
-                Rect::from_min_size(
-                    pos2(rect.min.x + CORNER, rect.max.y - RAIL_BOTTOM),
-                    vec2(h_span, RAIL_BOTTOM),
-                ),
-            );
+            for (flip, y) in [
+                (Flip::None, rect.min.y),
+                (Flip::V, rect.max.y - RAIL_BOTTOM),
+            ] {
+                self.blit_flipped(
+                    painter,
+                    TOP_STRIP,
+                    Rect::from_min_size(pos2(rect.min.x + CORNER, y), vec2(h_span, RAIL_TOP)),
+                    flip,
+                );
+            }
         }
         let v_span = rect.height() - 2.0 * CORNER;
         if v_span > 0.0 {
-            self.blit(
-                painter,
-                LEFT_STRIP,
-                Rect::from_min_size(
-                    pos2(rect.min.x, rect.min.y + CORNER),
-                    vec2(RAIL_LEFT, v_span),
-                ),
-            );
-            self.blit(
-                painter,
-                RIGHT_STRIP,
-                Rect::from_min_size(
-                    pos2(rect.max.x - RAIL_RIGHT, rect.min.y + CORNER),
-                    vec2(RAIL_RIGHT, v_span),
-                ),
-            );
+            for (flip, x) in [(Flip::None, rect.min.x), (Flip::H, rect.max.x - RAIL_RIGHT)] {
+                self.blit_flipped(
+                    painter,
+                    LEFT_STRIP,
+                    Rect::from_min_size(pos2(x, rect.min.y + CORNER), vec2(RAIL_LEFT, v_span)),
+                    flip,
+                );
+            }
         }
     }
 
@@ -276,34 +283,38 @@ impl TabbedPanel {
     }
 
     fn blit(&self, painter: &egui::Painter, src: Src, dest: Rect) {
-        painter.image(self.texture.id(), dest, self.uv(src), Color32::WHITE);
+        self.blit_flipped(painter, src, dest, Flip::None);
     }
 
-    fn blit_mirrored_h(&self, painter: &egui::Painter, src: Src, dest: Rect) {
-        let uv = self.uv(src);
-        let mirrored = Rect {
-            min: pos2(uv.max.x, uv.min.y),
-            max: pos2(uv.min.x, uv.max.y),
-        };
-        painter.image(self.texture.id(), dest, mirrored, Color32::WHITE);
-    }
-
-    fn uv(&self, src: Src) -> Rect {
+    fn blit_flipped(&self, painter: &egui::Painter, src: Src, dest: Rect, flip: Flip) {
         let size = self.texture.size_vec2();
-        Rect::from_min_max(
-            pos2(src.x / size.x, src.y / size.y),
-            pos2((src.x + src.w) / size.x, (src.y + src.h) / size.y),
-        )
+        let (u0, u1) = (src.x / size.x, (src.x + src.w) / size.x);
+        let (v0, v1) = ((src.y / size.y), (src.y + src.h) / size.y);
+        let (u0, u1) = match flip {
+            Flip::None | Flip::V => (u0, u1),
+            Flip::H | Flip::Hv => (u1, u0),
+        };
+        let (v0, v1) = match flip {
+            Flip::None | Flip::H => (v0, v1),
+            Flip::V | Flip::Hv => (v1, v0),
+        };
+        let uv = Rect {
+            min: pos2(u0, v0),
+            max: pos2(u1, v1),
+        };
+        painter.image(self.texture.id(), dest, uv, Color32::WHITE);
     }
 }
 
 /// One plate rect per title, laid left-to-right along the strip
-/// above the rail, each sized to its label. The strip starts one
-/// wing in from the frame edge so an open plate's curls always land
-/// on the rail, never past it.
+/// above the rail, each sized to its label. The strip starts past
+/// the corner block so an open plate's wings only ever land on
+/// rail-run — inside the corner, the rail's inner gold line stops
+/// short of the edge, and a wing fragment crossing that quiet zone
+/// reads as a stray horizontal line.
 fn tab_rects<'t>(ui: &egui::Ui, titles: &[&'t str], outer: Rect) -> Vec<(Rect, &'t str)> {
     let font = egui::TextStyle::Button.resolve(ui.style());
-    let mut x = outer.min.x + ACTIVE_WING;
+    let mut x = outer.min.x + CORNER;
     titles
         .iter()
         .map(|title| {
