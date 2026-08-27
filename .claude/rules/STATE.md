@@ -5,49 +5,52 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-26
+Last updated: 2026-08-27
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** PR #35 (star-hero pools ×3) merged 2026-08-26 at
-the user's direction; wrap-up done. In-game acceptance still open:
-meet a tripled base-game star hero after restarting the game
-session. Ragnarök/Atlantis wild heroes spawn via champion-slot
-pools the rule deliberately skips — extend when the user reaches
-those acts. Now in flight: `feat/move-all-to-vault` (PR open,
-code + tests done): "All → Vault" / "Copy all → Vault" buttons on
-the character and bank section headers — transfers start in the
-open vault tab and spill into the other tabs as each fills;
-inventory means all sacks, never the equipped doll. Acceptance:
-with a vault open, click each button on a full bank and watch the
-toast counts (moved / spilled / left behind); on a pass, merge and
-wrap up. Before that: PR #33 (all-vaults
-search view) merged 2026-08-26; wrap-up done. The user already
-steered the feature twice in-session (filter bar reworked to dynamic
-criteria rows + ranges + suggestions, then a Clear-all button —
-"Much nicer!"), so partial acceptance is in hand; the full in-app
-pass is still open: "Search vaults…" (⌘F), stack criteria from the
-suggestions, act on a row, double-click to jump. Older acceptance
-still open, all in-game/in-app: paper doll (drag gear off/onto the doll, then load
-the save in-game), auto-refresh feel on the SMB tree, dll patch
-(Enable, socket an epic in-game), and the Gorgon rematch on the new
-`LootPlusXMAX3Tuned1xBoss` bundle (both bundles installed in
-CustomMaps; the original is back to 3x bosses). Otherwise pick from
-"Next up".
+**Resume here:** PR #37 (`feat/move-all-to-vault`, checked out) is
+open with CI green on all platforms: "All → Vault" / "Copy all →
+Vault" buttons on the character and bank section headers —
+transfers start in the open vault tab and spill into the other
+tabs as each fills; inventory means all sacks, never the equipped
+doll. Acceptance is in-app: with a vault open, click each button
+on a loaded bank and watch the toast counts (moved / spilled /
+left behind); on a pass, merge PR #37 and run the wrap-up. Design
+settled in-dialog 2026-08-26: overflow spills (wrapping through
+all tabs), never stops at the open tab; the doll is never
+stripped. Earlier this session: PR #35 (star-hero ×3) merged at
+the user's direction, wrap-up done (docs PR #36) — in-game
+acceptance still open: meet a tripled base-game star hero after
+restarting the game session; Ragnarök/Atlantis wild heroes use
+champion-slot pools the rule deliberately skips. Older acceptance
+still open, all in-game/in-app: all-vaults search full pass (⌘F,
+stack criteria, act on a row, double-click to jump), paper doll
+(drag gear off/on, load the save in-game), auto-refresh feel on
+the SMB tree, dll patch (Enable, socket an epic in-game), and the
+Gorgon rematch on `LootPlusXMAX3Tuned1xBoss` (both bundles
+installed in CustomMaps). Otherwise pick from "Next up".
 
-- GitHub Actions event delivery was unreliable all 2026-08-26
-  (major outage + slow recovery): push/PR webhook events silently
-  dropped several times. The lever: `gh workflow run CI --ref
-  <branch>` (workflow_dispatch, added in PR #13), then
+- **Repo setting:** PR auto-merge is disabled
+  (`enablePullRequestAutoMerge`) — wrap-up's docs PRs can't
+  `gh pr merge --auto`; this session watched CI and merged
+  directly. Consider enabling it: repo Settings → General →
+  "Allow auto-merge".
+- GitHub Actions event delivery was unreliable on 2026-08-26
+  (major outage): push/PR webhook events silently dropped several
+  times; delivery was prompt again by late 2026-08-26. The lever
+  if it recurs: `gh workflow run CI --ref <branch>`
+  (workflow_dispatch, added in PR #13), then
   `gh run watch <id> --exit-status`.
 - A stale **Travis CI GitHub App** is installed on the repo and
   attaches permanently-queued phantom check suites to commits —
   uninstall advised (repo Settings → Integrations → GitHub Apps),
   not yet confirmed done.
-- Cache format is `UVC6` (PRs #12/#14): the first app launch after
-  pulling re-imports game data (~8s, background; game volume must
-  be mounted). The user's acceptance suggests this already ran.
+- Cache format is `UVC7` (PRs #12/#14, bumped by the
+  socket-any-rarity change): the first app launch after pulling
+  re-imports game data (~8s, background; game volume must be
+  mounted).
 - User in-game checks outstanding (mod acceptance): pet Energy
   ×2.5 / regen ×1.75 on Core Dweller (875 / 5.25 at level 20) and
   Call of the Wild wolves (255 / 3.5); vanilla XP restored
@@ -91,7 +94,7 @@ only). No issue tracker is bound yet (deliberately deferred).
 | Branch | Purpose | Status |
 |---|---|---|
 | `main` | trunk | PRs #1–#35 all merged; all gates green |
-| `feat/move-all-to-vault` | bulk move/copy of the active left tab into the vault | PR open; awaiting in-app acceptance |
+| `feat/move-all-to-vault` | bulk move/copy of the active left tab into the vault | PR #37 open, CI green; awaiting in-app acceptance |
 
 ## Next up
 
@@ -124,7 +127,7 @@ that's better") and merged as PR #7.
 ## Most recent meaningful progress
 
 - **2026-08-26 — Bulk send: whole tab → vault (feat/move-all-to-vault,
-  PR open).** User ask: move or copy every item in the active game
+  PR #37 open).** User ask: move or copy every item in the active game
   storage tab into the vault without per-item clicks. Design
   settled in-dialog: transfers start in the open vault tab and
   spill into the other tabs as each fills (the pre-existing
