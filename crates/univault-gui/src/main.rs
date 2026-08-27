@@ -3696,7 +3696,7 @@ fn show_inventory_tabs(
 /// Allocates the doll's canvas centered in the pane, scaled to fill
 /// the available width.
 fn allocate_doll_canvas(ui: &mut egui::Ui) -> (egui::Rect, egui::Response, f32) {
-    let cell = fit_cell_size(ui.available_size(), DOLL_CELLS);
+    let cell = fit_cell_size(ui.available_size() - egui::vec2(0.0, 12.0), DOLL_CELLS);
     let size = egui::vec2(cells_at(DOLL_CELLS.0, cell), cells_at(DOLL_CELLS.1, cell));
     let pad = ((ui.available_width() - size.x) / 2.0).max(0.0);
     let (rect, response) = ui
@@ -4814,6 +4814,7 @@ fn show_inventory_body(
 ) {
     match inventory_tab {
         InventoryTab::Equipment => {
+            ui.add_space(12.0);
             show_equipment_doll(
                 ui,
                 &pane.character.equipment,
@@ -4823,6 +4824,7 @@ fn show_inventory_body(
                 drag,
                 frame,
             );
+            ui.add_space(12.0);
         }
         InventoryTab::Sack(index) => {
             if let Some(sack) = pane.character.sacks.get(index) {
