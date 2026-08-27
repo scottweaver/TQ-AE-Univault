@@ -3,6 +3,7 @@ name = "univault-gui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+default-run = "univault-gui"
 
 [lints]
 workspace = true
