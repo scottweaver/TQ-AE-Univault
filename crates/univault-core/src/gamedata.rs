@@ -19,7 +19,41 @@ pub struct GameData {
     /// `"XPACK"`…`"XPACK4"` for expansions, matching resource-id
     /// prefixes.
     item_archives: Vec<(String, ArcFile)>,
+    /// UI texture archives (`InGameUI.arc`, expansion `UI.arc`),
+    /// searched in registration order for [`CHROME_TEXTURES`].
+    ui_archives: Vec<ArcFile>,
 }
+
+/// The UI art extracted into the cache at import: entry paths into
+/// the registered UI archives. The path doubles as the cache key the
+/// GUI asks for, so a piece's identity travels with its bytes.
+pub const CHROME_TEXTURES: &[&str] = &[
+    "caravan/caravanwindow01.tex",
+    "caravan/caravantitle01.tex",
+    "caravan/storageareatab01.tex",
+    "characterscreen/characterwindow01.tex",
+    "skills/skillsbackground01.tex",
+    "inventorytab01.tex",
+    "optionswindow/buttonup01.tex",
+    "optionswindow/buttonover01.tex",
+    "optionswindow/buttondown01.tex",
+    "borderitemtl01.tex",
+    "borderitemtc01.tex",
+    "borderitemtr01.tex",
+    "borderitemcl01.tex",
+    "borderitemcr01.tex",
+    "borderitembl01.tex",
+    "borderitembc01.tex",
+    "borderitembr01.tex",
+    "borderzeuslt01.tex",
+    "borderzeusct01.tex",
+    "borderzeusrt01.tex",
+    "borderzeuslc01.tex",
+    "borderzeusrc01.tex",
+    "borderzeuslb01.tex",
+    "borderzeuscb01.tex",
+    "borderzeusrb01.tex",
+];
 
 /// Errors from assembling the game database.
 #[derive(Debug, thiserror::Error)]
@@ -49,6 +83,7 @@ impl GameData {
             arz,
             text,
             item_archives: Vec::new(),
+            ui_archives: Vec::new(),
         }
     }
 
@@ -57,6 +92,12 @@ impl GameData {
     /// `"XPACK"`…`"XPACK4"` for expansions.
     pub fn add_items_archive(&mut self, expansion: &str, archive: ArcFile) {
         self.item_archives.push((expansion.to_uppercase(), archive));
+    }
+
+    /// Registers a UI texture archive for chrome extraction. Earlier
+    /// registrations win when archives share an entry name.
+    pub fn add_ui_archive(&mut self, archive: ArcFile) {
+        self.ui_archives.push(archive);
     }
 
     /// Extracts a resource by its record path (e.g.
@@ -319,7 +360,26 @@ impl GameData {
             stamps,
             crate::stats::capture_runtime_labels(self),
             entries,
+            self.extract_chrome(),
         )
+    }
+
+    /// Decodes every [`CHROME_TEXTURES`] entry found in the
+    /// registered UI archives. Missing pieces are skipped — the GUI
+    /// falls back to its painted theme for whatever is absent.
+    fn extract_chrome(&self) -> std::collections::HashMap<String, crate::cache::CachedIcon> {
+        CHROME_TEXTURES
+            .iter()
+            .filter_map(|entry| {
+                let bytes = self
+                    .ui_archives
+                    .iter()
+                    .find_map(|archive| archive.file(entry).and_then(Result::ok))?;
+                let image = tex::decode(&bytes).ok()?;
+                let icon = crate::cache::compress_icon(&image)?;
+                Some(((*entry).to_owned(), icon))
+            })
+            .collect()
     }
 
     /// Display name for an item: localized prefix + base + suffix.
