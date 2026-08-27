@@ -5,3 +5,4 @@
 //! sites only hand it a `Ui` or a `Painter` plus a rect.
 
 pub mod gilded_border;
+pub mod tabbed_panel;

@@ -8,14 +8,19 @@
 
 use eframe::egui::{self, Color32, Rect, pos2, vec2};
 use univault_gui::components::gilded_border::GildedBorder;
+use univault_gui::components::tabbed_panel::TabbedPanel;
 
 #[derive(Clone, Copy)]
 enum Subject {
     GildedBorder,
+    TabbedPanel,
 }
 
 impl Subject {
-    const ALL: [(&'static str, Self); 1] = [("gilded-border", Self::GildedBorder)];
+    const ALL: [(&'static str, Self); 2] = [
+        ("gilded-border", Self::GildedBorder),
+        ("tabbed-panel", Self::TabbedPanel),
+    ];
 
     fn from_name(name: &str) -> Option<Self> {
         Self::ALL
@@ -27,6 +32,7 @@ impl Subject {
     fn name(self) -> &'static str {
         match self {
             Self::GildedBorder => "gilded-border",
+            Self::TabbedPanel => "tabbed-panel",
         }
     }
 }
@@ -61,6 +67,8 @@ fn main() -> eframe::Result {
 struct PreviewApp {
     subject: Subject,
     gilded_border: GildedBorder,
+    tabbed_panel: TabbedPanel,
+    selected_tab: usize,
     checkerboard: bool,
 }
 
@@ -69,6 +77,8 @@ impl PreviewApp {
         Self {
             subject,
             gilded_border: GildedBorder::load(&cc.egui_ctx),
+            tabbed_panel: TabbedPanel::load(&cc.egui_ctx),
+            selected_tab: 0,
             checkerboard: true,
         }
     }
@@ -106,6 +116,21 @@ impl eframe::App for PreviewApp {
                             egui::FontId::proportional(16.0),
                             Color32::from_gray(140),
                         );
+                    }
+                    Subject::TabbedPanel => {
+                        let region = canvas.shrink(24.0);
+                        let titles = ["Inventory", "Vault", "Relics"];
+                        let selected = self.selected_tab;
+                        let response =
+                            ui.scope_builder(egui::UiBuilder::new().max_rect(region), |ui| {
+                                self.tabbed_panel.show(ui, &titles, selected, |ui| {
+                                    ui.label(format!("content of \"{}\"", titles[selected]));
+                                    ui.set_min_size(ui.available_size());
+                                })
+                            });
+                        if let Some(index) = response.inner.clicked {
+                            self.selected_tab = index;
+                        }
                     }
                 }
             });
