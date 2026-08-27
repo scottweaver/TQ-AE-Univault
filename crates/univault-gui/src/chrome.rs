@@ -477,14 +477,14 @@ impl Chrome {
 }
 
 /// Repaints the active tab joined onto the border below it: the
-/// plate descends `depth` over the border band and the label rides
-/// it — the caravan window's anchored-tab look.
-pub fn tab_anchor(chrome: &Chrome, painter: &egui::Painter, rect: Rect, text: &str, depth: f32) {
-    let plate = Rect::from_min_max(
-        pos2(rect.min.x, rect.min.y - 2.0),
-        pos2(rect.max.x, rect.max.y + depth),
-    );
-    three_slice(painter, &chrome.tab, TAB_CAPS, plate, Color32::WHITE);
+/// plate is the tab art minus its bottom border, descending to
+/// `bottom` so its side lines flow into the pane's border line —
+/// the caravan window's anchored-tab look.
+pub fn tab_anchor(chrome: &Chrome, painter: &egui::Painter, rect: Rect, text: &str, bottom: f32) {
+    let plate = Rect::from_min_max(pos2(rect.min.x, rect.min.y - 2.0), pos2(rect.max.x, bottom));
+    let size = chrome.tab.size_vec2();
+    let body = Src::new(0.0, 0.0, size.x, size.y - 4.0);
+    three_slice_src(painter, &chrome.tab, body, TAB_CAPS, plate, Color32::WHITE);
     let galley = painter.layout_no_wrap(
         text.to_owned(),
         egui::FontId::new(14.0, egui::FontFamily::Proportional),
@@ -495,6 +495,31 @@ pub fn tab_anchor(chrome: &Chrome, painter: &egui::Painter, rect: Rect, text: &s
         rect.center().y - galley.size().y / 2.0,
     );
     painter.galley(pos, galley, Color32::from_rgb(250, 247, 238));
+}
+
+/// The thin outer border enclosing a whole tabbed pane — tab strip
+/// included, per the reference screens.
+pub fn outer_border(painter: &egui::Painter, rect: Rect) {
+    let dark = Color32::from_rgb(12, 9, 4);
+    let gold = Color32::from_rgb(158, 128, 66);
+    painter.rect_stroke(
+        rect,
+        0.0,
+        egui::Stroke::new(1.5, dark),
+        egui::StrokeKind::Inside,
+    );
+    painter.rect_stroke(
+        rect.shrink(1.5),
+        0.0,
+        egui::Stroke::new(2.0, gold),
+        egui::StrokeKind::Inside,
+    );
+    painter.rect_stroke(
+        rect.shrink(3.5),
+        0.0,
+        egui::Stroke::new(1.5, dark),
+        egui::StrokeKind::Inside,
+    );
 }
 
 /// The border sandwich around a tab's owned sub-panel, echoing the
@@ -667,26 +692,45 @@ fn three_slice(
     tint: Color32,
 ) {
     let size = texture.size_vec2();
-    let scale = dest.height() / size.y;
+    three_slice_src(
+        painter,
+        texture,
+        Src::new(0.0, 0.0, size.x, size.y),
+        caps,
+        dest,
+        tint,
+    );
+}
+
+/// [`three_slice`], over a source sub-rectangle.
+fn three_slice_src(
+    painter: &egui::Painter,
+    texture: &TextureHandle,
+    src: Src,
+    caps: f32,
+    dest: Rect,
+    tint: Color32,
+) {
+    let scale = dest.height() / src.h;
     let cap = caps * scale;
     blit(
         painter,
         texture,
-        Src::new(0.0, 0.0, caps, size.y),
+        Src::new(src.x, src.y, caps, src.h),
         Rect::from_min_size(dest.min, vec2(cap, dest.height())),
         tint,
     );
     blit(
         painter,
         texture,
-        Src::new(size.x - caps, 0.0, caps, size.y),
+        Src::new(src.x + src.w - caps, src.y, caps, src.h),
         Rect::from_min_size(pos2(dest.max.x - cap, dest.min.y), vec2(cap, dest.height())),
         tint,
     );
     blit(
         painter,
         texture,
-        Src::new(caps, 0.0, size.x - 2.0 * caps, size.y),
+        Src::new(src.x + caps, src.y, src.w - 2.0 * caps, src.h),
         Rect::from_min_max(
             pos2(dest.min.x + cap, dest.min.y),
             pos2(dest.max.x - cap, dest.max.y),

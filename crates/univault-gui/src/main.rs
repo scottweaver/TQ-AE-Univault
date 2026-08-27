@@ -3602,38 +3602,58 @@ impl App {
                     selected: &mut self.left_selected,
                 };
                 let pane_chrome = caches.chrome(columns[0].ctx(), db);
+                let outer_top = columns[0].available_rect_before_wrap().min.y;
                 let active = show_left_tabs(&mut columns[0], &mut view, pane_chrome.as_ref());
-                framed_pane_anchored(&mut columns[0], pane_chrome.as_ref(), active, |ui| {
-                    egui::ScrollArea::vertical()
-                        .id_salt("file-pane")
-                        .show(ui, |ui| {
-                            if let Some(chosen) = show_left_column(
-                                ui,
-                                &mut view,
-                                db,
-                                caches,
-                                can_move,
-                                drag.as_ref(),
-                                &mut frame,
-                            ) {
-                                action = Some(chosen);
-                            }
-                        });
-                });
+                framed_pane_anchored(
+                    &mut columns[0],
+                    pane_chrome.as_ref(),
+                    outer_top,
+                    active,
+                    |ui| {
+                        egui::ScrollArea::vertical()
+                            .id_salt("file-pane")
+                            .show(ui, |ui| {
+                                if let Some(chosen) = show_left_column(
+                                    ui,
+                                    &mut view,
+                                    db,
+                                    caches,
+                                    can_move,
+                                    drag.as_ref(),
+                                    &mut frame,
+                                ) {
+                                    action = Some(chosen);
+                                }
+                            });
+                    },
+                );
             } else {
                 columns[0].weak("No game file loaded.");
             }
             if let Some(pane) = &mut self.right {
                 let pane_chrome = caches.chrome(columns[1].ctx(), db);
+                let outer_top = columns[1].available_rect_before_wrap().min.y;
                 let active =
                     show_vault_tabs(&mut columns[1], pane, pane_chrome.as_ref(), drag.as_ref());
-                framed_pane_anchored(&mut columns[1], pane_chrome.as_ref(), active, |ui| {
-                    if let Some(chosen) =
-                        show_vault_pane(ui, pane, db, caches, can_move, drag.as_ref(), &mut frame)
-                    {
-                        action = Some(chosen);
-                    }
-                });
+                framed_pane_anchored(
+                    &mut columns[1],
+                    pane_chrome.as_ref(),
+                    outer_top,
+                    active,
+                    |ui| {
+                        if let Some(chosen) = show_vault_pane(
+                            ui,
+                            pane,
+                            db,
+                            caches,
+                            can_move,
+                            drag.as_ref(),
+                            &mut frame,
+                        ) {
+                            action = Some(chosen);
+                        }
+                    },
+                );
             } else {
                 columns[1].weak("No vault loaded.");
             }
@@ -3793,6 +3813,7 @@ fn plate_button(
 fn framed_pane_anchored(
     ui: &mut egui::Ui,
     pane_chrome: Option<&chrome::Chrome>,
+    outer_top: f32,
     active: Option<(egui::Rect, String)>,
     add: impl FnOnce(&mut egui::Ui),
 ) {
@@ -3817,8 +3838,18 @@ fn framed_pane_anchored(
     chrome::inner_shadow(ui.painter(), content, 14.0);
     pane_chrome.pane_frame(ui.painter(), rect);
     if let Some((tab_rect, label)) = active {
-        chrome::tab_anchor(pane_chrome, ui.painter(), tab_rect, &label, 18.0);
+        chrome::tab_anchor(
+            pane_chrome,
+            ui.painter(),
+            tab_rect,
+            &label,
+            rect.min.y + 10.0,
+        );
     }
+    chrome::outer_border(
+        ui.painter(),
+        egui::Rect::from_min_max(egui::pos2(rect.min.x, outer_top), rect.max),
+    );
 }
 
 /// Wraps a pane in the caravan window frame when chrome is loaded:
@@ -4716,16 +4747,23 @@ fn show_character_section(
     }
     let active = show_inventory_tabs(ui, pane, db, caches, inventory_tab, selected, drag);
     if let Some(chrome_set) = caches.chrome(ui.ctx(), db) {
-        ui.add_space(8.0);
+        ui.add_space(10.0);
         let inner = egui::Frame::NONE
-            .inner_margin(egui::Margin::same(12))
+            .inner_margin(egui::Margin::same(14))
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 show_inventory_body(ui, pane, db, caches, *inventory_tab, selected, drag, frame);
             });
-        chrome::panel_border(ui.painter(), inner.response.rect.shrink(2.0));
+        let panel = inner.response.rect.shrink(2.0);
+        chrome::panel_border(ui.painter(), panel);
         if let Some((tab_rect, label)) = active {
-            chrome::tab_anchor(&chrome_set, ui.painter(), tab_rect, &label, 12.0);
+            chrome::tab_anchor(
+                &chrome_set,
+                ui.painter(),
+                tab_rect,
+                &label,
+                panel.min.y - 6.0,
+            );
         }
     } else {
         ui.add_space(4.0);
@@ -4815,7 +4853,17 @@ fn show_left_tabs(
         *view.selected = None;
     }
     let mut active = None;
+    if pane_chrome.is_some() {
+        let avail = ui.available_rect_before_wrap();
+        let backing = egui::Rect::from_min_size(avail.min, egui::vec2(avail.width(), 36.0));
+        ui.painter()
+            .rect_filled(backing, 0.0, egui::Color32::from_rgb(26, 21, 12));
+        ui.add_space(5.0);
+    }
     ui.horizontal(|ui| {
+        if pane_chrome.is_some() {
+            ui.add_space(8.0);
+        }
         for tab in LeftTab::ALL {
             let loaded = view.loaded(tab);
             let response = match pane_chrome {
@@ -4991,7 +5039,17 @@ fn show_vault_tabs(
     }
     let cursor = ui.ctx().pointer_latest_pos();
     let mut active = None;
+    if pane_chrome.is_some() {
+        let avail = ui.available_rect_before_wrap();
+        let backing = egui::Rect::from_min_size(avail.min, egui::vec2(avail.width(), 36.0));
+        ui.painter()
+            .rect_filled(backing, 0.0, egui::Color32::from_rgb(26, 21, 12));
+        ui.add_space(5.0);
+    }
     ui.horizontal_wrapped(|ui| {
+        if pane_chrome.is_some() {
+            ui.add_space(8.0);
+        }
         for (tab, sack) in pane.vault.sacks.iter().enumerate() {
             let label = if sack.items.is_empty() {
                 format!("{}", tab + 1)
