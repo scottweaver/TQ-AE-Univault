@@ -115,6 +115,18 @@ and open our vault JSON in TQVaultAE.
 Default vault + bank tabs + autosave ACCEPTED 2026-08-25 ("Ah,
 that's better") and merged as PR #7.
 
+UIX queue (user-listed 2026-08-27, to address after the theme work;
+order not yet prioritized):
+
+- Inventory tab becomes an exclusive sub-tabbed view — Player
+  (doll) | Main Sack | Sack 1…n — one at a time, replacing the
+  stacked collapsing sections.
+- On launch with no file argument, auto-open the last viewed
+  character (recents already persist; open the newest).
+- Toolbar order: "Recent" directly right of "Open character…".
+- Technical info (file paths etc.) hidden by default; a
+  "?-in-a-circle" icon per pane reveals the low-level details.
+
 1. Game-install auto-discovery (Steam library paths per OS in
    `platform`) to preseed the one-time Import dialog.
 2. DXT1/3 decode for the ~7 compressed item bitmaps (currently an

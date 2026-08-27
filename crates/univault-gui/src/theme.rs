@@ -58,6 +58,14 @@ pub fn path_text(text: impl Into<String>) -> egui::RichText {
         .color(TEXT_WEAK)
 }
 
+/// A section title inside a pane (Equipment, Sack N): the classical
+/// face at body scale, plain gold — a rank below [`heading`].
+pub fn section(text: impl Into<String>) -> egui::RichText {
+    egui::RichText::new(text.into())
+        .font(FontId::new(15.0, heading_family()))
+        .color(GOLD)
+}
+
 fn heading_family() -> FontFamily {
     FontFamily::Name("tq-heading".into())
 }

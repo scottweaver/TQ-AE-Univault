@@ -2113,6 +2113,14 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        egui::Frame::NONE
+            .inner_margin(egui::Margin::same(10))
+            .show(ui, |ui| self.main_ui(ui));
+    }
+}
+
+impl App {
+    fn main_ui(&mut self, ui: &mut egui::Ui) {
         self.poll_import();
         if let Some(dropped) = first_dropped_path(ui.ctx()) {
             self.status = Some(self.open(&dropped));
@@ -4285,7 +4293,7 @@ fn show_character_section(
         }
     });
     ui.label(theme::path_text(pane.path.display().to_string()));
-    egui::CollapsingHeader::new("Equipment")
+    egui::CollapsingHeader::new(theme::section("Equipment"))
         .default_open(true)
         .show(ui, |ui| {
             show_equipment_doll(
@@ -4300,7 +4308,7 @@ fn show_character_section(
         });
     for (index, sack) in pane.character.sacks.iter().enumerate() {
         let title = format!("Sack {} ({} items)", index + 1, sack.items.len());
-        egui::CollapsingHeader::new(title)
+        egui::CollapsingHeader::new(theme::section(title))
             .default_open(true)
             .show(ui, |ui| {
                 let entries: Vec<(usize, &Item)> = sack.items.iter().enumerate().collect();
