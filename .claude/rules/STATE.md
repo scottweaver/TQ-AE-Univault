@@ -10,10 +10,11 @@ Last updated: 2026-08-26
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** `mod/hero-pools-x3` is in flight (PR open): both
-installed bundles recomposed so star-hero pools triple on every
-difficulty band — acceptance is the user meeting a tripled base-game
-hero after restarting their session. Ragnarök/Atlantis wild heroes
+**Resume here:** `mod/hero-pools-x3` is in flight (PR #35 open, CI
+green): both installed bundles recomposed so star-hero pools triple
+on every difficulty band — acceptance is the user meeting a tripled
+base-game hero after restarting their session; on a pass, merge
+PR #35 and run the wrap-up. Ragnarök/Atlantis wild heroes
 spawn via champion-slot pools the rule deliberately skips — extend
 when the user reaches those acts. Before that: PR #33 (all-vaults
 search view) merged 2026-08-26; wrap-up done. The user already
