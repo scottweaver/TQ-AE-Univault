@@ -1,10 +1,14 @@
 {
   "name": "LootPlusXMAX3Tuned",
   "builds": [
-    "LootPlusXMAX3Tuned: base LootPlusXMAXFTWx3 (Workshop 1779344333) — monsters x3, bosses x3",
-    "LootPlusXMAX3Tuned1xBoss: base LootPlusXMAXFTWx3x1 (same item) — monsters x3, named bosses/heroes x1; build with the bundle-name override"
+    "LootPlusXMAX3Tuned: base LootPlusXMAXFTWx3 (Workshop 1779344333) — monsters x3, bosses x3, heroes exact-3x via multiply_hero_pools",
+    "LootPlusXMAX3Tuned1xBoss: base LootPlusXMAXFTWx3x1 (same item) — monsters x3, named bosses x1, heroes exact-3x; build with the bundle-name override"
   ],
   "rules": [
+    {
+      "kind": "multiply_hero_pools",
+      "factor": 3
+    },
     {
       "kind": "multiply_player_skills",
       "variable": "skillTargetNumber",
