@@ -8,7 +8,7 @@
 
 use eframe::egui::{self, Color32, Rect, pos2, vec2};
 use univault_gui::components::gilded_border::GildedBorder;
-use univault_gui::components::tabbed_panel::TabbedPanel;
+use univault_gui::components::tabbed_panel::{self, TabbedPanel};
 use univault_gui::review::ReviewOverlay;
 
 #[derive(Clone, Copy)]
@@ -138,10 +138,14 @@ impl eframe::App for PreviewApp {
                     Subject::TabbedPanel => {
                         let region = canvas.shrink(24.0);
                         let titles = ["Inventory", "Vault", "Relics"];
+                        let tabs: Vec<tabbed_panel::Tab> = titles
+                            .iter()
+                            .map(|title| tabbed_panel::Tab::new(*title))
+                            .collect();
                         let selected = self.selected_tab;
                         let response =
                             ui.scope_builder(egui::UiBuilder::new().max_rect(region), |ui| {
-                                self.tabbed_panel.show(ui, &titles, selected, |ui| {
+                                self.tabbed_panel.show(ui, &tabs, selected, |ui| {
                                     ui.label(format!("content of \"{}\"", titles[selected]));
                                     ui.set_min_size(ui.available_size());
                                 })

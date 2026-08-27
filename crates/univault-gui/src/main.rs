@@ -41,6 +41,8 @@ use univault_core::stats;
 use univault_core::style;
 use univault_core::transfer;
 use univault_core::vault::Vault;
+use univault_gui::components::gilded_border::GildedBorder;
+use univault_gui::components::tabbed_panel::{self, TabbedPanel};
 
 fn main() -> eframe::Result {
     let args = CliArgs::parse();
@@ -57,7 +59,7 @@ fn main() -> eframe::Result {
             theme::apply(&cc.egui_ctx);
             cc.egui_ctx
                 .all_styles_mut(|style| style.interaction.tooltip_delay = 0.0);
-            Ok(Box::new(App::new(args)))
+            Ok(Box::new(App::new(args, &cc.egui_ctx)))
         }),
     )
 }
@@ -549,6 +551,9 @@ struct App {
     /// all-vaults search table.
     view: MainView,
     search: search::SearchState,
+    /// The hand-drawn component chrome (bundled art, uploaded once).
+    tabbed_panel: TabbedPanel,
+    gilded_border: GildedBorder,
 }
 
 /// The window's main surface.
@@ -566,7 +571,7 @@ struct DllPatchDialog {
 }
 
 impl App {
-    fn new(args: CliArgs) -> Self {
+    fn new(args: CliArgs, ctx: &egui::Context) -> Self {
         // --game forces a (re-)import; otherwise the local cache is
         // the runtime database, imported automatically (in the
         // background) from the remembered game dir when it is
@@ -611,6 +616,8 @@ impl App {
             conflicts: Vec::new(),
             view: MainView::Panes,
             search: search::SearchState::default(),
+            tabbed_panel: TabbedPanel::load(ctx),
+            gilded_border: GildedBorder::load(ctx),
         };
         app.status = Some(match args.vault {
             Some(path) => app.open(&path),
@@ -2273,6 +2280,8 @@ impl eframe::App for App {
         egui::Frame::NONE
             .inner_margin(egui::Margin::same(10))
             .show(ui, |ui| self.main_ui(ui));
+        self.gilded_border
+            .paint(ui.painter(), ui.ctx().content_rect().shrink(3.0));
     }
 }
 
@@ -3590,6 +3599,7 @@ impl App {
             || self.shared.is_some()
             || self.relics.is_some();
         let can_move = has_left && self.right.is_some();
+        let panel = self.tabbed_panel.clone();
         ui.columns(2, |columns| {
             if has_left {
                 let mut view = LeftView {
@@ -3601,44 +3611,63 @@ impl App {
                     inventory_tab: &mut self.inventory_tab,
                     selected: &mut self.left_selected,
                 };
-                let pane_chrome = caches.chrome(columns[0].ctx(), db);
-                framed_pane(&mut columns[0], pane_chrome.as_ref(), |ui| {
-                    let active = show_left_tabs(ui, &mut view, pane_chrome.as_ref());
-                    anchored_panel(ui, pane_chrome.as_ref(), active, |ui| {
-                        if let Some(chosen) = show_left_column(
-                            ui,
-                            &mut view,
-                            db,
-                            caches,
-                            can_move,
-                            drag.as_ref(),
-                            &mut frame,
-                        ) {
-                            action = Some(chosen);
-                        }
-                    });
+                if !view.loaded(*view.active_tab)
+                    && let Some(fallback) = LeftTab::ALL.into_iter().find(|tab| view.loaded(*tab))
+                {
+                    *view.active_tab = fallback;
+                    *view.selected = None;
+                }
+                let (tabs, selected) = left_tabs(&view);
+                let response = panel.show(&mut columns[0], &tabs, selected, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    ui.set_min_height(ui.available_height());
+                    show_left_column(
+                        ui,
+                        &mut view,
+                        db,
+                        caches,
+                        can_move,
+                        drag.as_ref(),
+                        &mut frame,
+                    )
                 });
+                if let Some(chosen) = response.inner {
+                    action = Some(chosen);
+                }
+                if let Some(index) = response.clicked
+                    && LeftTab::ALL[index] != *view.active_tab
+                {
+                    *view.active_tab = LeftTab::ALL[index];
+                    *view.selected = None;
+                }
             } else {
                 columns[0].weak("No game file loaded.");
             }
             if let Some(pane) = &mut self.right {
-                let pane_chrome = caches.chrome(columns[1].ctx(), db);
-                framed_pane(&mut columns[1], pane_chrome.as_ref(), |ui| {
-                    let active = show_vault_tabs(ui, pane, pane_chrome.as_ref(), drag.as_ref());
-                    anchored_panel(ui, pane_chrome.as_ref(), active, |ui| {
-                        if let Some(chosen) = show_vault_pane(
-                            ui,
-                            pane,
-                            db,
-                            caches,
-                            can_move,
-                            drag.as_ref(),
-                            &mut frame,
-                        ) {
-                            action = Some(chosen);
-                        }
-                    });
+                if pane.open_tab >= pane.vault.sacks.len() {
+                    pane.open_tab = 0;
+                }
+                let tabs = vault_tabs(pane);
+                let selected = pane.open_tab;
+                let response = panel.show(&mut columns[1], &tabs, selected, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    ui.set_min_height(ui.available_height());
+                    show_vault_pane(ui, pane, db, caches, can_move, drag.as_ref(), &mut frame)
                 });
+                if let Some(chosen) = response.inner {
+                    action = Some(chosen);
+                }
+                let target = response.clicked.or(if drag.is_some() {
+                    response.hovered
+                } else {
+                    None
+                });
+                if let Some(tab) = target
+                    && pane.open_tab != tab
+                {
+                    pane.open_tab = tab;
+                    pane.selected = None;
+                }
             } else {
                 columns[1].weak("No vault loaded.");
             }
@@ -3835,37 +3864,6 @@ fn anchored_panel(
             rect.min.y + 11.0,
         );
     }
-}
-
-/// Wraps a pane in the caravan window frame when chrome is loaded:
-/// content sits inside [`chrome::FRAME_MARGIN`], the frame paints
-/// over the reserved bands, and the pane fills the viewport height
-/// so the frame encloses the whole column.
-fn framed_pane(
-    ui: &mut egui::Ui,
-    pane_chrome: Option<&chrome::Chrome>,
-    add: impl FnOnce(&mut egui::Ui),
-) {
-    let Some(pane_chrome) = pane_chrome else {
-        add(ui);
-        return;
-    };
-    // Painted up front over the predicted rect (the pane fills its
-    // column) so content never sits on the stone backdrop.
-    pane_chrome.interior(ui.painter(), ui.available_rect_before_wrap());
-    let response = egui::Frame::NONE
-        .inner_margin(chrome::FRAME_MARGIN)
-        .show(ui, |ui| {
-            ui.set_min_height(ui.available_height());
-            add(ui);
-        });
-    let rect = response.response.rect;
-    let content = egui::Rect::from_min_max(
-        rect.min + egui::vec2(30.0, 35.0),
-        rect.max - egui::vec2(30.0, 35.0),
-    );
-    chrome::inner_shadow(ui.painter(), content, 14.0);
-    pane_chrome.pane_frame(ui.painter(), rect);
 }
 
 /// Native size of one grid cell — the textures' 32 pixels; grids
@@ -4832,70 +4830,45 @@ impl LeftView<'_> {
     }
 }
 
-/// The left pane's document strip, rendered above the frame; the
-/// active tab's rect and label return for anchoring onto it.
-fn show_left_tabs(
-    ui: &mut egui::Ui,
-    view: &mut LeftView<'_>,
-    pane_chrome: Option<&chrome::Chrome>,
-) -> Option<(egui::Rect, String)> {
-    if !view.loaded(*view.active_tab)
-        && let Some(fallback) = LeftTab::ALL.into_iter().find(|tab| view.loaded(*tab))
-    {
-        *view.active_tab = fallback;
-        *view.selected = None;
-    }
-    let mut active = None;
-    let strip_top = ui.available_rect_before_wrap().min;
-    let strip_width = ui.available_rect_before_wrap().width();
-    let backing = pane_chrome.map(|_| ui.painter().add(egui::Shape::Noop));
-    if pane_chrome.is_some() {
-        ui.add_space(10.0);
-    }
-    let row = ui.horizontal(|ui| {
-        if pane_chrome.is_some() {
-            ui.add_space(10.0);
-        }
-        for tab in LeftTab::ALL {
-            let loaded = view.loaded(tab);
-            let response = match pane_chrome {
-                Some(pane_chrome) => {
-                    pane_chrome.tab(ui, *view.active_tab == tab, loaded, tab.title())
-                }
-                None => ui.add_enabled(
-                    loaded,
-                    egui::Button::selectable(*view.active_tab == tab, tab.title()),
-                ),
-            };
-            if *view.active_tab == tab {
-                active = Some((response.rect, tab.title().to_owned()));
-            }
-            let response = if loaded {
-                response
+/// Tab strip inputs for the left pane — one plate per document,
+/// unloaded ones disabled with their hint — plus the active index.
+fn left_tabs(view: &LeftView<'_>) -> (Vec<tabbed_panel::Tab>, usize) {
+    let tabs = LeftTab::ALL
+        .into_iter()
+        .map(|tab| {
+            if view.loaded(tab) {
+                tabbed_panel::Tab::new(tab.title())
             } else {
-                response.on_hover_text(tab.missing_hint())
-            };
-            if loaded && response.clicked() && *view.active_tab != tab {
-                *view.active_tab = tab;
-                *view.selected = None;
+                tabbed_panel::Tab::disabled(tab.title(), tab.missing_hint())
             }
-        }
-    });
-    if let Some(backing) = backing {
-        let rect = egui::Rect::from_min_max(
-            strip_top,
-            egui::pos2(strip_top.x + strip_width, row.response.rect.max.y + 4.0),
-        );
-        ui.painter().set(
-            backing,
-            egui::Shape::rect_filled(rect, 0.0, egui::Color32::from_rgb(26, 21, 12)),
-        );
-    }
-    active
+        })
+        .collect();
+    let selected = LeftTab::ALL
+        .iter()
+        .position(|tab| tab == view.active_tab)
+        .unwrap_or(0);
+    (tabs, selected)
+}
+
+/// Tab strip inputs for the vault pane: sack number, with the item
+/// count when the sack has any.
+fn vault_tabs(pane: &VaultPane) -> Vec<tabbed_panel::Tab> {
+    pane.vault
+        .sacks
+        .iter()
+        .enumerate()
+        .map(|(tab, sack)| {
+            tabbed_panel::Tab::new(if sack.items.is_empty() {
+                format!("{}", tab + 1)
+            } else {
+                format!("{} ({})", tab + 1, sack.items.len())
+            })
+        })
+        .collect()
 }
 
 /// The left column: the active document's section (the strip above
-/// it is [`show_left_tabs`]).
+/// it is the pane's [`TabbedPanel`]).
 fn show_left_column(
     ui: &mut egui::Ui,
     view: &mut LeftView<'_>,
@@ -5025,69 +4998,6 @@ fn show_stash_section(
 }
 
 #[allow(clippy::too_many_arguments)] // one call surface, shell-internal
-/// The vault's numbered tab strip, rendered above the frame; the
-/// active tab's rect and label return for anchoring onto it.
-/// Mid-drag, pointing at a tab switches to it so any tab can
-/// receive the drop; egui suppresses hover while a widget drags, so
-/// the check is by pointer position.
-fn show_vault_tabs(
-    ui: &mut egui::Ui,
-    pane: &mut VaultPane,
-    pane_chrome: Option<&chrome::Chrome>,
-    drag: Option<&DragState>,
-) -> Option<(egui::Rect, String)> {
-    if pane.open_tab >= pane.vault.sacks.len() {
-        pane.open_tab = 0;
-    }
-    let cursor = ui.ctx().pointer_latest_pos();
-    let mut active = None;
-    let strip_top = ui.available_rect_before_wrap().min;
-    let strip_width = ui.available_rect_before_wrap().width();
-    let backing = pane_chrome.map(|_| ui.painter().add(egui::Shape::Noop));
-    if pane_chrome.is_some() {
-        ui.add_space(10.0);
-    }
-    let row = ui.horizontal_wrapped(|ui| {
-        if pane_chrome.is_some() {
-            ui.add_space(10.0);
-        }
-        for (tab, sack) in pane.vault.sacks.iter().enumerate() {
-            let label = if sack.items.is_empty() {
-                format!("{}", tab + 1)
-            } else {
-                format!("{} ({})", tab + 1, sack.items.len())
-            };
-            let response = match pane_chrome {
-                Some(pane_chrome) => pane_chrome.tab(ui, pane.open_tab == tab, true, &label),
-                None => ui.add(egui::Button::selectable(
-                    pane.open_tab == tab,
-                    label.clone(),
-                )),
-            };
-            if pane.open_tab == tab {
-                active = Some((response.rect, label));
-            }
-            let drag_over =
-                drag.is_some() && cursor.is_some_and(|cursor| response.rect.contains(cursor));
-            if (response.clicked() || drag_over) && pane.open_tab != tab {
-                pane.open_tab = tab;
-                pane.selected = None;
-            }
-        }
-    });
-    if let Some(backing) = backing {
-        let rect = egui::Rect::from_min_max(
-            strip_top,
-            egui::pos2(strip_top.x + strip_width, row.response.rect.max.y + 4.0),
-        );
-        ui.painter().set(
-            backing,
-            egui::Shape::rect_filled(rect, 0.0, egui::Color32::from_rgb(26, 21, 12)),
-        );
-    }
-    active
-}
-
 fn show_vault_pane(
     ui: &mut egui::Ui,
     pane: &mut VaultPane,

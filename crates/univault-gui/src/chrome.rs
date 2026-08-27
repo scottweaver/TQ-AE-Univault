@@ -15,17 +15,6 @@ use univault_core::cache::GameCache;
 /// right and bottom edges, so tiles chain into the game's grid.
 const CELL: Src = Src::new(27.0, 126.0, 32.0, 32.0);
 
-/// The caravan window frame as full border bands, gutter and all:
-/// leather outer band (the tabs' own material), black gap, then the
-/// content's bright gold rim — the game's border sandwich. The top
-/// band is the bottom band flipped vertically (the art's own top is
-/// the caravan header). Bottom corners carry the ornament brackets.
-const FRAME_LC: Src = Src::new(0.0, 150.0, 26.0, 320.0);
-const FRAME_RC: Src = Src::new(539.0, 150.0, 26.0, 320.0);
-const FRAME_BL: Src = Src::new(0.0, 606.0, 29.0, 31.0);
-const FRAME_BC: Src = Src::new(150.0, 606.0, 240.0, 31.0);
-const FRAME_BR: Src = Src::new(536.0, 606.0, 29.0, 31.0);
-
 /// The under-tabs leather strip of the caravan window (leather
 /// body, dark line, gold trim, black gap, gold rim — the reference
 /// "textured tab border"), tiled as the border of a tab's panel.
@@ -35,14 +24,6 @@ const LEATHER_STRIP: Src = Src::new(150.0, 108.0, 240.0, 15.0);
 /// native rows.
 pub const LEATHER_H: f32 = 15.0;
 
-/// Content inset that keeps a pane's widgets inside the gold rim.
-pub const FRAME_MARGIN: egui::Margin = egui::Margin {
-    left: 30,
-    right: 30,
-    top: 35,
-    bottom: 35,
-};
-
 /// A clean strip of the character screen's light flagstone — the
 /// reference's exact surface; a mirrored collage of it becomes the
 /// stretched backdrop.
@@ -51,10 +32,6 @@ const LIGHT_BLOCK: Src = Src::new(417.0, 424.0, 39.0, 196.0);
 /// Mirror repetitions assembling the collage from [`LIGHT_BLOCK`].
 const LIGHT_COLS: usize = 8;
 const LIGHT_ROWS: usize = 2;
-
-/// The inventory panel's plain olive margin — the "dark smooth
-/// stone" of the reference; the framed panes' interior.
-const INVENTORY_MARGIN: Src = Src::new(24.0, 494.0, 44.0, 40.0);
 
 /// The engraved slot plates of the character screen, one per worn
 /// piece.
@@ -168,9 +145,6 @@ pub struct Chrome {
     title: TextureHandle,
     tab: TextureHandle,
     character: TextureHandle,
-    /// The inventory panel art; absent in caches imported before it
-    /// joined the manifest.
-    inventory: Option<TextureHandle>,
     /// The 2×2 mirrored light-flagstone collage — the stretched
     /// backdrop.
     light_stone: TextureHandle,
@@ -219,7 +193,6 @@ impl Chrome {
             title: load("caravan/caravantitle01.tex")?,
             tab: load("caravan/storageareatab01.tex")?,
             character: load("characterscreen/characterwindow01.tex")?,
-            inventory: load("inventorytab01.tex"),
             light_stone: ctx.load_texture(
                 "chrome:light-stone",
                 light,
@@ -237,59 +210,6 @@ impl Chrome {
     /// One grid cell's art.
     pub fn grid_cell(&self, painter: &egui::Painter, rect: Rect) {
         blit(painter, &self.caravan, CELL, rect, Color32::WHITE);
-    }
-
-    /// The caravan window frame around a pane; draw after the
-    /// content — the pieces only cover the [`FRAME_MARGIN`] bands.
-    pub fn pane_frame(&self, painter: &egui::Painter, rect: Rect) {
-        let texture = &self.caravan;
-        let corner = vec2(FRAME_BL.w, FRAME_BL.h);
-        let band = FRAME_BC.h;
-        for (piece, flip_h, x) in [
-            (FRAME_BL, false, rect.min.x),
-            (FRAME_BR, false, rect.max.x - corner.x),
-        ] {
-            painter.image(
-                texture.id(),
-                Rect::from_min_size(pos2(x, rect.max.y - band), corner),
-                piece.uv_flipped(texture, flip_h, false),
-                Color32::WHITE,
-            );
-            painter.image(
-                texture.id(),
-                Rect::from_min_size(pos2(x, rect.min.y), corner),
-                piece.uv_flipped(texture, flip_h, true),
-                Color32::WHITE,
-            );
-        }
-        let span = Rect::from_min_max(
-            pos2(rect.min.x + corner.x, rect.max.y - band),
-            pos2(rect.max.x - corner.x, rect.max.y),
-        );
-        tile_h_flipped(painter, texture, FRAME_BC, span, false);
-        let span = Rect::from_min_max(
-            pos2(rect.min.x + corner.x, rect.min.y),
-            pos2(rect.max.x - corner.x, rect.min.y + band),
-        );
-        tile_h_flipped(painter, texture, FRAME_BC, span, true);
-        tile_v(
-            painter,
-            texture,
-            FRAME_LC,
-            Rect::from_min_max(
-                pos2(rect.min.x, rect.min.y + band),
-                pos2(rect.min.x + FRAME_LC.w, rect.max.y - band),
-            ),
-        );
-        tile_v(
-            painter,
-            texture,
-            FRAME_RC,
-            Rect::from_min_max(
-                pos2(rect.max.x - FRAME_RC.w, rect.min.y + band),
-                pos2(rect.max.x, rect.max.y - band),
-            ),
-        );
     }
 
     /// The leather panel border — the reference's textured tab
@@ -511,24 +431,6 @@ impl Chrome {
     /// One engraved slot plate, stretched into a doll slot box.
     pub fn slot_plate(&self, painter: &egui::Painter, plate: SlotPlate, rect: Rect) {
         blit(painter, &self.character, plate.src(), rect, Color32::WHITE);
-    }
-
-    /// A framed pane's interior: the inventory panel's plain olive
-    /// ("dark smooth stone"), or the painted theme surface for
-    /// caches predating that art.
-    pub fn interior(&self, painter: &egui::Painter, rect: Rect) {
-        match &self.inventory {
-            Some(inventory) => blit(
-                painter,
-                inventory,
-                INVENTORY_MARGIN,
-                rect,
-                Color32::from_gray(170),
-            ),
-            None => {
-                painter.rect_filled(rect, 0.0, crate::theme::SURFACE);
-            }
-        }
     }
 }
 
