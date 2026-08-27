@@ -9,7 +9,8 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use eframe::egui::{
-    self, Align2, Color32, ColorImage, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2,
+    self, Align2, Color32, ColorImage, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, StrokeKind,
+    pos2, vec2,
 };
 
 const EXPORT_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../review");
@@ -86,12 +87,24 @@ pub struct ReviewOverlay {
 }
 
 impl ReviewOverlay {
-    /// Tool selector, undo/clear, and the export button.
+    /// Tool selector, undo/clear, and the export button. A tool is
+    /// *armed* by clicking it — only then does the overlay capture
+    /// canvas input; clicking the armed tool again releases it, so
+    /// the component stays interactive between annotations.
     pub fn toolbar(&mut self, ui: &mut egui::Ui) {
-        let tool = self.tool.get_or_insert(Tool::Rect);
-        ui.selectable_value(tool, Tool::Rect, "rect");
-        ui.selectable_value(tool, Tool::Ellipse, "ellipse");
-        ui.selectable_value(tool, Tool::Arrow, "arrow");
+        for (label, value) in [
+            ("rect", Tool::Rect),
+            ("ellipse", Tool::Ellipse),
+            ("arrow", Tool::Arrow),
+        ] {
+            let armed = self.tool == Some(value);
+            if ui.selectable_label(armed, label).clicked() {
+                self.tool = if armed { None } else { Some(value) };
+            }
+        }
+        if self.tool.is_none() {
+            ui.label("pick a tool to annotate");
+        }
         ui.separator();
         if ui.button("undo").clicked() {
             self.annotations.pop();
@@ -122,32 +135,37 @@ impl ReviewOverlay {
         component: Rect,
         component_name: &str,
     ) {
-        let response = ui.interact(
-            canvas,
-            ui.id().with("review-overlay"),
-            Sense::click_and_drag(),
-        );
-        let drag_pos = response.interact_pointer_pos();
-        let tool = *self.tool.get_or_insert(Tool::Rect);
-        if response.drag_started()
-            && let Some(pos) = drag_pos
-            && !matches!(self.draft, Some(Draft::Noting { .. }))
-        {
-            self.draft = Some(Draft::Dragging { from: pos, to: pos });
-        }
-        if let Some(Draft::Dragging { to, .. }) = &mut self.draft
-            && let Some(pos) = drag_pos
-        {
-            *to = pos;
-        }
-        if response.drag_stopped()
-            && let Some(Draft::Dragging { from, to }) = self.draft
-        {
-            self.draft = ((to - from).length() >= MIN_DRAG).then(|| Draft::Noting {
-                geom: Geom::from_drag(tool, from, to),
-                note: String::new(),
-                fresh: true,
-            });
+        if let Some(tool) = self.tool {
+            let response = ui
+                .interact(
+                    canvas,
+                    ui.id().with("review-overlay"),
+                    Sense::click_and_drag(),
+                )
+                .on_hover_cursor(CursorIcon::Crosshair);
+            let drag_pos = response.interact_pointer_pos();
+            if response.drag_started()
+                && let Some(pos) = drag_pos
+                && !matches!(self.draft, Some(Draft::Noting { .. }))
+            {
+                self.draft = Some(Draft::Dragging { from: pos, to: pos });
+            }
+            if let Some(Draft::Dragging { to, .. }) = &mut self.draft
+                && let Some(pos) = drag_pos
+            {
+                *to = pos;
+            }
+            if response.drag_stopped()
+                && let Some(Draft::Dragging { from, to }) = self.draft
+            {
+                self.draft = ((to - from).length() >= MIN_DRAG).then(|| Draft::Noting {
+                    geom: Geom::from_drag(tool, from, to),
+                    note: String::new(),
+                    fresh: true,
+                });
+            }
+        } else if matches!(self.draft, Some(Draft::Dragging { .. })) {
+            self.draft = None;
         }
 
         let painter = ui.painter();
@@ -156,15 +174,15 @@ impl ReviewOverlay {
             paint_badge(painter, annotation.geom.anchor(), index + 1);
             paint_note(painter, annotation.geom.anchor(), &annotation.note);
         }
-        match &self.draft {
-            Some(Draft::Dragging { from, to }) => {
+        match (&self.draft, self.tool) {
+            (Some(Draft::Dragging { from, to }), Some(tool)) => {
                 paint_geom(painter, Geom::from_drag(tool, *from, *to));
             }
-            Some(Draft::Noting { geom, .. }) => {
+            (Some(Draft::Noting { geom, .. }), _) => {
                 paint_geom(painter, *geom);
                 paint_badge(painter, geom.anchor(), self.annotations.len() + 1);
             }
-            None => {}
+            (Some(Draft::Dragging { .. }), None) | (None, _) => {}
         }
 
         self.note_editor(ui);
