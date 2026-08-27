@@ -350,7 +350,18 @@ impl Chrome {
         } else {
             Color32::from_gray(160)
         };
-        three_slice(ui.painter(), &self.tab, TAB_CAPS, rect, tint);
+        // The active tab rises above the row and descends to the
+        // strip's baseline, anchoring onto the panel like the game's
+        // caravan tabs.
+        let plate = if selected {
+            Rect::from_min_max(
+                pos2(rect.min.x, rect.min.y - 2.0),
+                pos2(rect.max.x, rect.max.y + 4.0),
+            )
+        } else {
+            rect
+        };
+        three_slice(ui.painter(), &self.tab, TAB_CAPS, plate, tint);
         let pos = pos2(
             rect.center().x - galley.size().x / 2.0,
             rect.center().y - galley.size().y / 2.0,
@@ -479,6 +490,30 @@ impl Chrome {
                 painter.rect_filled(rect, 0.0, crate::theme::SURFACE);
             }
         }
+    }
+}
+
+/// The gold edge a tab strip sits on, broken under the active tab
+/// so the strip reads as attached to the panel below.
+pub fn tab_baseline(painter: &egui::Painter, row: Rect, active: Option<Rect>) {
+    let y = row.max.y + 3.0;
+    let bright = Color32::from_rgb(196, 164, 92);
+    let dark = Color32::from_rgb(60, 48, 22);
+    let segment = |x0: f32, x1: f32| {
+        if x1 > x0 + 0.5 {
+            painter.line_segment([pos2(x0, y), pos2(x1, y)], egui::Stroke::new(2.0, bright));
+            painter.line_segment(
+                [pos2(x0, y + 1.5), pos2(x1, y + 1.5)],
+                egui::Stroke::new(1.0, dark),
+            );
+        }
+    };
+    match active {
+        Some(active) => {
+            segment(row.min.x, active.min.x);
+            segment(active.max.x, row.max.x);
+        }
+        None => segment(row.min.x, row.max.x),
     }
 }
 

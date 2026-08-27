@@ -3654,30 +3654,40 @@ fn show_inventory_tabs(
 ) {
     let pane_chrome = caches.chrome(ui.ctx(), db);
     let cursor = ui.ctx().pointer_latest_pos();
-    ui.horizontal_wrapped(|ui| {
-        let mut tab_button = |ui: &mut egui::Ui, target: InventoryTab, label: &str| {
-            let selected_tab = *inventory_tab == target;
-            let response = match pane_chrome.as_ref() {
-                Some(pane_chrome) => pane_chrome.tab(ui, selected_tab, true, label),
-                None => ui.add(egui::Button::selectable(selected_tab, label)),
+    let mut active_rect = None;
+    let row = ui
+        .horizontal_wrapped(|ui| {
+            let mut tab_button = |ui: &mut egui::Ui, target: InventoryTab, label: &str| {
+                let selected_tab = *inventory_tab == target;
+                let response = match pane_chrome.as_ref() {
+                    Some(pane_chrome) => pane_chrome.tab(ui, selected_tab, true, label),
+                    None => ui.add(egui::Button::selectable(selected_tab, label)),
+                };
+                if selected_tab {
+                    active_rect = Some(response.rect);
+                }
+                let drag_over =
+                    drag.is_some() && cursor.is_some_and(|cursor| response.rect.contains(cursor));
+                if (response.clicked() || drag_over) && *inventory_tab != target {
+                    *inventory_tab = target;
+                    *selected = None;
+                }
             };
-            let drag_over =
-                drag.is_some() && cursor.is_some_and(|cursor| response.rect.contains(cursor));
-            if (response.clicked() || drag_over) && *inventory_tab != target {
-                *inventory_tab = target;
-                *selected = None;
+            tab_button(ui, InventoryTab::Equipment, "Equipment");
+            for (index, sack) in pane.character.sacks.iter().enumerate() {
+                let label = if index == 0 {
+                    format!("Main Sack ({})", sack.items.len())
+                } else {
+                    format!("Sack {} ({})", index, sack.items.len())
+                };
+                tab_button(ui, InventoryTab::Sack(index), &label);
             }
-        };
-        tab_button(ui, InventoryTab::Equipment, "Equipment");
-        for (index, sack) in pane.character.sacks.iter().enumerate() {
-            let label = if index == 0 {
-                format!("Main Sack ({})", sack.items.len())
-            } else {
-                format!("Sack {} ({})", index, sack.items.len())
-            };
-            tab_button(ui, InventoryTab::Sack(index), &label);
-        }
-    });
+        })
+        .response
+        .rect;
+    if pane_chrome.is_some() {
+        chrome::tab_baseline(ui.painter(), row, active_rect);
+    }
 }
 
 /// Allocates the doll's canvas centered in the pane.
@@ -4715,30 +4725,42 @@ fn show_left_column(
         *view.selected = None;
     }
     let pane_chrome = caches.chrome(ui.ctx(), db);
-    ui.horizontal(|ui| {
-        for tab in LeftTab::ALL {
-            let loaded = view.loaded(tab);
-            let response = match pane_chrome.as_ref() {
-                Some(pane_chrome) => {
-                    pane_chrome.tab(ui, *view.active_tab == tab, loaded, tab.title())
+    let mut active_rect = None;
+    let row = ui
+        .horizontal(|ui| {
+            for tab in LeftTab::ALL {
+                let loaded = view.loaded(tab);
+                let response = match pane_chrome.as_ref() {
+                    Some(pane_chrome) => {
+                        pane_chrome.tab(ui, *view.active_tab == tab, loaded, tab.title())
+                    }
+                    None => ui.add_enabled(
+                        loaded,
+                        egui::Button::selectable(*view.active_tab == tab, tab.title()),
+                    ),
+                };
+                if *view.active_tab == tab {
+                    active_rect = Some(response.rect);
                 }
-                None => ui.add_enabled(
-                    loaded,
-                    egui::Button::selectable(*view.active_tab == tab, tab.title()),
-                ),
-            };
-            let response = if loaded {
-                response
-            } else {
-                response.on_hover_text(tab.missing_hint())
-            };
-            if loaded && response.clicked() && *view.active_tab != tab {
-                *view.active_tab = tab;
-                *view.selected = None;
+                let response = if loaded {
+                    response
+                } else {
+                    response.on_hover_text(tab.missing_hint())
+                };
+                if loaded && response.clicked() && *view.active_tab != tab {
+                    *view.active_tab = tab;
+                    *view.selected = None;
+                }
             }
-        }
-    });
-    ui.separator();
+        })
+        .response
+        .rect;
+    if pane_chrome.is_some() {
+        chrome::tab_baseline(ui.painter(), row, active_rect);
+        ui.add_space(6.0);
+    } else {
+        ui.separator();
+    }
     match *view.active_tab {
         LeftTab::Inventory => view.character.as_mut().and_then(|pane| {
             show_character_section(
@@ -4895,28 +4917,40 @@ fn show_vault_pane(
         pane.open_tab = 0;
     }
     let cursor = ui.ctx().pointer_latest_pos();
-    ui.horizontal_wrapped(|ui| {
-        for (tab, sack) in pane.vault.sacks.iter().enumerate() {
-            let label = if sack.items.is_empty() {
-                format!("{}", tab + 1)
-            } else {
-                format!("{} ({})", tab + 1, sack.items.len())
-            };
-            let response = match pane_chrome {
-                Some(pane_chrome) => pane_chrome.tab(ui, pane.open_tab == tab, true, &label),
-                None => ui.add(egui::Button::selectable(pane.open_tab == tab, label)),
-            };
-            // Mid-drag, pointing at a tab switches to it so any tab
-            // can receive the drop; egui suppresses hover while a
-            // widget drags, so the check is by pointer position.
-            let drag_over =
-                drag.is_some() && cursor.is_some_and(|cursor| response.rect.contains(cursor));
-            if (response.clicked() || drag_over) && pane.open_tab != tab {
-                pane.open_tab = tab;
-                pane.selected = None;
+    let mut active_rect = None;
+    let row = ui
+        .horizontal_wrapped(|ui| {
+            for (tab, sack) in pane.vault.sacks.iter().enumerate() {
+                let label = if sack.items.is_empty() {
+                    format!("{}", tab + 1)
+                } else {
+                    format!("{} ({})", tab + 1, sack.items.len())
+                };
+                let response = match pane_chrome {
+                    Some(pane_chrome) => pane_chrome.tab(ui, pane.open_tab == tab, true, &label),
+                    None => ui.add(egui::Button::selectable(pane.open_tab == tab, label)),
+                };
+                if pane.open_tab == tab {
+                    active_rect = Some(response.rect);
+                }
+                // Mid-drag, pointing at a tab switches to it so any
+                // tab can receive the drop; egui suppresses hover
+                // while a widget drags, so the check is by pointer
+                // position.
+                let drag_over =
+                    drag.is_some() && cursor.is_some_and(|cursor| response.rect.contains(cursor));
+                if (response.clicked() || drag_over) && pane.open_tab != tab {
+                    pane.open_tab = tab;
+                    pane.selected = None;
+                }
             }
-        }
-    });
+        })
+        .response
+        .rect;
+    if pane_chrome.is_some() {
+        chrome::tab_baseline(ui.painter(), row, active_rect);
+        ui.add_space(4.0);
+    }
     let Some(sack) = pane.vault.sacks.get(pane.open_tab) else {
         ui.weak("This vault file has no tabs.");
         return action;
