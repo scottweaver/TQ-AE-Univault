@@ -10,27 +10,25 @@ Last updated: 2026-08-27
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** PR #37 (`feat/move-all-to-vault`, checked out) is
-open with CI green on all platforms: "All → Vault" / "Copy all →
-Vault" buttons on the character and bank section headers —
-transfers start in the open vault tab and spill into the other
-tabs as each fills; inventory means all sacks, never the equipped
-doll. Acceptance is in-app: with a vault open, click each button
-on a loaded bank and watch the toast counts (moved / spilled /
-left behind); on a pass, merge PR #37 and run the wrap-up. Design
-settled in-dialog 2026-08-26: overflow spills (wrapping through
-all tabs), never stops at the open tab; the doll is never
-stripped. Earlier this session: PR #35 (star-hero ×3) merged at
-the user's direction, wrap-up done (docs PR #36) — in-game
-acceptance still open: meet a tripled base-game star hero after
-restarting the game session; Ragnarök/Atlantis wild heroes use
-champion-slot pools the rule deliberately skips. Older acceptance
-still open, all in-game/in-app: all-vaults search full pass (⌘F,
-stack criteria, act on a row, double-click to jump), paper doll
-(drag gear off/on, load the save in-game), auto-refresh feel on
-the SMB tree, dll patch (Enable, socket an epic in-game), and the
-Gorgon rematch on `LootPlusXMAX3Tuned1xBoss` (both bundles
-installed in CustomMaps). Otherwise pick from "Next up".
+**Resume here:** the look-and-feel workstream is open
+(user-initiated 2026-08-27: "get the theme more in tune with Titan
+Quest AE"; reference screenshots at
+`/Volumes/scott-games/tq-ae-designs`). Phase 1 — full egui restyle
+(TQ palette + bundled Cinzel/Alegreya fonts, `theme.rs`) — is on
+`feat/tq-theme`; acceptance is the user looking at the running app
+and reacting; expect palette/spacing iteration in-dialog. Phase 2
+(agreed direction, not started): extract the game's ornate
+border/parchment art via the cache (UVC8 bump) for true TQ chrome;
+needs its own design pass. The wider UIX complaint ("interaction
+leaves a lot to be desired") is only partly addressed — theme
+first, interaction tweaks next, per the user. PR #37 (bulk move)
+merged 2026-08-27 at the user's direction; its in-app acceptance
+(toast counts on All → Vault) is still open, as are the older
+checks: star-hero ×3 in-game, all-vaults search full pass, paper
+doll in-game load, auto-refresh feel on the SMB tree, dll patch
+socketing, and the Gorgon rematch on `LootPlusXMAX3Tuned1xBoss`.
+The STATE refresh for the #37 merge rides this branch (no separate
+docs PR). Otherwise pick from "Next up".
 
 - **Repo setting:** PR auto-merge is disabled
   (`enablePullRequestAutoMerge`) — wrap-up's docs PRs can't
@@ -93,8 +91,8 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#35 all merged; all gates green |
-| `feat/move-all-to-vault` | bulk move/copy of the active left tab into the vault | PR #37 open, CI green; awaiting in-app acceptance |
+| `main` | trunk | PRs #1–#37 all merged; all gates green |
+| `feat/tq-theme` | Titan Quest AE look & feel, phase 1 (palette + fonts) | PR open; awaiting the user's in-app look review |
 
 ## Next up
 
@@ -117,6 +115,18 @@ and open our vault JSON in TQVaultAE.
 Default vault + bank tabs + autosave ACCEPTED 2026-08-25 ("Ah,
 that's better") and merged as PR #7.
 
+UIX queue (user-listed 2026-08-27, to address after the theme work;
+order not yet prioritized):
+
+- Inventory tab becomes an exclusive sub-tabbed view — Player
+  (doll) | Main Sack | Sack 1…n — one at a time, replacing the
+  stacked collapsing sections.
+- On launch with no file argument, auto-open the last viewed
+  character (recents already persist; open the newest).
+- Toolbar order: "Recent" directly right of "Open character…".
+- Technical info (file paths etc.) hidden by default; a
+  "?-in-a-circle" icon per pane reveals the low-level details.
+
 1. Game-install auto-discovery (Steam library paths per OS in
    `platform`) to preseed the one-time Import dialog.
 2. DXT1/3 decode for the ~7 compressed item bitmaps (currently an
@@ -126,8 +136,20 @@ that's better") and merged as PR #7.
 
 ## Most recent meaningful progress
 
-- **2026-08-26 — Bulk send: whole tab → vault (feat/move-all-to-vault,
-  PR #37 open).** User ask: move or copy every item in the active game
+- **2026-08-27 — TQ AE look, phase 1 (feat/tq-theme, PR open).** User
+  ask: the app is feature-rich but looks stock — retheme toward the
+  game (reference screenshots in `/Volumes/scott-games/
+  tq-ae-designs`). New `theme.rs`: bronze-and-gold palette over dark
+  leather/olive surfaces (gold-rimmed plaque buttons, olive sack
+  grids, near-black gold-ruled tooltips) and bundled OFL classical
+  serifs — Cinzel (headings, gold) + Alegreya (body) under
+  `assets/fonts/`; headings route through `theme::heading`. Decided
+  in-dialog: phase 2 will pull the game's real border/parchment art
+  through the cache for true TQ chrome — the egui restyle is the
+  foundation, not the end state. 223 tests. Risk: look acceptance is
+  wholly in the user's eyes; expect palette iteration.
+- **2026-08-26 — Bulk send: whole tab → vault (PR #37, merged
+  2026-08-27).** User ask: move or copy every item in the active game
   storage tab into the vault without per-item clicks. Design
   settled in-dialog: transfers start in the open vault tab and
   spill into the other tabs as each fills (the pre-existing
@@ -274,24 +296,7 @@ that's better") and merged as PR #7.
   feel unverified against the real SMB tree (poll cost, false
   settles) until the user runs it; a reload that fails mid-conflict
   leaves the pane clean-but-stale (same as manual Reload).
-- **2026-08-26 — Socket into any rarity (type rules kept).** User
-  ask, refined: relics/charms socket into epics, legendaries, and
-  set pieces in-app — the game's *type* rules stay (a ring relic
-  fits only rings), only the rarity gate is lifted (that gate is
-  Game.dll code, confirmed via the Enchanting Unlimited findings).
-  Cache `UVC7`: entries now carry each gear record's equipment
-  family (15 classes) and each relic's allow-flag bitmask (the 15
-  `helmet`/`bodyArmor`/…/`rangedOneHand` template booleans), so the
-  GUI enforces type rules from the cache alone — next launch
-  re-imports (~8s). New `transfer::can_socket`/`socket_relic`;
-  drag a standalone relic/charm onto allowed gear (violet
-  highlight, vs gold for combining) and it sockets: record, shard
-  count, bonus. Pairs with Alt+Click extraction for full
-  socket/unsocket freedom. Tests cover type-rule enforcement,
-  rarity indifference, and zero-encoded counts. Risk: in-game load
-  of a relic-on-epic item forged here is the acceptance test; a
-  Game.dll patcher (guide-based, backup + toggle) is the agreed
-  next feature.
+
 ## Blocked / waiting
 
 - *(nothing)*

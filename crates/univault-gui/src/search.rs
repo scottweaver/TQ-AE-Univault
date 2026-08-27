@@ -20,6 +20,7 @@ use univault_core::stats::{self, Requirement};
 use univault_core::style::{self, ItemStyle};
 use univault_core::vault::Vault;
 
+use crate::theme;
 use crate::{
     App, DocId, GameStatus, GridId, MainView, VaultPane, game_color, item_tooltip, stamp_of,
     vaults_dir,
@@ -712,7 +713,7 @@ impl App {
                 self.search.source_filter = None;
                 self.search.stale = true;
             }
-            ui.heading("Search all vaults");
+            ui.label(theme::heading("Search all vaults"));
             ui.label(format!(
                 "{} of {} items",
                 self.search.rows.len(),
@@ -1007,7 +1008,7 @@ fn show_row(
     table_row.col(|ui| {
         ui.label(
             egui::RichText::new(row.item_style.label())
-                .color(egui::Color32::from_gray(150))
+                .color(theme::TEXT_WEAK)
                 .size(12.0),
         );
     });
