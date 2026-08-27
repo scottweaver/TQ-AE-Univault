@@ -35,7 +35,7 @@ use crate::writer::{write_i32, write_i64};
 // The magic is the cache's only version: bump it for layout changes
 // AND for content-generation changes (names, stat rendering), so
 // existing caches rebuild automatically.
-const MAGIC: i32 = 0x3743_5655; // "UVC7"
+const MAGIC: i32 = 0x3843_5655; // "UVC8"
 
 fn gear_slot_index(slot: Option<GearSlot>) -> i32 {
     slot.and_then(|slot| GearSlot::ALL.iter().position(|other| *other == slot))
@@ -69,6 +69,20 @@ pub(crate) struct CachedIcon {
     zlib_rgba: Vec<u8>,
 }
 
+impl CachedIcon {
+    fn decode(&self) -> Option<RgbaImage> {
+        let mut pixels = Vec::new();
+        ZlibDecoder::new(self.zlib_rgba.as_slice())
+            .read_to_end(&mut pixels)
+            .ok()?;
+        Some(RgbaImage {
+            width: usize::try_from(self.width).ok()?,
+            height: usize::try_from(self.height).ok()?,
+            pixels,
+        })
+    }
+}
+
 pub(crate) struct CacheEntry {
     pub(crate) name: Option<String>,
     pub(crate) footprint: (i32, i32),
@@ -95,6 +109,9 @@ pub struct GameCache {
     stamps: Vec<SourceStamp>,
     labels: HashMap<String, String>,
     entries: HashMap<String, CacheEntry>,
+    /// UI chrome art extracted at import, keyed by the texture's
+    /// archive entry path (see [`crate::gamedata::CHROME_TEXTURES`]).
+    chrome: HashMap<String, CachedIcon>,
 }
 
 /// Errors from reading a cache file.
@@ -115,12 +132,21 @@ impl GameCache {
         stamps: Vec<SourceStamp>,
         labels: HashMap<String, String>,
         entries: HashMap<String, CacheEntry>,
+        chrome: HashMap<String, CachedIcon>,
     ) -> Self {
         Self {
             stamps,
             labels,
             entries,
+            chrome,
         }
+    }
+
+    /// Decoded UI chrome texture by archive entry path; `None` when
+    /// the import predates chrome or the game lacked the piece.
+    #[must_use]
+    pub fn chrome(&self, key: &str) -> Option<RgbaImage> {
+        self.chrome.get(key)?.decode()
     }
 
     /// A translated display label captured at import (see
@@ -176,15 +202,7 @@ impl GameCache {
         } else {
             entry.icon.as_ref()
         }?;
-        let mut pixels = Vec::new();
-        ZlibDecoder::new(icon.zlib_rgba.as_slice())
-            .read_to_end(&mut pixels)
-            .ok()?;
-        Some(RgbaImage {
-            width: usize::try_from(icon.width).ok()?,
-            height: usize::try_from(icon.height).ok()?,
-            pixels,
-        })
+        icon.decode()
     }
 
     /// The shard count that completes a relic/charm record; `None`
@@ -314,6 +332,17 @@ impl GameCache {
             write_i32(&mut out, gear_slot_index(entry.gear_slot));
             write_i32(&mut out, i32::from(entry.socket_targets));
         }
+        write_i32(&mut out, i32::try_from(self.chrome.len()).unwrap_or(0));
+        let mut chrome_keys: Vec<&String> = self.chrome.keys().collect();
+        chrome_keys.sort_unstable();
+        for key in chrome_keys {
+            let icon = &self.chrome[key];
+            write_utf8(&mut out, key);
+            write_i32(&mut out, icon.width);
+            write_i32(&mut out, icon.height);
+            write_i32(&mut out, i32::try_from(icon.zlib_rgba.len()).unwrap_or(0));
+            out.extend_from_slice(&icon.zlib_rgba);
+        }
         out
     }
 
@@ -407,12 +436,35 @@ impl GameCache {
                 },
             );
         }
+        let chrome = read_chrome(&mut reader)?;
         Ok(Self {
             stamps,
             labels,
             entries,
+            chrome,
         })
     }
+}
+
+fn read_chrome(reader: &mut ByteReader<'_>) -> Result<HashMap<String, CachedIcon>, CacheError> {
+    let count = usize::try_from(reader.read_i32()?).map_err(|_| CacheError::Corrupt)?;
+    let mut chrome = HashMap::with_capacity(count);
+    for _ in 0..count {
+        let key = read_utf8(reader)?;
+        let width = reader.read_i32()?;
+        let height = reader.read_i32()?;
+        let length = usize::try_from(reader.read_i32()?).map_err(|_| CacheError::Corrupt)?;
+        let zlib_rgba = reader.read_bytes(length)?.to_vec();
+        chrome.insert(
+            key,
+            CachedIcon {
+                width,
+                height,
+                zlib_rgba,
+            },
+        );
+    }
+    Ok(chrome)
 }
 
 fn write_classification(buf: &mut Vec<u8>, classification: Classification) {
@@ -576,5 +628,29 @@ mod tests {
             GameCache::from_bytes(b"PK\x03\x04not a cache"),
             Err(CacheError::BadMagic)
         ));
+    }
+
+    #[test]
+    fn chrome_textures_round_trip() {
+        let image = RgbaImage {
+            width: 2,
+            height: 1,
+            pixels: vec![10, 20, 30, 255, 40, 50, 60, 255],
+        };
+        let icon = compress_icon(&image).expect("compresses");
+        let cache = GameCache::from_entries(
+            Vec::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::from([("caravan/caravanwindow01.tex".to_owned(), icon)]),
+        );
+        let reloaded = GameCache::from_bytes(&cache.to_bytes()).expect("parses");
+        let restored = reloaded
+            .chrome("caravan/caravanwindow01.tex")
+            .expect("chrome present");
+        assert_eq!(restored.width, 2);
+        assert_eq!(restored.height, 1);
+        assert_eq!(restored.pixels, image.pixels);
+        assert!(reloaded.chrome("missing.tex").is_none());
     }
 }

@@ -11,24 +11,22 @@ Last updated: 2026-08-27
 <!-- transient; owned by the checkpoint skill -->
 
 **Resume here:** the look-and-feel workstream is open
-(user-initiated 2026-08-27: "get the theme more in tune with Titan
-Quest AE"; reference screenshots at
-`/Volumes/scott-games/tq-ae-designs`). Phase 1 — full egui restyle
-(TQ palette + bundled Cinzel/Alegreya fonts, `theme.rs`) — is on
-`feat/tq-theme`; acceptance is the user looking at the running app
-and reacting; expect palette/spacing iteration in-dialog. Phase 2
-(agreed direction, not started): extract the game's ornate
-border/parchment art via the cache (UVC8 bump) for true TQ chrome;
-needs its own design pass. The wider UIX complaint ("interaction
-leaves a lot to be desired") is only partly addressed — theme
-first, interaction tweaks next, per the user. PR #37 (bulk move)
-merged 2026-08-27 at the user's direction; its in-app acceptance
-(toast counts on All → Vault) is still open, as are the older
-checks: star-hero ×3 in-game, all-vaults search full pass, paper
-doll in-game load, auto-refresh feel on the SMB tree, dll patch
-socketing, and the Gorgon rematch on `LootPlusXMAX3Tuned1xBoss`.
-The STATE refresh for the #37 merge rides this branch (no separate
-docs PR). Otherwise pick from "Next up".
+(user-initiated 2026-08-27; reference screenshots at
+`/Volumes/scott-games/tq-ae-designs`). Phase 1 (TQ palette +
+Cinzel/Alegreya fonts) merged as PR #38 — user: "Looking great for
+a first pass." Phase 2 — true TQ chrome from the game's own art —
+is on `feat/tq-chrome` (PR open): UVC8 cache carries ~20 UI
+textures; `chrome.rs` slices them (caravan frame nine-patch, grid
+cell tiles, keyhole nameplates, leather tabs, gold plate buttons,
+borderitem tooltip frame, parchment doll backdrop) with the
+phase-1 painted theme as fallback everywhere. First live reaction
+mid-build: "oh, it is really starting to look nice!" — formal
+look acceptance still open (tooltips/search/modals unreviewed).
+Next theme steps if wanted: search view + modal chrome, autosort
+buttons. Then the UIX queue in "Next up" (user-listed). Older
+acceptance checks still open: bulk-move toasts (#37), star-hero
+×3 in-game, all-vaults search pass, paper doll in-game load, dll
+patch socketing, the Gorgon rematch on `LootPlusXMAX3Tuned1xBoss`.
 
 - **Repo setting:** PR auto-merge is disabled
   (`enablePullRequestAutoMerge`) — wrap-up's docs PRs can't
@@ -45,10 +43,13 @@ docs PR). Otherwise pick from "Next up".
   attaches permanently-queued phantom check suites to commits —
   uninstall advised (repo Settings → Integrations → GitHub Apps),
   not yet confirmed done.
-- Cache format is `UVC7` (PRs #12/#14, bumped by the
-  socket-any-rarity change): the first app launch after pulling
-  re-imports game data (~8s, background; game volume must be
-  mounted).
+- Cache format is `UVC8` (feat/tq-chrome: chrome textures added;
+  import now also reads `InGameUI.arc` + `XPack/UI.arc`): the
+  first app launch after pulling re-imports game data in the
+  background — over the SMB mount this takes minutes, not the old
+  ~8s; the panes work (fallback theme) throughout. Note: a fully
+  occluded window stops repainting (normal macOS occlusion) — an
+  import can look "stuck at 2%" until the window is uncovered.
 - User in-game checks outstanding (mod acceptance): pet Energy
   ×2.5 / regen ×1.75 on Core Dweller (875 / 5.25 at level 20) and
   Call of the Wild wolves (255 / 3.5); vanilla XP restored
@@ -91,8 +92,8 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#37 all merged; all gates green |
-| `feat/tq-theme` | Titan Quest AE look & feel, phase 1 (palette + fonts) | PR open; awaiting the user's in-app look review |
+| `main` | trunk | PRs #1–#38 all merged; all gates green |
+| `feat/tq-chrome` | TQ look phase 2 — the game's own UI art on the panes | PR open; first live reaction positive, full look review pending |
 
 ## Next up
 
@@ -118,9 +119,6 @@ that's better") and merged as PR #7.
 UIX queue (user-listed 2026-08-27, to address after the theme work;
 order not yet prioritized):
 
-- Inventory tab becomes an exclusive sub-tabbed view — Player
-  (doll) | Main Sack | Sack 1…n — one at a time, replacing the
-  stacked collapsing sections.
 - On launch with no file argument, auto-open the last viewed
   character (recents already persist; open the newest).
 - Toolbar order: "Recent" directly right of "Open character…".
@@ -136,7 +134,23 @@ order not yet prioritized):
 
 ## Most recent meaningful progress
 
-- **2026-08-27 — TQ AE look, phase 1 (feat/tq-theme, PR open).** User
+- **2026-08-27 — TQ AE look, phase 2: the game's own chrome
+  (feat/tq-chrome, PR open).** Design-dialogued (merge #38 first /
+  all six surfaces / iron nameplates — all user-picked): the cache
+  (UVC8) now carries ~20 UI textures pulled at import from
+  `InGameUI.arc` + `XPack/UI.arc` (`CHROME_TEXTURES` manifest;
+  whole textures stored, so slice tuning never re-imports); the new
+  gui `chrome.rs` owns every slice coordinate and paints the
+  caravan window frame (nine-patch), the game's 32×32 beveled grid
+  cells (exact CELL_SIZE match, measured from the art), keyhole
+  iron nameplates, leather tab plates, 3-state gold plate buttons,
+  the borderitem tooltip frame, and a parchment doll backdrop —
+  all falling back to the phase-1 painted theme when chrome is
+  absent. 224 tests. Session lesson recorded in the cache bullet:
+  fully-occluded windows freeze repaints, making imports look
+  hung. Risk: look acceptance pending (first reaction positive);
+  tooltip/search/modal surfaces still phase-1 styled.
+- **2026-08-27 — TQ AE look, phase 1 (PR #38, merged).** User
   ask: the app is feature-rich but looks stock — retheme toward the
   game (reference screenshots in `/Volumes/scott-games/
   tq-ae-designs`). New `theme.rs`: bronze-and-gold palette over dark
@@ -278,24 +292,6 @@ order not yet prioritized):
   guides say several — consolidated since), 4 bytes change,
   reverse byte-identical. Risk: the user pressing Enable and
   socketing an epic in-game is the acceptance test.
-- **2026-08-26 — Auto-refresh: panes follow the files.** User ask
-  (no more Reload button pressing), design-dialogued: prompt on
-  conflict, silent reload when clean. A background thread polls the
-  open character/banks/vault stamps every 2s (stat can hang on SMB —
-  never on the UI thread); a change must hold across two polls
-  before acting (never read the game's file mid-write — the relic
-  bank truncation lesson); own autosaves are recognized by stamp and
-  ignored; reloads defer while a drag/press/text-edit is live.
-  Conflicts: an external change to a dirty pane — or an autosave
-  about to land on an externally-changed file (every save now
-  re-checks freshness first) — suspends autosave and prompts:
-  reload-from-disk or keep-mine (keep-mine re-arms backup-first so
-  the external bytes are backed up before being overwritten; the
-  recorded exception to one-backup-per-load). ARCHITECTURE data-flow
-  amended in-PR. The manual Reload button stays. 170 tests. Risk:
-  feel unverified against the real SMB tree (poll cost, false
-  settles) until the user runs it; a reload that fails mid-conflict
-  leaves the pane clean-but-stale (same as manual Reload).
 
 ## Blocked / waiting
 

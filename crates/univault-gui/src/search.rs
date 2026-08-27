@@ -682,63 +682,72 @@ impl App {
         self.search.total = total;
     }
 
-    /// The whole search surface: header, filter bar, results table.
+    /// The whole search surface: header, filter bar, results table —
+    /// framed like the panes when chrome is loaded.
     pub(crate) fn show_search_ui(&mut self, ui: &mut egui::Ui) -> SearchFrame {
         let mut frame = SearchFrame::default();
         if self.search.stale {
             self.rebuild_search_rows();
         }
-        ui.horizontal(|ui| {
-            if ui
-                .button("← Back")
-                .on_hover_text("Return to the panes (Esc)")
-                .clicked()
+        let pane_chrome = {
+            let db = match &self.game {
+                GameStatus::Loaded(data) => Some(data),
+                _ => None,
+            };
+            self.caches.chrome(ui.ctx(), db)
+        };
+        let chrome_ref = pane_chrome.as_ref();
+        crate::framed_pane(ui, chrome_ref, |ui| {
+            ui.horizontal(|ui| {
+                if crate::plate_button(ui, chrome_ref, true, "← Back")
+                    .on_hover_text("Return to the panes (Esc)")
+                    .clicked()
+                {
+                    frame.leave = true;
+                }
+                if crate::plate_button(ui, chrome_ref, true, "Rescan")
+                    .on_hover_text("Re-list the vaults folder for new or removed files")
+                    .clicked()
+                {
+                    self.rescan_search_docs();
+                }
+                let filtering =
+                    !self.search.draft.is_clear() || self.search.source_filter.is_some();
+                if crate::plate_button(ui, chrome_ref, filtering, "Clear all")
+                    .on_hover_text("Reset every filter — show everything")
+                    .clicked()
+                {
+                    self.search.draft = FilterDraft::default();
+                    self.search.source_filter = None;
+                    self.search.stale = true;
+                }
+                crate::pane_heading(ui, chrome_ref, "Search all vaults");
+                ui.label(format!(
+                    "{} of {} items",
+                    self.search.rows.len(),
+                    self.search.total
+                ));
+                if self.any_dirty() {
+                    ui.weak("Saving…");
+                }
+            });
+            if ui.ctx().input(|input| input.key_pressed(egui::Key::Escape))
+                && ui.ctx().memory(|memory| memory.focused().is_none())
             {
                 frame.leave = true;
             }
-            if ui
-                .button("Rescan")
-                .on_hover_text("Re-list the vaults folder for new or removed files")
-                .clicked()
-            {
-                self.rescan_search_docs();
-            }
-            let filtering = !self.search.draft.is_clear() || self.search.source_filter.is_some();
-            if ui
-                .add_enabled(filtering, egui::Button::new("Clear all"))
-                .on_hover_text("Reset every filter — show everything")
-                .clicked()
-            {
-                self.search.draft = FilterDraft::default();
-                self.search.source_filter = None;
+            let draft_before = self.search.draft.clone();
+            let source_before = self.search.source_filter;
+            self.show_filter_bar(ui);
+            if self.search.draft != draft_before || self.search.source_filter != source_before {
                 self.search.stale = true;
             }
-            ui.label(theme::heading("Search all vaults"));
-            ui.label(format!(
-                "{} of {} items",
-                self.search.rows.len(),
-                self.search.total
-            ));
-            if self.any_dirty() {
-                ui.weak("Saving…");
+            if self.search.stale {
+                self.rebuild_search_rows();
             }
+            ui.separator();
+            self.show_search_table(ui, &mut frame);
         });
-        if ui.ctx().input(|input| input.key_pressed(egui::Key::Escape))
-            && ui.ctx().memory(|memory| memory.focused().is_none())
-        {
-            frame.leave = true;
-        }
-        let draft_before = self.search.draft.clone();
-        let source_before = self.search.source_filter;
-        self.show_filter_bar(ui);
-        if self.search.draft != draft_before || self.search.source_filter != source_before {
-            self.search.stale = true;
-        }
-        if self.search.stale {
-            self.rebuild_search_rows();
-        }
-        ui.separator();
-        self.show_search_table(ui, &mut frame);
         frame
     }
 
@@ -997,7 +1006,9 @@ fn show_row(
     });
     // The game-style tooltip only on the icon — on the whole row it
     // would shadow the stats column at every pointer move.
-    icon_response.on_hover_ui(|ui| item_tooltip(ui, &row.item, db, caches));
+    egui::Tooltip::for_widget(&icon_response)
+        .at_pointer()
+        .show(|ui| item_tooltip(ui, &row.item, db, caches));
     table_row.col(|ui| {
         ui.label(
             egui::RichText::new(&row.name)

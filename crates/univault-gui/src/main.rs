@@ -22,6 +22,7 @@
 //! write path; stashes also get their `.dxg` twin rewritten.
 //! Drag-and-drop routes files by extension.
 
+mod chrome;
 mod safe_write;
 mod search;
 mod theme;
@@ -363,9 +364,37 @@ struct Caches {
     names: NameCache,
     footprints: HashMap<String, (i32, i32)>,
     icons: HashMap<String, Option<egui::TextureHandle>>,
+    chrome: ChromeSlot,
+}
+
+/// Chrome upload state: tried-and-absent is remembered so a cache
+/// without chrome isn't re-asked every frame. Import completion
+/// resets `Caches`, which retries.
+#[derive(Default)]
+enum ChromeSlot {
+    #[default]
+    Untried,
+    Missing,
+    Ready(Box<chrome::Chrome>),
 }
 
 impl Caches {
+    /// The game-art chrome, uploaded once per session. A cheap clone
+    /// (texture handles are `Arc`s) so callers keep `Caches`
+    /// borrowable.
+    fn chrome(&mut self, ctx: &egui::Context, db: Option<&GameCache>) -> Option<chrome::Chrome> {
+        if matches!(self.chrome, ChromeSlot::Untried) {
+            self.chrome = match db.and_then(|db| chrome::Chrome::load(ctx, db)) {
+                Some(loaded) => ChromeSlot::Ready(Box::new(loaded)),
+                None => ChromeSlot::Missing,
+            };
+        }
+        match &self.chrome {
+            ChromeSlot::Ready(loaded) => Some((**loaded).clone()),
+            ChromeSlot::Untried | ChromeSlot::Missing => None,
+        }
+    }
+
     fn footprint(&mut self, db: Option<&GameCache>, item: &Item) -> (i32, i32) {
         if let Some(cached) = self.footprints.get(item.base.as_str()) {
             return *cached;
@@ -509,6 +538,8 @@ struct App {
     /// The Game.dll socket-patch dialog, holding the inspected file
     /// while open.
     dll_patch: Option<DllPatchDialog>,
+    show_help: bool,
+    inventory_tab: InventoryTab,
     watcher: FileWatcher,
     refresh: RefreshTracker,
     /// Documents whose file changed on disk while they hold unsaved
@@ -573,6 +604,8 @@ impl App {
             drag: None,
             pending_zoom: 1.0,
             dll_patch: None,
+            show_help: false,
+            inventory_tab: InventoryTab::Equipment,
             watcher: start_watcher(),
             refresh: RefreshTracker::default(),
             conflicts: Vec::new(),
@@ -1231,6 +1264,112 @@ impl App {
             | GridId::Shared
             | GridId::Relic => self.send_left_to_vault(grid, index),
             GridId::VaultTab(_) | GridId::SearchDoc { .. } => self.send_vault_to_left(grid, index),
+        }
+    }
+
+    /// The one-time game-data import, as a modal over the UI.
+    fn show_import_modal(&self, ctx: &egui::Context) {
+        let GameStatus::Importing(job) = &self.game else {
+            return;
+        };
+        egui::Modal::new(egui::Id::new("import-modal")).show(ctx, |ui| {
+            ui.set_width(420.0);
+            ui.label(theme::heading("Importing game data"));
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(&job.progress.label);
+            });
+            ui.add(egui::ProgressBar::new(job.progress.fraction.unwrap_or(0.0)).show_percentage());
+            ui.add_space(4.0);
+            ui.weak("One time after installing or updating the game — the cache remembers.");
+        });
+        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+    }
+
+    /// The gestures-and-behaviors reference, sectioned — opened from
+    /// the toolbar's Help button.
+    fn show_help_modal(&mut self, ctx: &egui::Context) {
+        if !self.show_help {
+            return;
+        }
+        let mut close = false;
+        let modal = egui::Modal::new(egui::Id::new("help-modal")).show(ctx, |ui| {
+            ui.set_max_width(560.0);
+            ui.label(theme::heading("How TQ UniVault works"));
+            egui::ScrollArea::vertical()
+                .max_height(440.0)
+                .show(ui, |ui| {
+                    help_section(
+                        ui,
+                        "Opening files",
+                        &[
+                            "Open (or drop) a Player.chr — its character bank and the \
+                         account's shared and relic banks load beside it as tabs.",
+                            "A stash (.dxb / .dxg) or another vault (.json, legacy .vault) \
+                         opens on its own.",
+                            "The default vault opens at launch; the vault pane shows one \
+                         tab at a time — pick it in the strip.",
+                        ],
+                    );
+                    help_section(
+                        ui,
+                        "Moving items",
+                        &[
+                            "Drag an item between any two grids.",
+                            "Right-click sends it to the other pane's open tab; \
+                         Shift+Right-click sends a copy.",
+                            "Shift+Click duplicates in place.",
+                            "\"All → Vault\" and \"Copy all → Vault\" move a whole tab, \
+                         spilling into the next vault tabs as each fills.",
+                        ],
+                    );
+                    help_section(
+                        ui,
+                        "Equipment",
+                        &[
+                            "The paper doll on the Inventory tab is the worn gear: drag \
+                         off it to unequip, drag onto a glowing slot to equip.",
+                        ],
+                    );
+                    help_section(
+                        ui,
+                        "Relics, charms & artifacts",
+                        &[
+                            "Drag a relic or charm onto gear its type rules allow to \
+                         socket it — any rarity, epics and legendaries included.",
+                            "Alt+Click an item with a socketed relic/charm to extract \
+                         it — both kept.",
+                            "Double-click a completed relic, charm, or artifact to \
+                         (re)pick its completion bonus.",
+                        ],
+                    );
+                    help_section(
+                        ui,
+                        "Search",
+                        &[
+                            "\"Search vaults…\" (⌘F) opens one filterable table over \
+                         every vault file.",
+                            "Rows take the same gestures as grid items; double-click \
+                         shows an item at home in its vault.",
+                        ],
+                    );
+                    help_section(
+                        ui,
+                        "Saving",
+                        &[
+                            "Every edit autosaves after a short quiet pause — there are \
+                         no save buttons.",
+                            "The first write since a file was loaded stores a backup \
+                         beside it; Reload re-reads everything from disk.",
+                        ],
+                    );
+                });
+            ui.add_space(8.0);
+            close = ui.button("Close").clicked();
+        });
+        if close || modal.should_close() {
+            self.show_help = false;
         }
     }
 
@@ -2065,6 +2204,17 @@ fn run_import(
             stamps.push(stamp);
         }
     }
+    // Immortal Throne's UI.arc first: it carries the caravan art the
+    // chrome manifest centers on.
+    for relative in ["Resources/XPack/UI.arc", "Resources/InGameUI.arc"] {
+        report(format!("Reading UI chrome ({relative})…"), None);
+        if let Ok((bytes, stamp)) = read_stamped(&dir.join(relative))
+            && let Ok(archive) = univault_core::arc::ArcFile::parse(bytes)
+        {
+            data.add_ui_archive(archive);
+            stamps.push(stamp);
+        }
+    }
     let cache = data.build_cache_with_progress(stamps, |scanned, total| {
         report(
             format!("Distilling item records… {scanned} / {total}"),
@@ -2113,11 +2263,22 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let db = match &self.game {
+            GameStatus::Loaded(data) => Some(data),
+            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
+        };
+        if let Some(chrome) = self.caches.chrome(ui.ctx(), db) {
+            chrome.backdrop(ui.painter(), ui.ctx().content_rect(), STONE_TINT);
+        }
         egui::Frame::NONE
             .inner_margin(egui::Margin::same(10))
             .show(ui, |ui| self.main_ui(ui));
     }
 }
+
+/// The stone backdrop is the character screen's parchment, darkened
+/// so cream text outside the panes stays readable.
+const STONE_TINT: egui::Color32 = egui::Color32::from_gray(150);
 
 impl App {
     fn main_ui(&mut self, ui: &mut egui::Ui) {
@@ -2162,6 +2323,7 @@ impl App {
                         self.status = Some(self.bulk_left_to_vault(BulkMode::Copy));
                     }
                     Some(PaneAction::MoveToFile) => self.status = Some(self.move_vault_to_left()),
+                    Some(PaneAction::OpenSearch) => self.enter_search(),
                     Some(PaneAction::PreviewRespec(kind)) => self.preview_respec(kind),
                     None => {}
                 }
@@ -2194,9 +2356,18 @@ impl App {
         self.show_reload_modal(ui.ctx());
         self.show_bonus_modal(ui.ctx());
         self.show_dll_patch_modal(ui.ctx());
+        self.show_help_modal(ui.ctx());
+        self.show_import_modal(ui.ctx());
         self.show_conflict_modal(ui.ctx());
         self.show_toasts(ui.ctx());
     }
+}
+
+/// The Inventory view's exclusive sub-tab: the doll, or one sack.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InventoryTab {
+    Equipment,
+    Sack(usize),
 }
 
 enum PaneAction {
@@ -2205,6 +2376,7 @@ enum PaneAction {
     CopyAllToVault,
     MoveToFile,
     PreviewRespec(RespecKind),
+    OpenSearch,
 }
 
 /// Whether a bulk send drains the source or leaves it untouched.
@@ -2322,42 +2494,45 @@ impl App {
             || self.bank.is_some()
             || self.shared.is_some()
             || self.relics.is_some();
+        let db = match &self.game {
+            GameStatus::Loaded(data) => Some(data),
+            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
+        };
+        let pane_chrome = self.caches.chrome(ui.ctx(), db);
+        let pane_chrome = pane_chrome.as_ref();
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Open character…").clicked() {
+            if plate_button(ui, pane_chrome, true, "Open character…").clicked() {
                 requested = pick_file(
                     "Character / stash",
                     &["chr", "dxb", "dxg"],
                     self.dialog_start_dir(),
                 );
             }
-            if ui
-                .add_enabled(has_left, egui::Button::new("Reload"))
+            if plate_button(ui, pane_chrome, has_left, "Reload")
                 .on_hover_text("Re-read the character and all banks from disk")
                 .clicked()
             {
                 reload_requested = true;
             }
-            if ui.button("Open vault…").clicked() {
+            if plate_button(ui, pane_chrome, true, "Open vault…").clicked() {
                 requested = pick_file("Vault", &["json", "vault"], self.dialog_start_dir());
             }
-            if ui
-                .add_enabled(
-                    matches!(self.game, GameStatus::Loaded(_)),
-                    egui::Button::new("Search vaults…"),
-                )
-                .on_hover_text(
-                    "One filterable table of every item in every vault (⌘F / Ctrl+F). \
-                     Needs imported game data.",
-                )
-                .clicked()
+            if plate_button(
+                ui,
+                pane_chrome,
+                matches!(self.game, GameStatus::Loaded(_)),
+                "Search vaults…",
+            )
+            .on_hover_text(
+                "One filterable table of every item in every vault (⌘F / Ctrl+F). \
+                 Needs imported game data.",
+            )
+            .clicked()
             {
                 self.enter_search();
             }
             let importing = matches!(self.game, GameStatus::Importing(_));
-            if ui
-                .add_enabled(!importing, egui::Button::new("Import game data…"))
-                .clicked()
-            {
+            if plate_button(ui, pane_chrome, !importing, "Import game data…").clicked() {
                 let start = stored_game_dir();
                 let mut dialog = rfd::FileDialog::new();
                 if let Some(start) = start {
@@ -2368,20 +2543,19 @@ impl App {
                     self.game_note = None;
                 }
             }
-            ui.menu_button("Recent", |ui| {
+            let recent = plate_button(ui, pane_chrome, true, "Recent");
+            egui::Popup::menu(&recent).show(|ui| {
                 if self.recents.entries.is_empty() {
                     ui.weak("nothing yet");
                 }
                 for path in &self.recents.entries {
                     if ui.button(Recents::label(path)).clicked() {
                         requested = Some(path.clone());
-                        ui.close();
                     }
                 }
             });
             if stored_game_dir().is_some()
-                && ui
-                    .button("Socket patch…")
+                && plate_button(ui, pane_chrome, true, "Socket patch…")
                     .on_hover_text(
                         "Toggle the Game.dll socket-gate patch: lets the game itself \
                          accept relics/charms on Epic and Legendary items",
@@ -2389,6 +2563,9 @@ impl App {
                     .clicked()
             {
                 self.open_dll_patch_dialog();
+            }
+            if plate_button(ui, pane_chrome, true, "Help…").clicked() {
+                self.show_help = true;
             }
         });
         (requested, reload_requested)
@@ -2411,20 +2588,7 @@ impl App {
             ui.colored_label(ui.visuals().warn_fg_color, note);
         }
         match &self.game {
-            GameStatus::Loaded(_) => {}
-            GameStatus::Importing(job) => {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(&job.progress.label);
-                });
-                ui.add(
-                    egui::ProgressBar::new(job.progress.fraction.unwrap_or(0.0))
-                        .desired_width(360.0)
-                        .show_percentage(),
-                );
-                ui.ctx()
-                    .request_repaint_after(std::time::Duration::from_millis(100));
-            }
+            GameStatus::Loaded(_) | GameStatus::Importing(_) => {}
             GameStatus::Absent => {
                 ui.weak(
                     "No game data imported yet — use 'Import game data…' and pick your \
@@ -2443,24 +2607,13 @@ impl App {
             && self.shared.is_none()
             && self.relics.is_none()
         {
+            ui.add_space(12.0);
             ui.label(theme::heading("TQ UniVault"));
             ui.label(
-                "Open (or drop) a Player.chr — its bank and the shared and relic banks load \
-                 with it as tabs. A stash (.dxb/.dxg) or another vault (.json / legacy \
-                 .vault) opens alone too. The vault shows one tab at a time — pick \
-                 it in the strip. Right-click sends an item to the other pane, \
-                 landing in that pane's open tab; Shift+Right-click sends a copy; \
-                 Shift+Click duplicates in place; double-click a completed relic, \
-                 charm, or artifact to change its completion bonus; Alt+Click an \
-                 item with a socketed relic/charm to extract it — both kept; drag \
-                 a relic/charm onto gear its type rules allow to socket it — any \
-                 rarity, epics and legendaries included. The character's worn \
-                 equipment is the paper doll on the Inventory tab: drag items off \
-                 it or onto a glowing slot to equip them. 'Search vaults…' (⌘F) \
-                 opens one filterable table over every vault file — the same \
-                 gestures work on its rows, and double-click shows an item at \
-                 home in its vault.",
+                "Open (or drop) a Player.chr to begin — its banks load beside it \
+                 as tabs, and the default vault is already open on the right.",
             );
+            ui.label("Every gesture and behavior is described under Help…");
         }
     }
 
@@ -3445,11 +3598,13 @@ impl App {
                     shared: &mut self.shared,
                     relics: &mut self.relics,
                     active_tab: &mut self.active_tab,
+                    inventory_tab: &mut self.inventory_tab,
                     selected: &mut self.left_selected,
                 };
-                egui::ScrollArea::vertical()
-                    .id_salt("file-pane")
-                    .show(&mut columns[0], |ui| {
+                let pane_chrome = caches.chrome(columns[0].ctx(), db);
+                framed_pane(&mut columns[0], pane_chrome.as_ref(), |ui| {
+                    let active = show_left_tabs(ui, &mut view, pane_chrome.as_ref());
+                    anchored_panel(ui, pane_chrome.as_ref(), active, |ui| {
                         if let Some(chosen) = show_left_column(
                             ui,
                             &mut view,
@@ -3462,21 +3617,28 @@ impl App {
                             action = Some(chosen);
                         }
                     });
+                });
             } else {
                 columns[0].weak("No game file loaded.");
             }
             if let Some(pane) = &mut self.right {
-                if let Some(chosen) = show_vault_pane(
-                    &mut columns[1],
-                    pane,
-                    db,
-                    caches,
-                    can_move,
-                    drag.as_ref(),
-                    &mut frame,
-                ) {
-                    action = Some(chosen);
-                }
+                let pane_chrome = caches.chrome(columns[1].ctx(), db);
+                framed_pane(&mut columns[1], pane_chrome.as_ref(), |ui| {
+                    let active = show_vault_tabs(ui, pane, pane_chrome.as_ref(), drag.as_ref());
+                    anchored_panel(ui, pane_chrome.as_ref(), active, |ui| {
+                        if let Some(chosen) = show_vault_pane(
+                            ui,
+                            pane,
+                            db,
+                            caches,
+                            can_move,
+                            drag.as_ref(),
+                            &mut frame,
+                        ) {
+                            action = Some(chosen);
+                        }
+                    });
+                });
             } else {
                 columns[1].weak("No vault loaded.");
             }
@@ -3485,8 +3647,246 @@ impl App {
     }
 }
 
-/// On-screen size of one grid cell — the textures' native 32 pixels.
+/// The Inventory view's exclusive sub-tab strip:
+/// Equipment | Main Sack | Sack 1 | … | Sack n. Mid-drag, pointing
+/// at a tab switches to it so a drop can land in any sack or on the
+/// doll.
+fn show_inventory_tabs(
+    ui: &mut egui::Ui,
+    pane: &CharacterPane,
+    db: Option<&GameCache>,
+    caches: &mut Caches,
+    inventory_tab: &mut InventoryTab,
+    selected: &mut Option<(GridId, usize)>,
+    drag: Option<&DragState>,
+) -> Option<(egui::Rect, String)> {
+    let pane_chrome = caches.chrome(ui.ctx(), db);
+    let cursor = ui.ctx().pointer_latest_pos();
+    let mut active = None;
+    ui.horizontal_wrapped(|ui| {
+        let mut tab_button = |ui: &mut egui::Ui, target: InventoryTab, label: &str| {
+            let selected_tab = *inventory_tab == target;
+            let response = match pane_chrome.as_ref() {
+                Some(pane_chrome) => pane_chrome.tab(ui, selected_tab, true, label),
+                None => ui.add(egui::Button::selectable(selected_tab, label)),
+            };
+            if selected_tab {
+                active = Some((response.rect, label.to_owned()));
+            }
+            let drag_over =
+                drag.is_some() && cursor.is_some_and(|cursor| response.rect.contains(cursor));
+            if (response.clicked() || drag_over) && *inventory_tab != target {
+                *inventory_tab = target;
+                *selected = None;
+            }
+        };
+        tab_button(ui, InventoryTab::Equipment, "Equipment");
+        for (index, sack) in pane.character.sacks.iter().enumerate() {
+            let label = if index == 0 {
+                format!("Main Sack ({})", sack.items.len())
+            } else {
+                format!("Sack {} ({})", index, sack.items.len())
+            };
+            tab_button(ui, InventoryTab::Sack(index), &label);
+        }
+    });
+    active
+}
+
+/// Allocates the doll's canvas centered in the pane, scaled to fill
+/// the available width.
+fn allocate_doll_canvas(ui: &mut egui::Ui) -> (egui::Rect, egui::Response, f32) {
+    let cell = fit_cell_size(
+        ui.available_size() - egui::vec2(0.0, 12.0),
+        (DOLL_CELLS.0 + 1, DOLL_CELLS.1 + 1),
+    );
+    let pad = cell * 0.5;
+    let size = egui::vec2(
+        cells_at(DOLL_CELLS.0, cell) + 2.0 * pad,
+        cells_at(DOLL_CELLS.1, cell) + 2.0 * pad,
+    );
+    let pad = ((ui.available_width() - size.x) / 2.0).max(0.0);
+    let (rect, response) = ui
+        .horizontal(|ui| {
+            ui.add_space(pad);
+            ui.allocate_exact_size(size, egui::Sense::click_and_drag())
+        })
+        .inner;
+    (rect, response, cell)
+}
+
+/// The doll's canvas: light flagstone near full brightness, or the
+/// painted fallback.
+fn paint_doll_canvas(
+    painter: &egui::Painter,
+    doll_chrome: Option<&chrome::Chrome>,
+    rect: egui::Rect,
+    visuals: &egui::Visuals,
+) {
+    match doll_chrome {
+        Some(pane_chrome) => pane_chrome.backdrop(painter, rect, egui::Color32::from_gray(235)),
+        None => {
+            painter.rect_filled(rect, 2.0, visuals.extreme_bg_color);
+        }
+    }
+}
+
+/// A doll slot's backdrop: the slot's own engraved plate from the
+/// character screen, or the painted fallback fill.
+fn paint_slot_inset(
+    painter: &egui::Painter,
+    doll_chrome: Option<&chrome::Chrome>,
+    slot: EquipSlot,
+    box_rect: egui::Rect,
+) {
+    match doll_chrome {
+        Some(pane_chrome) => {
+            pane_chrome.slot_plate(painter, slot_plate_of(slot), box_rect);
+        }
+        None => {
+            painter.rect_filled(box_rect, 2.0, theme::SURFACE_DEEP.gamma_multiply(0.85));
+        }
+    }
+}
+
+/// The engraved character-screen plate that backs each doll slot.
+fn slot_plate_of(slot: EquipSlot) -> chrome::SlotPlate {
+    match slot {
+        EquipSlot::Head => chrome::SlotPlate::Helm,
+        EquipSlot::Neck => chrome::SlotPlate::Amulet,
+        EquipSlot::Torso => chrome::SlotPlate::Torso,
+        EquipSlot::Legs => chrome::SlotPlate::Legs,
+        EquipSlot::Arms => chrome::SlotPlate::Arms,
+        EquipSlot::Ring1 | EquipSlot::Ring2 => chrome::SlotPlate::Ring,
+        EquipSlot::LeftHand | EquipSlot::LeftHandAlternate => chrome::SlotPlate::WeaponLeft,
+        EquipSlot::RightHand | EquipSlot::RightHandAlternate => chrome::SlotPlate::WeaponRight,
+        EquipSlot::Artifact => chrome::SlotPlate::Artifact,
+    }
+}
+
+/// One Help-modal section: a gold section title over bulleted,
+/// wrapping lines.
+fn help_section(ui: &mut egui::Ui, title: &str, lines: &[&str]) {
+    ui.add_space(10.0);
+    ui.label(theme::section(title));
+    for line in lines {
+        ui.label(format!("•  {line}"));
+    }
+}
+
+/// A pane heading: the iron nameplate under chrome, gold classical
+/// text otherwise.
+fn pane_heading(ui: &mut egui::Ui, pane_chrome: Option<&chrome::Chrome>, text: &str) {
+    match pane_chrome {
+        Some(pane_chrome) => pane_chrome.nameplate(ui, text),
+        None => {
+            ui.label(theme::heading(text));
+        }
+    }
+}
+
+/// An action button: the game's gold plate under chrome, a themed
+/// egui button otherwise.
+fn plate_button(
+    ui: &mut egui::Ui,
+    pane_chrome: Option<&chrome::Chrome>,
+    enabled: bool,
+    text: &str,
+) -> egui::Response {
+    match pane_chrome {
+        Some(pane_chrome) => pane_chrome.button(ui, enabled, text),
+        None => ui.add_enabled(enabled, egui::Button::new(text)),
+    }
+}
+
+/// The bordered panel a tab strip owns, inside a framed pane: the
+/// content wrapped in the caravan band on all four sides (the same
+/// frame the pane wears), with the active tab repainted merging
+/// into the band's top.
+fn anchored_panel(
+    ui: &mut egui::Ui,
+    pane_chrome: Option<&chrome::Chrome>,
+    active: Option<(egui::Rect, String)>,
+    add: impl FnOnce(&mut egui::Ui),
+) {
+    let Some(pane_chrome) = pane_chrome else {
+        ui.separator();
+        add(ui);
+        return;
+    };
+    ui.add_space(2.0);
+    let inner = egui::Frame::NONE
+        .inner_margin(egui::Margin::same(20))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.set_min_height(ui.available_height());
+            add(ui);
+        });
+    let rect = inner.response.rect;
+    let content = rect.shrink(20.0);
+    chrome::inner_shadow(ui.painter(), content, 12.0);
+    pane_chrome.leather_frame(ui.painter(), rect);
+    if let Some((tab_rect, label)) = active {
+        chrome::tab_anchor(
+            pane_chrome,
+            ui.painter(),
+            tab_rect,
+            &label,
+            rect.min.y + 11.0,
+        );
+    }
+}
+
+/// Wraps a pane in the caravan window frame when chrome is loaded:
+/// content sits inside [`chrome::FRAME_MARGIN`], the frame paints
+/// over the reserved bands, and the pane fills the viewport height
+/// so the frame encloses the whole column.
+fn framed_pane(
+    ui: &mut egui::Ui,
+    pane_chrome: Option<&chrome::Chrome>,
+    add: impl FnOnce(&mut egui::Ui),
+) {
+    let Some(pane_chrome) = pane_chrome else {
+        add(ui);
+        return;
+    };
+    // Painted up front over the predicted rect (the pane fills its
+    // column) so content never sits on the stone backdrop.
+    pane_chrome.interior(ui.painter(), ui.available_rect_before_wrap());
+    let response = egui::Frame::NONE
+        .inner_margin(chrome::FRAME_MARGIN)
+        .show(ui, |ui| {
+            ui.set_min_height(ui.available_height());
+            add(ui);
+        });
+    let rect = response.response.rect;
+    let content = egui::Rect::from_min_max(
+        rect.min + egui::vec2(30.0, 35.0),
+        rect.max - egui::vec2(30.0, 35.0),
+    );
+    chrome::inner_shadow(ui.painter(), content, 14.0);
+    pane_chrome.pane_frame(ui.painter(), rect);
+}
+
+/// Native size of one grid cell — the textures' 32 pixels; grids
+/// scale their on-screen cell up from this to fill their pane.
 const CELL_SIZE: f32 = 32.0;
+
+/// The on-screen cell size that fits `dims` into the available
+/// space with no scrolling: bounded by width and height, capped at
+/// 2× native so icons stay crisp, floored so cells stay integral.
+#[allow(clippy::cast_precision_loss)] // grid dimensions are tiny
+fn fit_cell_size(available: egui::Vec2, dims: (i32, i32)) -> f32 {
+    let by_width = (available.x - 4.0) / dims.0.max(1) as f32;
+    let by_height = (available.y - 4.0) / dims.1.max(1) as f32;
+    by_width.min(by_height).floor().clamp(20.0, CELL_SIZE * 2.0)
+}
+
+// Grid coordinates are small integers; f32 represents them exactly.
+#[allow(clippy::cast_precision_loss)]
+fn cells_at(cells: i32, cell: f32) -> f32 {
+    cells as f32 * cell
+}
 
 // Grid coordinates are small integers; f32 represents them exactly.
 #[allow(clippy::cast_precision_loss)]
@@ -3615,29 +4015,22 @@ fn grid_view(
     drag: Option<&DragState>,
     frame: &mut DragFrame,
 ) {
-    let size = egui::vec2(cells_to_points(dims.0), cells_to_points(dims.1));
-    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+    let cell = fit_cell_size(ui.available_size(), dims);
+    let size = egui::vec2(cells_at(dims.0, cell), cells_at(dims.1, cell));
+    let pad = ((ui.available_width() - size.x) / 2.0).max(0.0);
+    let (rect, response) = ui
+        .horizontal(|ui| {
+            ui.add_space(pad);
+            ui.allocate_exact_size(size, egui::Sense::click_and_drag())
+        })
+        .inner;
     if !ui.is_rect_visible(rect) {
         return;
     }
     let painter = ui.painter_at(rect);
     let visuals = ui.visuals().clone();
-    painter.rect_filled(rect, 2.0, theme::GRID_BG);
-    let grid_stroke = egui::Stroke::new(0.5, theme::GRID_LINE);
-    for column in 0..=dims.0 {
-        let x = rect.min.x + cells_to_points(column);
-        painter.line_segment(
-            [egui::pos2(x, rect.min.y), egui::pos2(x, rect.max.y)],
-            grid_stroke,
-        );
-    }
-    for row in 0..=dims.1 {
-        let y = rect.min.y + cells_to_points(row);
-        painter.line_segment(
-            [egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)],
-            grid_stroke,
-        );
-    }
+    let grid_chrome = caches.chrome(ui.ctx(), db);
+    paint_grid_background(&painter, grid_chrome.as_ref(), rect, dims, cell);
 
     // The grab position decides which item a starting drag lifts —
     // the pointer may already have moved past egui's drag threshold.
@@ -3649,10 +4042,10 @@ fn grid_view(
         let item_rect = egui::Rect::from_min_size(
             rect.min
                 + egui::vec2(
-                    cells_to_points(item.position.x),
-                    cells_to_points(item.position.y),
+                    cells_at(item.position.x, cell),
+                    cells_at(item.position.y, cell),
                 ),
-            egui::vec2(cells_to_points(width), cells_to_points(height)),
+            egui::vec2(cells_at(width, cell), cells_at(height, cell)),
         )
         .shrink(1.0);
         let is_selected = *selected == Some((grid, *index));
@@ -3694,7 +4087,9 @@ fn grid_view(
         }
     }
     if let Some(item) = hovered {
-        response.on_hover_ui(|ui| item_tooltip(ui, item, db, caches));
+        egui::Tooltip::for_widget(&response)
+            .at_pointer()
+            .show(|ui| item_tooltip(ui, item, db, caches));
     }
 
     if let Some(state) = drag
@@ -3702,9 +4097,69 @@ fn grid_view(
         && rect.contains(pointer)
     {
         frame.candidate = Some(paint_drop_preview(
-            &painter, rect, dims, entries, grid, state, pointer, db, caches,
+            &painter, rect, cell, dims, entries, grid, state, pointer, db, caches,
         ));
     }
+}
+
+/// The grid's cell art (or painted fallback lines) behind items.
+fn paint_grid_background(
+    painter: &egui::Painter,
+    grid_chrome: Option<&chrome::Chrome>,
+    rect: egui::Rect,
+    dims: (i32, i32),
+    cell: f32,
+) {
+    if let Some(grid_chrome) = grid_chrome {
+        for row in 0..dims.1 {
+            for column in 0..dims.0 {
+                let tile = egui::Rect::from_min_size(
+                    rect.min + egui::vec2(cells_at(column, cell), cells_at(row, cell)),
+                    egui::vec2(cell, cell),
+                );
+                grid_chrome.grid_cell(painter, tile);
+            }
+        }
+    } else {
+        painter.rect_filled(rect, 2.0, theme::GRID_BG);
+        let grid_stroke = egui::Stroke::new(0.5, theme::GRID_LINE);
+        for column in 0..=dims.0 {
+            let x = rect.min.x + cells_at(column, cell);
+            painter.line_segment(
+                [egui::pos2(x, rect.min.y), egui::pos2(x, rect.max.y)],
+                grid_stroke,
+            );
+        }
+        for row in 0..=dims.1 {
+            let y = rect.min.y + cells_at(row, cell);
+            painter.line_segment(
+                [egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)],
+                grid_stroke,
+            );
+        }
+    }
+}
+
+/// The green-fits / red-blocked footprint under a drag.
+fn paint_fit_preview(painter: &egui::Painter, preview: egui::Rect, fits: bool) {
+    let (fill, stroke) = if fits {
+        (
+            egui::Color32::from_rgba_unmultiplied(64, 255, 64, 50),
+            egui::Color32::from_rgb(64, 255, 64),
+        )
+    } else {
+        (
+            egui::Color32::from_rgba_unmultiplied(255, 64, 64, 50),
+            egui::Color32::from_rgb(255, 64, 64),
+        )
+    };
+    painter.rect_filled(preview, 2.0, fill);
+    painter.rect_stroke(
+        preview,
+        2.0,
+        egui::Stroke::new(2.0, stroke),
+        egui::StrokeKind::Inside,
+    );
 }
 
 /// One item's tile: fill, icon (or initial letter), outline, and
@@ -3771,6 +4226,7 @@ fn paint_item_tile(
 fn paint_drop_preview(
     painter: &egui::Painter,
     rect: egui::Rect,
+    cell_size: f32,
     dims: (i32, i32),
     entries: &[(usize, &Item)],
     grid: GridId,
@@ -3782,8 +4238,8 @@ fn paint_drop_preview(
     let footprint = caches.footprint(db, &state.item);
     let relative = cursor - state.grab - rect.min.to_vec2();
     let cell = univault_core::chr::GridPos {
-        x: point_to_cell(relative.x, dims.0, footprint.0),
-        y: point_to_cell(relative.y, dims.1, footprint.1),
+        x: point_to_cell(relative.x, cell_size, dims.0, footprint.0),
+        y: point_to_cell(relative.y, cell_size, dims.1, footprint.1),
     };
     // A matching partial relic/charm under the pointer offers a
     // combine instead of a placement (gold); gear whose family the
@@ -3801,10 +4257,10 @@ fn paint_drop_preview(
         let item_rect = egui::Rect::from_min_size(
             rect.min
                 + egui::vec2(
-                    cells_to_points(item.position.x),
-                    cells_to_points(item.position.y),
+                    cells_at(item.position.x, cell_size),
+                    cells_at(item.position.y, cell_size),
                 ),
-            egui::vec2(cells_to_points(width), cells_to_points(height)),
+            egui::vec2(cells_at(width, cell_size), cells_at(height, cell_size)),
         )
         .shrink(1.0);
         if item_rect.contains(cursor) {
@@ -3850,28 +4306,14 @@ fn paint_drop_preview(
         .collect();
     let fits = transfer::fits_at(&occupied, footprint, cell, dims);
     let preview = egui::Rect::from_min_size(
-        rect.min + egui::vec2(cells_to_points(cell.x), cells_to_points(cell.y)),
-        egui::vec2(cells_to_points(footprint.0), cells_to_points(footprint.1)),
+        rect.min + egui::vec2(cells_at(cell.x, cell_size), cells_at(cell.y, cell_size)),
+        egui::vec2(
+            cells_at(footprint.0, cell_size),
+            cells_at(footprint.1, cell_size),
+        ),
     )
     .shrink(1.0);
-    let (fill, stroke) = if fits {
-        (
-            egui::Color32::from_rgba_unmultiplied(64, 255, 64, 50),
-            egui::Color32::from_rgb(64, 255, 64),
-        )
-    } else {
-        (
-            egui::Color32::from_rgba_unmultiplied(255, 64, 64, 50),
-            egui::Color32::from_rgb(255, 64, 64),
-        )
-    };
-    painter.rect_filled(preview, 2.0, fill);
-    painter.rect_stroke(
-        preview,
-        2.0,
-        egui::Stroke::new(2.0, stroke),
-        egui::StrokeKind::Inside,
-    );
+    paint_fit_preview(painter, preview, fits);
     DropCandidate {
         grid,
         cell,
@@ -3914,8 +4356,8 @@ fn entropy_roll() -> u64 {
 /// The grid cell a point lands in, clamped so the footprint stays
 /// inside the container.
 #[allow(clippy::cast_possible_truncation)] // grid coordinates are tiny
-fn point_to_cell(point: f32, grid_cells: i32, footprint_cells: i32) -> i32 {
-    let cell = (point / CELL_SIZE).round() as i32;
+fn point_to_cell(point: f32, cell_size: f32, grid_cells: i32, footprint_cells: i32) -> i32 {
+    let cell = (point / cell_size).round() as i32;
     cell.clamp(0, (grid_cells - footprint_cells).max(0))
 }
 
@@ -3925,10 +4367,16 @@ fn point_to_cell(point: f32, grid_cells: i32, footprint_cells: i32) -> i32 {
 fn item_tooltip(ui: &mut egui::Ui, item: &Item, db: Option<&GameCache>, caches: &mut Caches) {
     let item_style = style::item_style(db, item);
     let details = db.map(|db| stats::item_details(db, item));
-    egui::Frame::NONE
+    let pane_chrome = caches.chrome(ui.ctx(), db);
+    let bordered = pane_chrome.is_some();
+    let response = egui::Frame::NONE
         .fill(theme::POPUP)
-        .stroke(egui::Stroke::new(1.0, theme::GOLD_DIM))
-        .corner_radius(egui::CornerRadius::same(3))
+        .stroke(if bordered {
+            egui::Stroke::NONE
+        } else {
+            egui::Stroke::new(1.0, theme::GOLD_DIM)
+        })
+        .corner_radius(egui::CornerRadius::same(if bordered { 0 } else { 3 }))
         .inner_margin(egui::Margin::same(8))
         .show(ui, |ui| {
             ui.style_mut().visuals.override_text_color = Some(theme::TEXT);
@@ -3959,6 +4407,9 @@ fn item_tooltip(ui: &mut egui::Ui, item: &Item, db: Option<&GameCache>, caches: 
                 }
             }
         });
+    if let Some(pane_chrome) = pane_chrome {
+        pane_chrome.tooltip_frame(ui.painter(), response.response.rect);
+    }
 }
 
 /// The game's full item name: prefix, quality, base, style, suffix,
@@ -3994,7 +4445,7 @@ fn game_color(rgb: style::Rgb) -> egui::Color32 {
 }
 
 /// The paper doll's canvas in grid cells.
-const DOLL_CELLS: (i32, i32) = (9, 14);
+const DOLL_CELLS: (i32, i32) = (10, 14);
 
 /// `TQVaultAE`'s paper-doll geometry (MIT, `SackCollection.cs`): a
 /// slot's top-left cell and size on the doll canvas.
@@ -4017,8 +4468,8 @@ fn doll_geometry(slot: EquipSlot) -> (i32, i32, i32, i32) {
 
 /// The worn item's tile inside its slot box: native cell size,
 /// centered, downscaled only when it outgrows the box.
-fn doll_item_rect(box_rect: egui::Rect, footprint: (i32, i32)) -> egui::Rect {
-    let native = egui::vec2(cells_to_points(footprint.0), cells_to_points(footprint.1));
+fn doll_item_rect(box_rect: egui::Rect, cell: f32, footprint: (i32, i32)) -> egui::Rect {
+    let native = egui::vec2(cells_at(footprint.0, cell), cells_at(footprint.1, cell));
     let scale = (box_rect.width() / native.x)
         .min(box_rect.height() / native.y)
         .min(1.0);
@@ -4131,37 +4582,41 @@ fn show_equipment_doll(
     drag: Option<&DragState>,
     frame: &mut DragFrame,
 ) {
-    let size = egui::vec2(cells_to_points(DOLL_CELLS.0), cells_to_points(DOLL_CELLS.1));
-    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+    let (rect, response, cell) = allocate_doll_canvas(ui);
     if !ui.is_rect_visible(rect) {
         return;
     }
     let painter = ui.painter_at(rect);
     let visuals = ui.visuals().clone();
-    painter.rect_filled(rect, 2.0, visuals.extreme_bg_color);
+    let doll_chrome = caches.chrome(ui.ctx(), db);
+    paint_doll_canvas(&painter, doll_chrome.as_ref(), rect, &visuals);
 
     let press_origin = ui.ctx().input(|input| input.pointer.press_origin());
     let cursor = ui.ctx().pointer_latest_pos();
     let mut hovered: Option<&Item> = None;
 
+    let origin = rect.min + egui::vec2(cell * 0.5, cell * 0.5);
     for slot in EquipSlot::ALL {
         let (x, y, w, h) = doll_geometry(slot);
         let box_rect = egui::Rect::from_min_size(
-            rect.min + egui::vec2(cells_to_points(x), cells_to_points(y)),
-            egui::vec2(cells_to_points(w), cells_to_points(h)),
+            origin + egui::vec2(cells_at(x, cell), cells_at(y, cell)),
+            egui::vec2(cells_at(w, cell), cells_at(h, cell)),
         )
         .shrink(1.0);
         let grid = GridId::Equipment(slot);
-        painter.rect_stroke(
-            box_rect,
-            2.0,
-            egui::Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color),
-            egui::StrokeKind::Inside,
-        );
+        paint_slot_inset(&painter, doll_chrome.as_ref(), slot, box_rect);
+        if doll_chrome.is_none() {
+            painter.rect_stroke(
+                box_rect,
+                2.0,
+                egui::Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color),
+                egui::StrokeKind::Inside,
+            );
+        }
 
         match equipment.get(slot) {
             Some(item) => {
-                let item_rect = doll_item_rect(box_rect, caches.footprint(db, item));
+                let item_rect = doll_item_rect(box_rect, cell, caches.footprint(db, item));
                 let is_selected = *selected == Some((grid, 0));
                 paint_item_tile(
                     ui,
@@ -4224,7 +4679,9 @@ fn show_equipment_doll(
         }
     }
     if let Some(item) = hovered {
-        response.on_hover_ui(|ui| item_tooltip(ui, item, db, caches));
+        egui::Tooltip::for_widget(&response)
+            .at_pointer()
+            .show(|ui| item_tooltip(ui, item, db, caches));
     }
 }
 
@@ -4235,19 +4692,24 @@ fn show_character_section(
     db: Option<&GameCache>,
     caches: &mut Caches,
     can_move: bool,
+    inventory_tab: &mut InventoryTab,
     selected: &mut Option<(GridId, usize)>,
     drag: Option<&DragState>,
     frame: &mut DragFrame,
 ) -> Option<PaneAction> {
     let mut action = None;
+    let pane_chrome = caches.chrome(ui.ctx(), db);
+    let pane_chrome = pane_chrome.as_ref();
     ui.horizontal_wrapped(|ui| {
-        ui.label(theme::heading(
+        pane_heading(
+            ui,
+            pane_chrome,
             pane.character
                 .info
                 .name
                 .as_deref()
                 .unwrap_or("Unnamed character"),
-        ));
+        );
         let gold = ui.add(
             egui::DragValue::new(&mut pane.character.info.money)
                 .range(0..=i32::MAX)
@@ -4257,10 +4719,7 @@ fn show_character_section(
             pane.dirty = true;
         }
         let selection_here = matches!(*selected, Some((GridId::Sack(_) | GridId::Equipment(_), _)));
-        if ui
-            .add_enabled(can_move && selection_here, egui::Button::new("→ Vault"))
-            .clicked()
-        {
+        if plate_button(ui, pane_chrome, can_move && selection_here, "→ Vault").clicked() {
             action = Some(PaneAction::MoveToVault);
         }
         let has_items = pane
@@ -4268,8 +4727,7 @@ fn show_character_section(
             .sacks
             .iter()
             .any(|sack| !sack.items.is_empty());
-        if ui
-            .add_enabled(can_move && has_items, egui::Button::new("All → Vault"))
+        if plate_button(ui, pane_chrome, can_move && has_items, "All → Vault")
             .on_hover_text(
                 "Move every item from all sacks into the open vault tab, \
                  spilling into the other tabs as it fills; equipped gear stays on",
@@ -4278,24 +4736,49 @@ fn show_character_section(
         {
             action = Some(PaneAction::MoveAllToVault);
         }
-        if ui
-            .add_enabled(can_move && has_items, egui::Button::new("Copy all → Vault"))
+        if plate_button(ui, pane_chrome, can_move && has_items, "Copy all → Vault")
             .on_hover_text("The same, as copies — every item stays in its sack")
             .clicked()
         {
             action = Some(PaneAction::CopyAllToVault);
         }
-        if ui.button("Respec attributes").clicked() {
+        if plate_button(ui, pane_chrome, true, "Respec attributes").clicked() {
             action = Some(PaneAction::PreviewRespec(RespecKind::Attributes));
         }
-        if ui.button("Respec skills & masteries").clicked() {
+        if plate_button(ui, pane_chrome, true, "Respec skills & masteries").clicked() {
             action = Some(PaneAction::PreviewRespec(RespecKind::Skills));
         }
     });
     ui.label(theme::path_text(pane.path.display().to_string()));
-    egui::CollapsingHeader::new(theme::section("Equipment"))
-        .default_open(true)
-        .show(ui, |ui| {
+    if let InventoryTab::Sack(index) = *inventory_tab
+        && index >= pane.character.sacks.len()
+    {
+        *inventory_tab = InventoryTab::Equipment;
+    }
+    let active = show_inventory_tabs(ui, pane, db, caches, inventory_tab, selected, drag);
+    let body_chrome = caches.chrome(ui.ctx(), db);
+    anchored_panel(ui, body_chrome.as_ref(), active, |ui| {
+        show_inventory_body(ui, pane, db, caches, *inventory_tab, selected, drag, frame);
+    });
+    action
+}
+
+/// The content the active Inventory sub-tab owns: the doll, or one
+/// sack's grid.
+#[allow(clippy::too_many_arguments)] // one call surface, shell-internal
+fn show_inventory_body(
+    ui: &mut egui::Ui,
+    pane: &CharacterPane,
+    db: Option<&GameCache>,
+    caches: &mut Caches,
+    inventory_tab: InventoryTab,
+    selected: &mut Option<(GridId, usize)>,
+    drag: Option<&DragState>,
+    frame: &mut DragFrame,
+) {
+    match inventory_tab {
+        InventoryTab::Equipment => {
+            ui.add_space(12.0);
             show_equipment_doll(
                 ui,
                 &pane.character.equipment,
@@ -4305,12 +4788,10 @@ fn show_character_section(
                 drag,
                 frame,
             );
-        });
-    for (index, sack) in pane.character.sacks.iter().enumerate() {
-        let title = format!("Sack {} ({} items)", index + 1, sack.items.len());
-        egui::CollapsingHeader::new(theme::section(title))
-            .default_open(true)
-            .show(ui, |ui| {
+            ui.add_space(12.0);
+        }
+        InventoryTab::Sack(index) => {
+            if let Some(sack) = pane.character.sacks.get(index) {
                 let entries: Vec<(usize, &Item)> = sack.items.iter().enumerate().collect();
                 grid_view(
                     ui,
@@ -4323,9 +4804,9 @@ fn show_character_section(
                     drag,
                     frame,
                 );
-            });
+            }
+        }
     }
-    action
 }
 
 /// Mutable view of the left column's documents and UI state, so the
@@ -4336,6 +4817,7 @@ struct LeftView<'a> {
     shared: &'a mut Option<StashPane>,
     relics: &'a mut Option<StashPane>,
     active_tab: &'a mut LeftTab,
+    inventory_tab: &'a mut InventoryTab,
     selected: &'a mut Option<(GridId, usize)>,
 }
 
@@ -4350,9 +4832,70 @@ impl LeftView<'_> {
     }
 }
 
-/// The left column: one tab per document (greyed out while its file
-/// is absent, with the reason on hover) above the active document's
-/// section.
+/// The left pane's document strip, rendered above the frame; the
+/// active tab's rect and label return for anchoring onto it.
+fn show_left_tabs(
+    ui: &mut egui::Ui,
+    view: &mut LeftView<'_>,
+    pane_chrome: Option<&chrome::Chrome>,
+) -> Option<(egui::Rect, String)> {
+    if !view.loaded(*view.active_tab)
+        && let Some(fallback) = LeftTab::ALL.into_iter().find(|tab| view.loaded(*tab))
+    {
+        *view.active_tab = fallback;
+        *view.selected = None;
+    }
+    let mut active = None;
+    let strip_top = ui.available_rect_before_wrap().min;
+    let strip_width = ui.available_rect_before_wrap().width();
+    let backing = pane_chrome.map(|_| ui.painter().add(egui::Shape::Noop));
+    if pane_chrome.is_some() {
+        ui.add_space(10.0);
+    }
+    let row = ui.horizontal(|ui| {
+        if pane_chrome.is_some() {
+            ui.add_space(10.0);
+        }
+        for tab in LeftTab::ALL {
+            let loaded = view.loaded(tab);
+            let response = match pane_chrome {
+                Some(pane_chrome) => {
+                    pane_chrome.tab(ui, *view.active_tab == tab, loaded, tab.title())
+                }
+                None => ui.add_enabled(
+                    loaded,
+                    egui::Button::selectable(*view.active_tab == tab, tab.title()),
+                ),
+            };
+            if *view.active_tab == tab {
+                active = Some((response.rect, tab.title().to_owned()));
+            }
+            let response = if loaded {
+                response
+            } else {
+                response.on_hover_text(tab.missing_hint())
+            };
+            if loaded && response.clicked() && *view.active_tab != tab {
+                *view.active_tab = tab;
+                *view.selected = None;
+            }
+        }
+    });
+    if let Some(backing) = backing {
+        let rect = egui::Rect::from_min_max(
+            strip_top,
+            egui::pos2(strip_top.x + strip_width, row.response.rect.max.y + 4.0),
+        );
+        ui.painter().set(
+            backing,
+            egui::Shape::rect_filled(rect, 0.0, egui::Color32::from_rgb(26, 21, 12)),
+        );
+    }
+    active
+}
+
+/// The left column: the active document's section (the strip above
+/// it is [`show_left_tabs`]).
 fn show_left_column(
     ui: &mut egui::Ui,
     view: &mut LeftView<'_>,
@@ -4362,30 +4905,19 @@ fn show_left_column(
     drag: Option<&DragState>,
     frame: &mut DragFrame,
 ) -> Option<PaneAction> {
-    if !view.loaded(*view.active_tab)
-        && let Some(fallback) = LeftTab::ALL.into_iter().find(|tab| view.loaded(*tab))
-    {
-        *view.active_tab = fallback;
-        *view.selected = None;
-    }
-    ui.horizontal(|ui| {
-        for tab in LeftTab::ALL {
-            let response = ui
-                .add_enabled(
-                    view.loaded(tab),
-                    egui::Button::selectable(*view.active_tab == tab, tab.title()),
-                )
-                .on_disabled_hover_text(tab.missing_hint());
-            if response.clicked() && *view.active_tab != tab {
-                *view.active_tab = tab;
-                *view.selected = None;
-            }
-        }
-    });
-    ui.separator();
     match *view.active_tab {
         LeftTab::Inventory => view.character.as_mut().and_then(|pane| {
-            show_character_section(ui, pane, db, caches, can_move, view.selected, drag, frame)
+            show_character_section(
+                ui,
+                pane,
+                db,
+                caches,
+                can_move,
+                view.inventory_tab,
+                view.selected,
+                drag,
+                frame,
+            )
         }),
         LeftTab::Bank => view.bank.as_mut().and_then(|pane| {
             show_stash_section(
@@ -4447,21 +4979,20 @@ fn show_stash_section(
         StashSlot::Shared => ("Shared bank", GridId::Shared),
         StashSlot::Relic => ("Relic bank", GridId::Relic),
     };
+    let pane_chrome = caches.chrome(ui.ctx(), db);
+    let pane_chrome = pane_chrome.as_ref();
     ui.horizontal_wrapped(|ui| {
-        ui.label(theme::heading(format!(
-            "{title} {}×{}",
-            pane.stash.width, pane.stash.height
-        )));
+        pane_heading(
+            ui,
+            pane_chrome,
+            &format!("{title} {}×{}", pane.stash.width, pane.stash.height),
+        );
         let selection_here = matches!(*selected, Some((current, _)) if current == grid);
-        if ui
-            .add_enabled(can_move && selection_here, egui::Button::new("→ Vault"))
-            .clicked()
-        {
+        if plate_button(ui, pane_chrome, can_move && selection_here, "→ Vault").clicked() {
             action = Some(PaneAction::MoveToVault);
         }
         let has_items = !pane.stash.items.is_empty();
-        if ui
-            .add_enabled(can_move && has_items, egui::Button::new("All → Vault"))
+        if plate_button(ui, pane_chrome, can_move && has_items, "All → Vault")
             .on_hover_text(
                 "Move every item in this bank into the open vault tab, \
                  spilling into the other tabs as it fills",
@@ -4470,8 +5001,7 @@ fn show_stash_section(
         {
             action = Some(PaneAction::MoveAllToVault);
         }
-        if ui
-            .add_enabled(can_move && has_items, egui::Button::new("Copy all → Vault"))
+        if plate_button(ui, pane_chrome, can_move && has_items, "Copy all → Vault")
             .on_hover_text("The same, as copies — every item stays in the bank")
             .clicked()
         {
@@ -4495,6 +5025,69 @@ fn show_stash_section(
 }
 
 #[allow(clippy::too_many_arguments)] // one call surface, shell-internal
+/// The vault's numbered tab strip, rendered above the frame; the
+/// active tab's rect and label return for anchoring onto it.
+/// Mid-drag, pointing at a tab switches to it so any tab can
+/// receive the drop; egui suppresses hover while a widget drags, so
+/// the check is by pointer position.
+fn show_vault_tabs(
+    ui: &mut egui::Ui,
+    pane: &mut VaultPane,
+    pane_chrome: Option<&chrome::Chrome>,
+    drag: Option<&DragState>,
+) -> Option<(egui::Rect, String)> {
+    if pane.open_tab >= pane.vault.sacks.len() {
+        pane.open_tab = 0;
+    }
+    let cursor = ui.ctx().pointer_latest_pos();
+    let mut active = None;
+    let strip_top = ui.available_rect_before_wrap().min;
+    let strip_width = ui.available_rect_before_wrap().width();
+    let backing = pane_chrome.map(|_| ui.painter().add(egui::Shape::Noop));
+    if pane_chrome.is_some() {
+        ui.add_space(10.0);
+    }
+    let row = ui.horizontal_wrapped(|ui| {
+        if pane_chrome.is_some() {
+            ui.add_space(10.0);
+        }
+        for (tab, sack) in pane.vault.sacks.iter().enumerate() {
+            let label = if sack.items.is_empty() {
+                format!("{}", tab + 1)
+            } else {
+                format!("{} ({})", tab + 1, sack.items.len())
+            };
+            let response = match pane_chrome {
+                Some(pane_chrome) => pane_chrome.tab(ui, pane.open_tab == tab, true, &label),
+                None => ui.add(egui::Button::selectable(
+                    pane.open_tab == tab,
+                    label.clone(),
+                )),
+            };
+            if pane.open_tab == tab {
+                active = Some((response.rect, label));
+            }
+            let drag_over =
+                drag.is_some() && cursor.is_some_and(|cursor| response.rect.contains(cursor));
+            if (response.clicked() || drag_over) && pane.open_tab != tab {
+                pane.open_tab = tab;
+                pane.selected = None;
+            }
+        }
+    });
+    if let Some(backing) = backing {
+        let rect = egui::Rect::from_min_max(
+            strip_top,
+            egui::pos2(strip_top.x + strip_width, row.response.rect.max.y + 4.0),
+        );
+        ui.painter().set(
+            backing,
+            egui::Shape::rect_filled(rect, 0.0, egui::Color32::from_rgb(26, 21, 12)),
+        );
+    }
+    active
+}
+
 fn show_vault_pane(
     ui: &mut egui::Ui,
     pane: &mut VaultPane,
@@ -4505,70 +5098,52 @@ fn show_vault_pane(
     frame: &mut DragFrame,
 ) -> Option<PaneAction> {
     let mut action = None;
+    let pane_chrome = caches.chrome(ui.ctx(), db);
+    let pane_chrome = pane_chrome.as_ref();
     ui.horizontal(|ui| {
-        ui.label(theme::heading("Vault"));
-        if ui
-            .add_enabled(
-                can_move && pane.selected.is_some(),
-                egui::Button::new("← To file"),
-            )
-            .clicked()
+        pane_heading(ui, pane_chrome, "Vault");
+        if plate_button(
+            ui,
+            pane_chrome,
+            can_move && pane.selected.is_some(),
+            "← To file",
+        )
+        .clicked()
         {
             action = Some(PaneAction::MoveToFile);
         }
-    });
-    ui.label(theme::path_text(pane.path.display().to_string()));
-    if pane.open_tab >= pane.vault.sacks.len() {
-        pane.open_tab = 0;
-    }
-    let cursor = ui.ctx().pointer_latest_pos();
-    ui.horizontal_wrapped(|ui| {
-        for (tab, sack) in pane.vault.sacks.iter().enumerate() {
-            let label = if sack.items.is_empty() {
-                format!("{}", tab + 1)
-            } else {
-                format!("{} ({})", tab + 1, sack.items.len())
-            };
-            let response = ui.add(egui::Button::selectable(pane.open_tab == tab, label));
-            // Mid-drag, pointing at a tab switches to it so any tab
-            // can receive the drop; egui suppresses hover while a
-            // widget drags, so the check is by pointer position.
-            let drag_over =
-                drag.is_some() && cursor.is_some_and(|cursor| response.rect.contains(cursor));
-            if (response.clicked() || drag_over) && pane.open_tab != tab {
-                pane.open_tab = tab;
-                pane.selected = None;
-            }
+        if plate_button(ui, pane_chrome, db.is_some(), "Filter…")
+            .on_hover_text("Search and filter every vault file (⌘F / Ctrl+F)")
+            .clicked()
+        {
+            action = Some(PaneAction::OpenSearch);
         }
     });
+    ui.label(theme::path_text(pane.path.display().to_string()));
     let Some(sack) = pane.vault.sacks.get(pane.open_tab) else {
         ui.weak("This vault file has no tabs.");
         return action;
     };
-    egui::ScrollArea::vertical()
-        .id_salt("vault-pane")
-        .show(ui, |ui| {
-            let entries: Vec<(usize, &Item)> = sack
-                .items
-                .iter()
-                .enumerate()
-                .map(|(index, entry)| (index, &entry.item))
-                .collect();
-            grid_view(
-                ui,
-                (
-                    univault_core::vault::TAB_WIDTH,
-                    univault_core::vault::TAB_HEIGHT,
-                ),
-                &entries,
-                GridId::VaultTab(pane.open_tab),
-                &mut pane.selected,
-                db,
-                caches,
-                drag,
-                frame,
-            );
-        });
+    let entries: Vec<(usize, &Item)> = sack
+        .items
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| (index, &entry.item))
+        .collect();
+    grid_view(
+        ui,
+        (
+            univault_core::vault::TAB_WIDTH,
+            univault_core::vault::TAB_HEIGHT,
+        ),
+        &entries,
+        GridId::VaultTab(pane.open_tab),
+        &mut pane.selected,
+        db,
+        caches,
+        drag,
+        frame,
+    );
     action
 }
 
