@@ -10,24 +10,38 @@ Last updated: 2026-08-27
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** the look-and-feel workstream is open
-(user-initiated 2026-08-27; reference screenshots at
-`/Volumes/scott-games/tq-ae-designs`). Phase 1 (TQ palette +
-Cinzel/Alegreya fonts) merged as PR #38 — user: "Looking great for
-a first pass." Phase 2 — true TQ chrome from the game's own art —
-is on `feat/tq-chrome` (PR open): UVC8 cache carries ~20 UI
-textures; `chrome.rs` slices them (caravan frame nine-patch, grid
-cell tiles, keyhole nameplates, leather tabs, gold plate buttons,
-borderitem tooltip frame, parchment doll backdrop) with the
-phase-1 painted theme as fallback everywhere. First live reaction
-mid-build: "oh, it is really starting to look nice!" — formal
-look acceptance still open (tooltips/search/modals unreviewed).
-Next theme steps if wanted: search view + modal chrome, autosort
-buttons. Then the UIX queue in "Next up" (user-listed). Older
-acceptance checks still open: bulk-move toasts (#37), star-hero
-×3 in-game, all-vaults search pass, paper doll in-game load, dll
-patch socketing, the Gorgon rematch on `LootPlusXMAX3Tuned1xBoss`.
+**Resume here:** everything merged 2026-08-27 evening at the
+user's direction: PR #39 (the TQ chrome epic, ~20 commits of
+live-review iteration), PR #40 (skilltree unlock levels, parallel
+session), PR #41 (nymph cooldown mod, parallel session; its STATE
+conflict was resolved to main's and superseded by this refresh).
+No branches in flight. First items next session: the user rebuilds
+release and gives the merged chrome a fresh full pass (the final
+leather-strip border fix landed without an in-app review), then
+pick from the UIX queue in "Next up". Border law, settled after
+many annotated rounds: the ornate caravan frame belongs to a
+pane's outermost edge ONLY; tab-owned panels wear the flat
+under-tabs leather strip (art rows 108–122) on all four sides,
+the active tab merging into it (`chrome::tab_anchor`). Method
+lesson, twice-earned: measure game art programmatically AND view
+every crop — single-column profiles lie. All slice coordinates
+live in gui `chrome.rs`; tuning them never forces a re-import.
 
+- Capture loop (works, keep using it): Screen Recording is granted
+  to iTerm; find the window id by pid via a CGWindowList swift
+  one-liner, then `screencapture -x -l <id>`. Fully occluded
+  windows freeze egui repaints (imports look "stuck at 2%"). The
+  user often runs their own release build — only ever
+  `pkill -f target/debug/…`; each debug relaunch steals focus, so
+  the user's in-flight clicks can land in the test instance.
+- Reference screenshots from the user live in
+  `/Volumes/scott-games/tq-ae-designs` (tabs.png,
+  annotated-stone.png, in-game shots) — ask for annotated images
+  when a look note is ambiguous; they resolved every stall.
+- Parallel-session leftovers under `.claude/worktrees/`:
+  `mod-nymph-cooldown` and `skilltree-unlock` (locked, their
+  sessions may still be open) and `chrome-outer-frame` (stale at
+  0bd7ff4) — clean up once those sessions are done.
 - **Repo setting:** PR auto-merge is disabled
   (`enablePullRequestAutoMerge`) — wrap-up's docs PRs can't
   `gh pr merge --auto`; this session watched CI and merged
@@ -92,8 +106,7 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#38 all merged; all gates green |
-| `feat/tq-chrome` | TQ look phase 2 — the game's own UI art on the panes | PR open; first live reaction positive, full look review pending |
+| `main` | trunk | PRs #1–#41 all merged; all gates green |
 
 ## Next up
 
@@ -134,8 +147,33 @@ order not yet prioritized):
 
 ## Most recent meaningful progress
 
+- **2026-08-27 — Chrome live-review marathon (PR #39, merged).** A
+  dozen rounds of screenshot-annotated iteration with the user on
+  top of the phase-2 base: two border vocabularies settled (ornate
+  frame = pane outermost only; the 15px under-tabs leather strip =
+  every tab-owned panel, active tab merging through — found after
+  two wrong crops, one slicing the caravan art's own tab plates).
+  Reactive layout (`fit_cell_size` by both axes, pane scrollbars
+  removed, grids center, doll padded in and out), pointer-attached
+  tooltips, sectioned Help modal replacing the intro wall-of-text,
+  import-progress modal, vault Filter… button, exclusive inventory
+  sub-tabs (UIX queue item retired), Recent as a chrome menu.
+  Risk: the final strip fix merged without an in-app pass; the
+  whole look now needs one fresh full review.
+- **2026-08-27 — Mod: Sylvan Nymph joins the cooldown-free summons
+  (PR #41, merged; parallel session).** Her summon is class
+  `Skill_AttackProjectileSpawnPet` (thrown as a seed projectile),
+  which the zero-cooldown fill rule missed; a new rule covers the
+  projectile class (also zeroing Lay Trap, Blood of Ouranos,
+  Terracotta Servants — all summons, per the mod's spirit). Both
+  bundles recomposed + installed; nymph cooldown dump-verified 0.0.
+  Risk: in-game acceptance after a session restart.
+- **2026-08-27 — Skilltree: real mastery unlock levels (PR #40,
+  merged; parallel session).** The skilltree surface reported
+  vestigial unlock-level data; it now reports the real mastery
+  unlock levels.
 - **2026-08-27 — TQ AE look, phase 2: the game's own chrome
-  (feat/tq-chrome, PR open).** Design-dialogued (merge #38 first /
+  (PR #39 base).** Design-dialogued (merge #38 first /
   all six surfaces / iron nameplates — all user-picked): the cache
   (UVC8) now carries ~20 UI textures pulled at import from
   `InGameUI.arc` + `XPack/UI.arc` (`CHROME_TEXTURES` manifest;
@@ -240,59 +278,6 @@ order not yet prioritized):
   at a tab button switches to it, so drag-into-any-tab still works.
   192 tests. Risk: in-app acceptance pending — right-click a bank
   item with tab 3 open and watch it land there.
-- **2026-08-26 — Equipment paper doll (PR #29).** User ask: the
-  character's worn gear was unreachable — no paper doll. The 12
-  slots now render as an interactive doll (TQVaultAE geometry) on
-  the Inventory tab, wired into every item operation: drag out to
-  unequip anywhere, drag in to equip (cache-driven type rules —
-  legal empty slots glow; any weapon/shield in any hand slot),
-  right-click sends, Shift+Click duplicates, Alt+Click extracts,
-  socket-into-worn-gear in place. Core: `chr::EquipSlot`,
-  `chr::replace_equipment` (per-slot targeted splice — unchanged
-  slots byte-identical incl. the garbage bytes real dummies carry;
-  `itemAttached` mirrors the active weapon set) and
-  `transfer::{take_equipped, can_equip, equip}`; save path splices
-  inventory + equipment + money. Slot naming fixed everywhere: the
-  wielded weapon is the *right* hand (real saves put two-handers at
-  index 8; MCP's old labels were swapped). New `equipdry` example
-  proved both real characters round-trip. 185 tests. Risk: in-app
-  acceptance pending — unequip/equip on the doll, then load the
-  save in-game.
-- **2026-08-26 — Mod: a second bundle with single bosses.** User
-  hit an unwinnable tripled Gorgon-sisters fight (three queens
-  cross-healing via Regrowth), then refined the ask: keep the
-  original 3x-boss mod AND a 1x-boss variant, side by side. Root
-  cause mapped via the MCP record tools: the x3 base multiplies
-  named boss/hero *pools* (extra entries, limits stripped) on top
-  of the global 300% spawn modifier; the author's own x3x1 base
-  keeps trash x3 but collapses those pools to one spawn. Now one
-  rules file builds both: `modforge` gained a bundle-name override,
-  and `mods/xmax3-tuned.json` documents the two builds —
-  `LootPlusXMAX3Tuned` (base x3, unchanged behavior) and
-  `LootPlusXMAX3Tuned1xBoss` (base x3x1). Both composed,
-  dump-verified (Euryale pool 6 entries vs 1; identical tunes:
-  vanilla XP, Provoke 5m, spawnModifier 300), and installed to
-  CustomMaps. Risk: user switches to the 1xBoss mod in-game and
-  replays the Gorgon fight — that is the acceptance test; the x3x1
-  base also singles named heroes.
-- **2026-08-26 — Game.dll socket-gate patcher (toggle).** User
-  supplied the community guide (Steam 2202151189): NOP the two
-  conditional jumps after the Epic/Legendary classification
-  compares. New core `dllpatch` module (pure bytes: inspect →
-  Vanilla/Patched/Mixed/Unrecognized, enable/disable as
-  non-overlapping 10-byte signature swaps, self-inverse) + a GUI
-  "Socket patch…" header button opening a modal: state, warnings
-  (multiplayer; Steam updates/verify replace the dll — re-enable
-  after), Enable/Disable. Guardrails: pristine
-  `Game.dll.univault-original` written once from a fully vanilla
-  file; staging-write + rename; post-write re-read verify;
-  unrecognized versions never written. ARCHITECTURE amended in-PR
-  (single sanctioned game-binary write). Dry-run against the real
-  dll (on a copy): 1 signature site in the current EE build (older
-  guides say several — consolidated since), 4 bytes change,
-  reverse byte-identical. Risk: the user pressing Enable and
-  socketing an epic in-game is the acceptance test.
-
 ## Blocked / waiting
 
 - *(nothing)*
