@@ -493,28 +493,50 @@ impl Chrome {
     }
 }
 
-/// The gold edge a tab strip sits on, broken under the active tab
-/// so the strip reads as attached to the panel below.
-pub fn tab_baseline(painter: &egui::Painter, row: Rect, active: Option<Rect>) {
-    let y = row.max.y + 3.0;
-    let bright = Color32::from_rgb(196, 164, 92);
-    let dark = Color32::from_rgb(60, 48, 22);
-    let segment = |x0: f32, x1: f32| {
-        if x1 > x0 + 0.5 {
-            painter.line_segment([pos2(x0, y), pos2(x1, y)], egui::Stroke::new(2.0, bright));
-            painter.line_segment(
-                [pos2(x0, y + 1.5), pos2(x1, y + 1.5)],
-                egui::Stroke::new(1.0, dark),
-            );
-        }
-    };
-    match active {
-        Some(active) => {
-            segment(row.min.x, active.min.x);
-            segment(active.max.x, row.max.x);
-        }
-        None => segment(row.min.x, row.max.x),
-    }
+/// Repaints the active tab joined onto the border below it: the
+/// plate descends `depth` over the border band and the label rides
+/// it — the caravan window's anchored-tab look.
+pub fn tab_anchor(chrome: &Chrome, painter: &egui::Painter, rect: Rect, text: &str, depth: f32) {
+    let plate = Rect::from_min_max(
+        pos2(rect.min.x, rect.min.y - 2.0),
+        pos2(rect.max.x, rect.max.y + depth),
+    );
+    three_slice(painter, &chrome.tab, TAB_CAPS, plate, Color32::WHITE);
+    let galley = painter.layout_no_wrap(
+        text.to_owned(),
+        egui::FontId::new(14.0, egui::FontFamily::Proportional),
+        Color32::from_rgb(250, 247, 238),
+    );
+    let pos = pos2(
+        rect.center().x - galley.size().x / 2.0,
+        rect.center().y - galley.size().y / 2.0,
+    );
+    painter.galley(pos, galley, Color32::from_rgb(250, 247, 238));
+}
+
+/// The simple gold panel border the game draws around a tab's owned
+/// content: dark outer trim, gold band, dark inner trim.
+pub fn panel_border(painter: &egui::Painter, rect: Rect) {
+    let dark = Color32::from_rgb(52, 42, 20);
+    let gold = Color32::from_rgb(172, 140, 74);
+    painter.rect_stroke(
+        rect.expand(3.0),
+        2.0,
+        egui::Stroke::new(1.0, dark),
+        egui::StrokeKind::Inside,
+    );
+    painter.rect_stroke(
+        rect.expand(2.0),
+        2.0,
+        egui::Stroke::new(2.0, gold),
+        egui::StrokeKind::Inside,
+    );
+    painter.rect_stroke(
+        rect,
+        2.0,
+        egui::Stroke::new(1.0, dark),
+        egui::StrokeKind::Inside,
+    );
 }
 
 /// A soft inner shadow the frame casts onto the content — the
