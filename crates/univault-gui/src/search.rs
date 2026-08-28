@@ -1008,8 +1008,10 @@ fn show_row(
         }
     });
     // The game-style tooltip only on the icon — on the whole row it
-    // would shadow the stats column at every pointer move.
-    egui::Tooltip::for_widget(&icon_response)
+    // would shadow the stats column at every pointer move. Must be
+    // `for_enabled`: `for_widget` carries no open condition in egui
+    // 0.36 and would render every row's tooltip unconditionally.
+    egui::Tooltip::for_enabled(&icon_response)
         .at_pointer()
         .show(|ui| item_tooltip(ui, &row.item, db, caches));
     table_row.col(|ui| {
