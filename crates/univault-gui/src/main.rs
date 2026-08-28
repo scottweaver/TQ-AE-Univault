@@ -625,6 +625,17 @@ impl App {
         });
         if let Some(path) = args.file {
             app.status = Some(app.open(&path));
+        } else if let Some(last) = app
+            .recents
+            .entries
+            .iter()
+            .find(|path| {
+                path.extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("chr"))
+            })
+            .cloned()
+        {
+            app.status = Some(app.open(&last));
         }
         app
     }
