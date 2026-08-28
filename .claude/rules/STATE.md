@@ -5,7 +5,7 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-27
+Last updated: 2026-08-28
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
@@ -35,11 +35,6 @@ plate buttons, grid cells, stone backdrop, tooltip frame.
   + component-space JSON). Preview-only by user decision; promote
   into the app behind a debug flag only if an app-look round
   needs it.
-- Local `main` is held by the stale
-  `.claude/worktrees/skilltree-unlock` worktree — sessions work
-  detached or branch off `origin/main`. Worktree cleanup
-  (`skilltree-unlock`, `mod-nymph-cooldown`, `chrome-outer-frame`)
-  still awaits the user's go-ahead.
 - Capture loop (works, keep using it): Screen Recording is granted
   to iTerm; find the window id by pid via a CGWindowList swift
   one-liner, then `screencapture -x -l <id>` (`-o` drops the
