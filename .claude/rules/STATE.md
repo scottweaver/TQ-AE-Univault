@@ -5,7 +5,7 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-28 (PR #47 merged + wrapped up)
+Last updated: 2026-08-28 (PR #47 merged + wrapped; checkpointed)
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
@@ -19,17 +19,20 @@ drop the Rarity column if it feels cramped), plus the still-
 outstanding release-build pass over the component chrome
 (PRs #43/#44), then the UIX queue. Remaining game-art chrome
 surfaces (candidates for future components): nameplates, plate
-buttons, grid cells, stone backdrop, tooltip frame. Working-tree
-note: `crates/univault-gui/assets/components/gilded-border.png`
-is modified but uncommitted — the user's own in-flight art
-change; leave it be.
+buttons, grid cells, stone backdrop, tooltip frame. (The user's
+gilded-border.png art update is committed to main, 2026-08-28
+checkpoint.)
 
-- **egui 0.36 landmines, both user-hit this session:**
+- **egui 0.36 landmines (hard-won):**
   (1) `ui.columns` children share a *stable* id — derive
   per-instance widget ids from an allocated response id, never
   `ui.id()` (tabbed_panel does this); (2)
   `Tooltip::for_widget(...).show()` is unconditionally open — use
-  `Tooltip::for_enabled` or gate at the call site.
+  `Tooltip::for_enabled` or gate at the call site; (3) a long
+  `horizontal_wrapped` row of ComboBoxes never wraps — it silently
+  overflows its pane (hit when the search filters moved into the
+  half-width vault column). Split into multiple wrapped rows sized
+  for the pane instead.
 - **Review loop** (preview harness): launch `cargo run -p
   univault-gui --bin preview -- <component> --review`, keep a
   Monitor on gitignored `review/`, act on exports (annotated PNG
