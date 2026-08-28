@@ -10,26 +10,36 @@ Last updated: 2026-08-27
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** PR #43 (the component-workshop epic) merged
-2026-08-27 night at the user's direction, right after the chrome
-epic. New direction, user-initiated: UI chrome now grows as
-distinct components, previewed in isolation before app
-integration — `cargo run -p univault-gui --bin preview --
-<component> [--review]` (components so far: `gilded-border`,
-`tabbed-panel`), each drawn from the user's own art under
-`crates/univault-gui/assets/components/`, sliced from designs the
-user authors in GIMP (`~/Documents/tq-desgins/`, XCF masters).
-The **in-app review loop** replaced GIMP-markup rounds and is the
-expected iteration mode: user arms a tool in the preview's review
-bar, drags shapes, notes each one, hits export → annotated PNG +
-JSON (component-space coords per shape) land in gitignored
-`review/` — keep a Monitor armed on that dir and act on exports
-as they arrive; it fixed four findings this session. Immediately
-next: wire the components into the real app panes (in flight on
-`feat/components-in-app` if a branch exists; otherwise start it).
-Chrome epic residual, still open: the user rebuilds release and
-gives the merged PR #39 chrome a fresh full pass.
+**Resume here:** PRs #43 (component workshop + review loop) and
+#44 (components into the app) both merged 2026-08-27 night. The
+app's chrome IS the hand-drawn components now: both panes and the
+inventory sub-tabs render through `TabbedPanel`, the gilded
+border frames the window, and the caravan/leather game chrome is
+deleted (recoverable from git). The user live-tested the
+integrated build and accepted it (tabs, nested sub-tabs,
+auto-open, disabled-button legibility; they rolled with the
+panels' black interior). First items next session: the user's
+full release-build pass, then the UIX queue. Remaining game-art
+chrome surfaces (candidates for future components): nameplates,
+plate buttons, grid cells, stone backdrop, tooltip frame.
 
+- **egui 0.36 landmines, both user-hit this session:**
+  (1) `ui.columns` children share a *stable* id — derive
+  per-instance widget ids from an allocated response id, never
+  `ui.id()` (tabbed_panel does this); (2)
+  `Tooltip::for_widget(...).show()` is unconditionally open — use
+  `Tooltip::for_enabled` or gate at the call site.
+- **Review loop** (preview harness): launch `cargo run -p
+  univault-gui --bin preview -- <component> --review`, keep a
+  Monitor on gitignored `review/`, act on exports (annotated PNG
+  + component-space JSON). Preview-only by user decision; promote
+  into the app behind a debug flag only if an app-look round
+  needs it.
+- Local `main` is held by the stale
+  `.claude/worktrees/skilltree-unlock` worktree — sessions work
+  detached or branch off `origin/main`. Worktree cleanup
+  (`skilltree-unlock`, `mod-nymph-cooldown`, `chrome-outer-frame`)
+  still awaits the user's go-ahead.
 - Capture loop (works, keep using it): Screen Recording is granted
   to iTerm; find the window id by pid via a CGWindowList swift
   one-liner, then `screencapture -x -l <id>` (`-o` drops the
@@ -48,10 +58,6 @@ gives the merged PR #39 chrome a fresh full pass.
   the hang) — prefer asking the user to export. Game-art
   reference screenshots live in `/Volumes/scott-games/
   tq-ae-designs` (mount required).
-- Parallel-session leftovers under `.claude/worktrees/`:
-  `mod-nymph-cooldown` and `skilltree-unlock` (locked, their
-  sessions may still be open) and `chrome-outer-frame` (stale at
-  0bd7ff4) — clean up once those sessions are done.
 - **Repo setting:** PR auto-merge is disabled
   (`enablePullRequestAutoMerge`) — wrap-up's docs PRs can't
   `gh pr merge --auto`; this session watched CI and merged
@@ -116,7 +122,7 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#43 all merged; all gates green |
+| `main` | trunk | PRs #1–#44 all merged; all gates green |
 
 ## Next up
 
@@ -139,21 +145,19 @@ and open our vault JSON in TQVaultAE.
 Default vault + bank tabs + autosave ACCEPTED 2026-08-25 ("Ah,
 that's better") and merged as PR #7.
 
-0. **Components into the app (next, user-directed 2026-08-27):**
-   wire `GildedBorder` and `TabbedPanel` into the real panes,
-   iterating each surface through the preview + review loop first
-   where possible. Where the new user-authored art meets the
-   PR #39 game-art chrome is an open look question — expect
-   annotated rounds.
+0. **Component-ize remaining chrome surfaces as the user directs:**
+   nameplates, plate buttons, grid cells, stone backdrop, tooltip
+   frame — each through the preview + review loop first, from new
+   art in `~/Documents/tq-desgins/`.
 
-UIX queue (user-listed 2026-08-27, to address after the theme work;
-order not yet prioritized):
+UIX queue (user-listed 2026-08-27; auto-open and per-sack bulk
+buttons shipped in PR #44):
 
-- On launch with no file argument, auto-open the last viewed
-  character (recents already persist; open the newest).
 - Toolbar order: "Recent" directly right of "Open character…".
 - Technical info (file paths etc.) hidden by default; a
-  "?-in-a-circle" icon per pane reveals the low-level details.
+  "?-in-a-circle" icon per pane reveals the low-level details —
+  this also cures the ugly justified wrap of long paths under the
+  nameplates.
 
 1. Game-install auto-discovery (Steam library paths per OS in
    `platform`) to preseed the one-time Import dialog.
@@ -164,6 +168,19 @@ order not yet prioritized):
 
 ## Most recent meaningful progress
 
+- **2026-08-27 — Components into the app + live-fix round (PR #44,
+  merged).** Both panes and the inventory sub-tabs now render
+  through `TabbedPanel` (per-tab disabled hints, mid-drag hover
+  switching, per-instance widget ids); the gilded border frames
+  the window; the caravan/leather game chrome is deleted (net
+  −600 lines). Five user-hit fixes in the same round: cross-pane
+  tab id collision, the search-view tooltip storm (egui 0.36
+  `Tooltip::for_widget` is unconditionally open), unreadable
+  disabled plate buttons, `cargo run` default-run, plus UIX:
+  auto-open last character, bulk sends moved into each sack's
+  pane and scoped per-sack ("Move all → Vault"). Risk: accepted
+  live in debug builds; the release-build full pass is still the
+  user's to run, and the search view got only a spot check.
 - **2026-08-27 — Component workshop + in-app review loop (PR #43,
   merged).** User pivot after the chrome epic: UI parts now grow as
   distinct components (gui lib target, `components/`), previewed in
@@ -285,18 +302,6 @@ order not yet prioritized):
   filter (user ask; "Much nicer!" on the criteria rework). 217
   tests. Risk: table feel (row heights, gestures, autocomplete
   popup) unverified until the user runs the full in-app pass.
-- **2026-08-26 — Status messages became toasts (UX fix).** User
-  report: the header status line reflowed the panes on every action
-  ("jittering" while moving items), and "Saving…" flickered its own
-  line. Outcomes now surface as bottom-right toasts — an egui
-  `Area` overlay, `interactable(false)` so it is click-through,
-  auto-expiring (4s, errors 8s, stack capped at 6) — and "Saving…"
-  rides the fixed-height zoom row. The `status` channel is
-  unchanged (every set-site untouched); it drains into the toast
-  stack at frame end. Hand-rolled (~70 lines) over `egui-notify`
-  deliberately: its toasts are clickable widgets, which would
-  obstruct drops underneath. Risk: in-app feel — drop an item and
-  watch nothing move but the toast.
 ## Blocked / waiting
 
 - *(nothing)*
