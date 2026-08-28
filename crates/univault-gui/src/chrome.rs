@@ -15,15 +15,6 @@ use univault_core::cache::GameCache;
 /// right and bottom edges, so tiles chain into the game's grid.
 const CELL: Src = Src::new(27.0, 126.0, 32.0, 32.0);
 
-/// The under-tabs leather strip of the caravan window (leather
-/// body, dark line, gold trim, black gap, gold rim — the reference
-/// "textured tab border"), tiled as the border of a tab's panel.
-const LEATHER_STRIP: Src = Src::new(150.0, 108.0, 240.0, 15.0);
-
-/// On-screen thickness of the leather panel border — the strip's
-/// native rows.
-pub const LEATHER_H: f32 = 15.0;
-
 /// A clean strip of the character screen's light flagstone — the
 /// reference's exact surface; a mirrored collage of it becomes the
 /// stretched backdrop.
@@ -77,11 +68,9 @@ impl SlotPlate {
 
 /// End-cap widths of the 3-sliced strips, in source pixels.
 const TITLE_CAPS: f32 = 24.0;
-const TAB_CAPS: f32 = 10.0;
 const BUTTON_CAPS: f32 = 8.0;
 
 const NAMEPLATE_HEIGHT: f32 = 30.0;
-const TAB_HEIGHT: f32 = 26.0;
 const BUTTON_HEIGHT: f32 = 26.0;
 
 /// Ink used on the iron and gold plates — the game letters its
@@ -110,26 +99,6 @@ impl Src {
         )
     }
 
-    /// Texture coordinates with optional mirroring, for reusing a
-    /// piece on the opposite edge of the frame.
-    fn uv_flipped(self, texture: &TextureHandle, flip_h: bool, flip_v: bool) -> Rect {
-        let plain = self.uv(texture);
-        let (u0, u1) = if flip_h {
-            (plain.max.x, plain.min.x)
-        } else {
-            (plain.min.x, plain.max.x)
-        };
-        let (v0, v1) = if flip_v {
-            (plain.max.y, plain.min.y)
-        } else {
-            (plain.min.y, plain.max.y)
-        };
-        Rect {
-            min: pos2(u0, v0),
-            max: pos2(u1, v1),
-        }
-    }
-
     fn full(texture: &TextureHandle) -> Self {
         let size = texture.size_vec2();
         Self::new(0.0, 0.0, size.x, size.y)
@@ -143,15 +112,10 @@ impl Src {
 pub struct Chrome {
     caravan: TextureHandle,
     title: TextureHandle,
-    tab: TextureHandle,
     character: TextureHandle,
     /// The 2×2 mirrored light-flagstone collage — the stretched
     /// backdrop.
     light_stone: TextureHandle,
-    /// The under-tabs leather strip, and its transpose for the
-    /// vertical edges (rim facing the content).
-    leather_h: TextureHandle,
-    leather_v: TextureHandle,
     button_up: TextureHandle,
     button_over: TextureHandle,
     button_down: TextureHandle,
@@ -187,19 +151,15 @@ impl Chrome {
         let tooltip: Option<Vec<TextureHandle>> =
             tooltip_keys.iter().map(|key| load(key)).collect();
         let light = light_stone(cache)?;
-        let (strip, strip_t) = leather_strips(&cache.chrome("caravan/caravanwindow01.tex")?)?;
         Some(Self {
             caravan: load("caravan/caravanwindow01.tex")?,
             title: load("caravan/caravantitle01.tex")?,
-            tab: load("caravan/storageareatab01.tex")?,
             character: load("characterscreen/characterwindow01.tex")?,
             light_stone: ctx.load_texture(
                 "chrome:light-stone",
                 light,
                 egui::TextureOptions::LINEAR,
             ),
-            leather_h: ctx.load_texture("chrome:leather-h", strip, egui::TextureOptions::LINEAR),
-            leather_v: ctx.load_texture("chrome:leather-v", strip_t, egui::TextureOptions::LINEAR),
             button_up: load("optionswindow/buttonup01.tex")?,
             button_over: load("optionswindow/buttonover01.tex")?,
             button_down: load("optionswindow/buttondown01.tex")?,
@@ -210,46 +170,6 @@ impl Chrome {
     /// One grid cell's art.
     pub fn grid_cell(&self, painter: &egui::Painter, rect: Rect) {
         blit(painter, &self.caravan, CELL, rect, Color32::WHITE);
-    }
-
-    /// The leather panel border — the reference's textured tab
-    /// border on all four sides, gold rim facing the content. Sides
-    /// first, so the horizontal strips own the corners.
-    pub fn leather_frame(&self, painter: &egui::Painter, rect: Rect) {
-        let side = Src::full(&self.leather_v);
-        tile_v(
-            painter,
-            &self.leather_v,
-            side,
-            Rect::from_min_max(rect.min, pos2(rect.min.x + LEATHER_H, rect.max.y)),
-        );
-        let span = Rect::from_min_max(pos2(rect.max.x - LEATHER_H, rect.min.y), rect.max);
-        let clipped = painter.with_clip_rect(span);
-        let mut y = span.min.y;
-        while y < span.max.y {
-            clipped.image(
-                self.leather_v.id(),
-                Rect::from_min_size(pos2(span.min.x, y), vec2(LEATHER_H, side.h)),
-                side.uv_flipped(&self.leather_v, true, false),
-                Color32::WHITE,
-            );
-            y += side.h;
-        }
-        let strip = Src::full(&self.leather_h);
-        tile_h_flipped(
-            painter,
-            &self.leather_h,
-            strip,
-            Rect::from_min_max(rect.min, pos2(rect.max.x, rect.min.y + LEATHER_H)),
-            false,
-        );
-        tile_h_flipped(
-            painter,
-            &self.leather_h,
-            strip,
-            Rect::from_min_max(pos2(rect.min.x, rect.max.y - LEATHER_H), rect.max),
-            true,
-        );
     }
 
     /// The iron nameplate with a title on it.
@@ -267,66 +187,6 @@ impl Chrome {
             rect.center().y - galley.size().y / 2.0,
         );
         ui.painter().galley(pos, galley, PLATE_INK);
-    }
-
-    /// A leather tab plate; dim until selected, like the game's
-    /// caravan tabs — white lettering when active, dull white-grey
-    /// otherwise.
-    pub fn tab(
-        &self,
-        ui: &mut egui::Ui,
-        selected: bool,
-        enabled: bool,
-        text: &str,
-    ) -> egui::Response {
-        let ink = if !enabled {
-            Color32::from_gray(115)
-        } else if selected {
-            Color32::from_rgb(250, 247, 238)
-        } else {
-            Color32::from_rgb(188, 182, 168)
-        };
-        let galley = ui.painter().layout_no_wrap(
-            text.to_owned(),
-            egui::TextStyle::Button.resolve(ui.style()),
-            ink,
-        );
-        let size = vec2(galley.size().x + 26.0, TAB_HEIGHT);
-        let (rect, response) = ui.allocate_exact_size(
-            size,
-            if enabled {
-                Sense::click()
-            } else {
-                Sense::hover()
-            },
-        );
-        let tint = if !enabled {
-            Color32::from_gray(90)
-        } else if selected {
-            Color32::WHITE
-        } else if response.hovered() {
-            Color32::from_gray(210)
-        } else {
-            Color32::from_gray(160)
-        };
-        // The active tab rises above the row and descends to the
-        // strip's baseline, anchoring onto the panel like the game's
-        // caravan tabs.
-        let plate = if selected {
-            Rect::from_min_max(
-                pos2(rect.min.x, rect.min.y - 2.0),
-                pos2(rect.max.x, rect.max.y + 4.0),
-            )
-        } else {
-            rect
-        };
-        three_slice(ui.painter(), &self.tab, TAB_CAPS, plate, tint);
-        let pos = pos2(
-            rect.center().x - galley.size().x / 2.0,
-            rect.center().y - galley.size().y / 2.0,
-        );
-        ui.painter().galley(pos, galley, ink);
-        response
     }
 
     /// A gold plate button in the game's three states.
@@ -434,105 +294,6 @@ impl Chrome {
     }
 }
 
-/// Repaints the active tab joined onto the border below it: the
-/// plate is the tab art minus its bottom border, descending to
-/// `bottom` so its side lines flow into the pane's border line —
-/// the caravan window's anchored-tab look.
-pub fn tab_anchor(chrome: &Chrome, painter: &egui::Painter, rect: Rect, text: &str, bottom: f32) {
-    let plate = Rect::from_min_max(pos2(rect.min.x, rect.min.y - 2.0), pos2(rect.max.x, bottom));
-    let size = chrome.tab.size_vec2();
-    let body = Src::new(0.0, 0.0, size.x, size.y - 4.0);
-    three_slice_src(painter, &chrome.tab, body, TAB_CAPS, plate, Color32::WHITE);
-    let galley = painter.layout_no_wrap(
-        text.to_owned(),
-        egui::FontId::new(14.0, egui::FontFamily::Proportional),
-        Color32::from_rgb(250, 247, 238),
-    );
-    let pos = pos2(
-        rect.center().x - galley.size().x / 2.0,
-        rect.center().y - galley.size().y / 2.0,
-    );
-    painter.galley(pos, galley, Color32::from_rgb(250, 247, 238));
-}
-
-/// The under-tabs leather strip and its transpose (for vertical
-/// edges), cropped from the caravan window. `None` only if the art
-/// is smaller than the strip.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // slice coordinates are small positive integers
-fn leather_strips(
-    image: &univault_core::tex::RgbaImage,
-) -> Option<(egui::ColorImage, egui::ColorImage)> {
-    let (x0, y0, w, h) = (
-        LEATHER_STRIP.x as usize,
-        LEATHER_STRIP.y as usize,
-        LEATHER_STRIP.w as usize,
-        LEATHER_STRIP.h as usize,
-    );
-    if image.width < x0 + w || image.height < y0 + h {
-        return None;
-    }
-    let mut strip = vec![0_u8; w * h * 4];
-    let mut transposed = vec![0_u8; w * h * 4];
-    for y in 0..h {
-        for x in 0..w {
-            let from = ((y0 + y) * image.width + x0 + x) * 4;
-            let to = (y * w + x) * 4;
-            strip[to..to + 4].copy_from_slice(&image.pixels[from..from + 4]);
-            let to_t = (x * h + y) * 4;
-            transposed[to_t..to_t + 4].copy_from_slice(&image.pixels[from..from + 4]);
-        }
-    }
-    Some((
-        egui::ColorImage::from_rgba_unmultiplied([w, h], &strip),
-        egui::ColorImage::from_rgba_unmultiplied([h, w], &transposed),
-    ))
-}
-
-/// A soft inner shadow the frame casts onto the content — the
-/// reference screens shade their borders for depth.
-pub fn inner_shadow(painter: &egui::Painter, rect: Rect, depth: f32) {
-    let dark = Color32::from_black_alpha(90);
-    let clear = Color32::TRANSPARENT;
-    let mut mesh = egui::Mesh::default();
-    let mut quad = |corners: [(egui::Pos2, Color32); 4]| {
-        let base = u32::try_from(mesh.vertices.len()).unwrap_or(0);
-        for (pos, color) in corners {
-            mesh.vertices.push(egui::epaint::Vertex {
-                pos,
-                uv: egui::epaint::WHITE_UV,
-                color,
-            });
-        }
-        mesh.indices
-            .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
-    };
-    quad([
-        (rect.left_top(), dark),
-        (rect.right_top(), dark),
-        (pos2(rect.max.x, rect.min.y + depth), clear),
-        (pos2(rect.min.x, rect.min.y + depth), clear),
-    ]);
-    quad([
-        (pos2(rect.min.x, rect.max.y - depth), clear),
-        (pos2(rect.max.x, rect.max.y - depth), clear),
-        (rect.right_bottom(), dark),
-        (rect.left_bottom(), dark),
-    ]);
-    quad([
-        (rect.left_top(), dark),
-        (pos2(rect.min.x + depth, rect.min.y), clear),
-        (pos2(rect.min.x + depth, rect.max.y), clear),
-        (rect.left_bottom(), dark),
-    ]);
-    quad([
-        (pos2(rect.max.x - depth, rect.min.y), clear),
-        (rect.right_top(), dark),
-        (rect.right_bottom(), dark),
-        (pos2(rect.max.x - depth, rect.max.y), clear),
-    ]);
-    painter.add(egui::Shape::mesh(mesh));
-}
-
 fn blit(painter: &egui::Painter, texture: &TextureHandle, src: Src, dest: Rect, tint: Color32) {
     painter.image(texture.id(), dest, src.uv(texture), tint);
 }
@@ -577,42 +338,6 @@ fn light_stone(cache: &GameCache) -> Option<egui::ColorImage> {
         [out_w, out_h],
         &pixels,
     ))
-}
-
-fn tile_h_flipped(
-    painter: &egui::Painter,
-    texture: &TextureHandle,
-    src: Src,
-    dest: Rect,
-    flip_v: bool,
-) {
-    let clipped = painter.with_clip_rect(dest);
-    let uv = src.uv_flipped(texture, false, flip_v);
-    let mut x = dest.min.x;
-    while x < dest.max.x {
-        clipped.image(
-            texture.id(),
-            Rect::from_min_size(pos2(x, dest.min.y), vec2(src.w, dest.height())),
-            uv,
-            Color32::WHITE,
-        );
-        x += src.w;
-    }
-}
-
-fn tile_v(painter: &egui::Painter, texture: &TextureHandle, src: Src, dest: Rect) {
-    let clipped = painter.with_clip_rect(dest);
-    let mut y = dest.min.y;
-    while y < dest.max.y {
-        blit(
-            &clipped,
-            texture,
-            src,
-            Rect::from_min_size(pos2(dest.min.x, y), vec2(dest.width(), src.h)),
-            Color32::WHITE,
-        );
-        y += src.h;
-    }
 }
 
 /// Caps-preserving horizontal 3-slice of a whole texture strip onto

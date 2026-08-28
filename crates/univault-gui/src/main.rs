@@ -3624,6 +3624,7 @@ impl App {
                     show_left_column(
                         ui,
                         &mut view,
+                        &panel,
                         db,
                         caches,
                         can_move,
@@ -3674,52 +3675,6 @@ impl App {
         });
         (action, frame)
     }
-}
-
-/// The Inventory view's exclusive sub-tab strip:
-/// Equipment | Main Sack | Sack 1 | … | Sack n. Mid-drag, pointing
-/// at a tab switches to it so a drop can land in any sack or on the
-/// doll.
-fn show_inventory_tabs(
-    ui: &mut egui::Ui,
-    pane: &CharacterPane,
-    db: Option<&GameCache>,
-    caches: &mut Caches,
-    inventory_tab: &mut InventoryTab,
-    selected: &mut Option<(GridId, usize)>,
-    drag: Option<&DragState>,
-) -> Option<(egui::Rect, String)> {
-    let pane_chrome = caches.chrome(ui.ctx(), db);
-    let cursor = ui.ctx().pointer_latest_pos();
-    let mut active = None;
-    ui.horizontal_wrapped(|ui| {
-        let mut tab_button = |ui: &mut egui::Ui, target: InventoryTab, label: &str| {
-            let selected_tab = *inventory_tab == target;
-            let response = match pane_chrome.as_ref() {
-                Some(pane_chrome) => pane_chrome.tab(ui, selected_tab, true, label),
-                None => ui.add(egui::Button::selectable(selected_tab, label)),
-            };
-            if selected_tab {
-                active = Some((response.rect, label.to_owned()));
-            }
-            let drag_over =
-                drag.is_some() && cursor.is_some_and(|cursor| response.rect.contains(cursor));
-            if (response.clicked() || drag_over) && *inventory_tab != target {
-                *inventory_tab = target;
-                *selected = None;
-            }
-        };
-        tab_button(ui, InventoryTab::Equipment, "Equipment");
-        for (index, sack) in pane.character.sacks.iter().enumerate() {
-            let label = if index == 0 {
-                format!("Main Sack ({})", sack.items.len())
-            } else {
-                format!("Sack {} ({})", index, sack.items.len())
-            };
-            tab_button(ui, InventoryTab::Sack(index), &label);
-        }
-    });
-    active
 }
 
 /// Allocates the doll's canvas centered in the pane, scaled to fill
@@ -3825,44 +3780,6 @@ fn plate_button(
     match pane_chrome {
         Some(pane_chrome) => pane_chrome.button(ui, enabled, text),
         None => ui.add_enabled(enabled, egui::Button::new(text)),
-    }
-}
-
-/// The bordered panel a tab strip owns, inside a framed pane: the
-/// content wrapped in the caravan band on all four sides (the same
-/// frame the pane wears), with the active tab repainted merging
-/// into the band's top.
-fn anchored_panel(
-    ui: &mut egui::Ui,
-    pane_chrome: Option<&chrome::Chrome>,
-    active: Option<(egui::Rect, String)>,
-    add: impl FnOnce(&mut egui::Ui),
-) {
-    let Some(pane_chrome) = pane_chrome else {
-        ui.separator();
-        add(ui);
-        return;
-    };
-    ui.add_space(2.0);
-    let inner = egui::Frame::NONE
-        .inner_margin(egui::Margin::same(20))
-        .show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            ui.set_min_height(ui.available_height());
-            add(ui);
-        });
-    let rect = inner.response.rect;
-    let content = rect.shrink(20.0);
-    chrome::inner_shadow(ui.painter(), content, 12.0);
-    pane_chrome.leather_frame(ui.painter(), rect);
-    if let Some((tab_rect, label)) = active {
-        chrome::tab_anchor(
-            pane_chrome,
-            ui.painter(),
-            tab_rect,
-            &label,
-            rect.min.y + 11.0,
-        );
     }
 }
 
@@ -4687,6 +4604,7 @@ fn show_equipment_doll(
 fn show_character_section(
     ui: &mut egui::Ui,
     pane: &mut CharacterPane,
+    panel: &TabbedPanel,
     db: Option<&GameCache>,
     caches: &mut Caches,
     can_move: bool,
@@ -4753,12 +4671,52 @@ fn show_character_section(
     {
         *inventory_tab = InventoryTab::Equipment;
     }
-    let active = show_inventory_tabs(ui, pane, db, caches, inventory_tab, selected, drag);
-    let body_chrome = caches.chrome(ui.ctx(), db);
-    anchored_panel(ui, body_chrome.as_ref(), active, |ui| {
+    let tabs = inventory_tabs(pane);
+    let selected_index = match *inventory_tab {
+        InventoryTab::Equipment => 0,
+        InventoryTab::Sack(index) => index + 1,
+    };
+    let response = panel.show(ui, &tabs, selected_index, |ui| {
+        ui.set_min_width(ui.available_width());
+        ui.set_min_height(ui.available_height());
         show_inventory_body(ui, pane, db, caches, *inventory_tab, selected, drag, frame);
     });
+    let target = response.clicked.or(if drag.is_some() {
+        response.hovered
+    } else {
+        None
+    });
+    if let Some(index) = target {
+        let tab = match index {
+            0 => InventoryTab::Equipment,
+            sack => InventoryTab::Sack(sack - 1),
+        };
+        if tab != *inventory_tab {
+            *inventory_tab = tab;
+            *selected = None;
+        }
+    }
     action
+}
+
+/// Tab strip inputs for the Inventory sub-tabs: the doll first,
+/// then one plate per sack with its item count.
+fn inventory_tabs(pane: &CharacterPane) -> Vec<tabbed_panel::Tab> {
+    std::iter::once(tabbed_panel::Tab::new("Equipment"))
+        .chain(
+            pane.character
+                .sacks
+                .iter()
+                .enumerate()
+                .map(|(index, sack)| {
+                    tabbed_panel::Tab::new(if index == 0 {
+                        format!("Main Sack ({})", sack.items.len())
+                    } else {
+                        format!("Sack {} ({})", index, sack.items.len())
+                    })
+                }),
+        )
+        .collect()
 }
 
 /// The content the active Inventory sub-tab owns: the doll, or one
@@ -4869,9 +4827,11 @@ fn vault_tabs(pane: &VaultPane) -> Vec<tabbed_panel::Tab> {
 
 /// The left column: the active document's section (the strip above
 /// it is the pane's [`TabbedPanel`]).
+#[allow(clippy::too_many_arguments)] // one call surface, shell-internal
 fn show_left_column(
     ui: &mut egui::Ui,
     view: &mut LeftView<'_>,
+    panel: &TabbedPanel,
     db: Option<&GameCache>,
     caches: &mut Caches,
     can_move: bool,
@@ -4883,6 +4843,7 @@ fn show_left_column(
             show_character_section(
                 ui,
                 pane,
+                panel,
                 db,
                 caches,
                 can_move,
