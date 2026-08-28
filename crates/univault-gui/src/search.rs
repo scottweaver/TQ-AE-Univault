@@ -1,11 +1,13 @@
 //! The all-vaults search view: every vault file in the vaults folder
 //! flattened into one filtered, sorted table (icon | name | rarity |
-//! req | vault | stats). Rows are addressable through [`GridId`], so
-//! the standard gestures act on them — right-click sends to the
-//! active left tab, Shift+Click duplicates in place, Alt+Click
-//! extracts a socketed piece, double-click jumps to the item in the
-//! vault pane. Vaults loaded here ride the same autosave/refresh/
-//! conflict rails as the panes ([`DocId::SearchVault`]).
+//! req | vault | stats), shown in the vault pane's place so the
+//! game-file pane stays live beside it. Rows are addressable through
+//! [`GridId`], so the standard gestures act on them — right-click
+//! sends to the active left tab, Shift+Click duplicates in place,
+//! Alt+Click extracts a socketed piece, double-click jumps to the
+//! item in the vault pane. Vaults loaded here ride the same
+//! autosave/refresh/conflict rails as the panes
+//! ([`DocId::SearchVault`]).
 
 use std::path::{Path, PathBuf};
 
@@ -22,8 +24,7 @@ use univault_core::vault::Vault;
 
 use crate::theme;
 use crate::{
-    App, DocId, GameStatus, GridId, MainView, VaultPane, game_color, item_tooltip, stamp_of,
-    vaults_dir,
+    App, DocId, GridId, MainView, VaultPane, game_color, item_tooltip, stamp_of, vaults_dir,
 };
 
 /// One vault file loaded by the search view (never the one open in
@@ -199,7 +200,9 @@ struct SearchRow {
 }
 
 /// Row gestures reported back to the main loop, which routes them
-/// through the same handlers the panes use.
+/// through the same handlers the panes use. `rescan` defers the
+/// folder re-list to the main loop, which owns the pane state the
+/// rescan reconciles against.
 #[derive(Default)]
 pub(crate) struct SearchFrame {
     pub(crate) duplicate: Option<(GridId, usize)>,
@@ -208,6 +211,7 @@ pub(crate) struct SearchFrame {
     pub(crate) extract: Option<(GridId, usize)>,
     pub(crate) jump: Option<(GridId, usize)>,
     pub(crate) leave: bool,
+    pub(crate) rescan: bool,
 }
 
 fn filter_field(ui: &mut egui::Ui, value: &mut String, hint: &str, width: f32) {
@@ -628,363 +632,359 @@ impl App {
         }
         self.view = MainView::Panes;
     }
+}
 
-    fn rebuild_search_rows(&mut self) {
-        self.search.stale = false;
-        self.search.total = 0;
-        let GameStatus::Loaded(db) = &self.game else {
-            self.search.rows.clear();
-            return;
-        };
-        if self.search.vocab_stale {
-            let vaults = self
-                .right
-                .iter()
-                .map(|pane| &pane.vault)
-                .chain(self.search.docs.iter().map(|doc| &doc.vault));
-            let (stats, affixes) = collect_vocab(db, vaults);
-            self.search.vocab_stats = stats;
-            self.search.vocab_affixes = affixes;
-            self.search.vocab_stale = false;
-        }
-        let filters = draft_filters(&self.search.draft);
-        let wanted = self.search.source_filter;
-        let mut total = 0;
-        let mut rows = Vec::new();
-        if let Some(pane) = &self.right
-            && wanted.is_none_or(|source| source == RowSource::Open)
-        {
+/// Rebuilds the filtered row set (and, when item data changed, the
+/// suggestion vocabularies) from the open vault pane and the loaded
+/// docs.
+fn rebuild_rows(search: &mut SearchState, db: Option<&GameCache>, right: Option<&VaultPane>) {
+    search.stale = false;
+    search.total = 0;
+    let Some(db) = db else {
+        search.rows.clear();
+        return;
+    };
+    if search.vocab_stale {
+        let vaults = right
+            .iter()
+            .map(|pane| &pane.vault)
+            .chain(search.docs.iter().map(|doc| &doc.vault));
+        let (stats, affixes) = collect_vocab(db, vaults);
+        search.vocab_stats = stats;
+        search.vocab_affixes = affixes;
+        search.vocab_stale = false;
+    }
+    let filters = draft_filters(&search.draft);
+    let wanted = search.source_filter;
+    let mut total = 0;
+    let mut rows = Vec::new();
+    if let Some(pane) = right
+        && wanted.is_none_or(|source| source == RowSource::Open)
+    {
+        collect_rows(
+            db,
+            &filters,
+            &pane.vault,
+            RowSource::Open,
+            &vault_label(&pane.path),
+            &mut total,
+            &mut rows,
+        );
+    }
+    for (index, doc) in search.docs.iter().enumerate() {
+        if wanted.is_none_or(|source| source == RowSource::Doc(index)) {
             collect_rows(
                 db,
                 &filters,
-                &pane.vault,
-                RowSource::Open,
-                &vault_label(&pane.path),
+                &doc.vault,
+                RowSource::Doc(index),
+                &vault_label(&doc.path),
                 &mut total,
                 &mut rows,
             );
         }
-        for (index, doc) in self.search.docs.iter().enumerate() {
-            if wanted.is_none_or(|source| source == RowSource::Doc(index)) {
-                collect_rows(
-                    db,
-                    &filters,
-                    &doc.vault,
-                    RowSource::Doc(index),
-                    &vault_label(&doc.path),
-                    &mut total,
-                    &mut rows,
-                );
+    }
+    sort_rows(&mut rows, search.sort);
+    search.rows = rows;
+    search.total = total;
+}
+
+/// The search surface in the vault pane's place: action row, filter
+/// bar, results table. `dirty` mirrors the autosave indicator; the
+/// caller routes the returned frame's gestures and requests.
+pub(crate) fn show_search_pane(
+    ui: &mut egui::Ui,
+    search: &mut SearchState,
+    right: Option<&VaultPane>,
+    db: Option<&GameCache>,
+    caches: &mut crate::Caches,
+    dirty: bool,
+) -> SearchFrame {
+    let mut frame = SearchFrame::default();
+    if search.stale {
+        rebuild_rows(search, db, right);
+    }
+    let pane_chrome = caches.chrome(ui.ctx(), db);
+    let chrome_ref = pane_chrome.as_ref();
+    ui.horizontal_wrapped(|ui| {
+        if crate::plate_button(ui, chrome_ref, true, "← Vault")
+            .on_hover_text("Show the vault again (Esc)")
+            .clicked()
+        {
+            frame.leave = true;
+        }
+        if crate::plate_button(ui, chrome_ref, true, "Rescan")
+            .on_hover_text("Re-list the vaults folder for new or removed files")
+            .clicked()
+        {
+            frame.rescan = true;
+        }
+        let filtering = !search.draft.is_clear() || search.source_filter.is_some();
+        if crate::plate_button(ui, chrome_ref, filtering, "Clear all")
+            .on_hover_text("Reset every filter — show everything")
+            .clicked()
+        {
+            search.draft = FilterDraft::default();
+            search.source_filter = None;
+            search.stale = true;
+        }
+        ui.label(format!("{} of {} items", search.rows.len(), search.total));
+        if dirty {
+            ui.weak("Saving…");
+        }
+    });
+    if ui.ctx().input(|input| input.key_pressed(egui::Key::Escape))
+        && ui.ctx().memory(|memory| memory.focused().is_none())
+    {
+        frame.leave = true;
+    }
+    let draft_before = search.draft.clone();
+    let source_before = search.source_filter;
+    show_filter_bar(ui, search, right);
+    if search.draft != draft_before || search.source_filter != source_before {
+        search.stale = true;
+    }
+    if search.stale {
+        rebuild_rows(search, db, right);
+    }
+    ui.separator();
+    show_table(ui, search, caches, db, &mut frame);
+    frame
+}
+
+fn show_filter_bar(ui: &mut egui::Ui, search: &mut SearchState, right: Option<&VaultPane>) {
+    filter_text_row(ui, &mut search.draft);
+    show_criteria_rows(ui, search);
+    show_filter_choice_row(ui, search, right);
+}
+
+/// The dynamic criteria list: one row per stat/affix conjunct,
+/// each with a scope, an autocompleting text, and a min–max
+/// value window; rows are added and removed freely.
+fn show_criteria_rows(ui: &mut egui::Ui, search: &mut SearchState) {
+    let SearchState {
+        draft,
+        vocab_stats,
+        vocab_affixes,
+        ..
+    } = search;
+    if draft.criteria.is_empty() {
+        draft.criteria.push(CriterionDraft::default());
+    }
+    let mut remove = None;
+    for (index, criterion) in draft.criteria.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt(("criterion-scope", index))
+                .selected_text(criterion.scope.label())
+                .width(96.0)
+                .show_ui(ui, |ui| {
+                    for scope in CriterionScope::ALL {
+                        ui.selectable_value(&mut criterion.scope, scope, scope.label());
+                    }
+                });
+            let vocab: &[String] = match criterion.scope {
+                CriterionScope::AnyStat | CriterionScope::AffixStat => vocab_stats,
+                CriterionScope::AffixName => vocab_affixes,
+            };
+            suggesting_field(
+                ui,
+                ("criterion-text", index),
+                &mut criterion.text,
+                "type or pick…",
+                200.0,
+                vocab,
+            );
+            match criterion.scope {
+                CriterionScope::AffixName => {}
+                CriterionScope::AnyStat | CriterionScope::AffixStat => {
+                    filter_field(ui, &mut criterion.min, "min", 44.0);
+                    ui.label("–");
+                    filter_field(ui, &mut criterion.max, "max", 44.0);
+                }
             }
-        }
-        sort_rows(&mut rows, self.search.sort);
-        self.search.rows = rows;
-        self.search.total = total;
-    }
-
-    /// The whole search surface: header, filter bar, results table —
-    /// framed like the panes when chrome is loaded.
-    pub(crate) fn show_search_ui(&mut self, ui: &mut egui::Ui) -> SearchFrame {
-        let mut frame = SearchFrame::default();
-        if self.search.stale {
-            self.rebuild_search_rows();
-        }
-        let pane_chrome = {
-            let db = match &self.game {
-                GameStatus::Loaded(data) => Some(data),
-                _ => None,
-            };
-            self.caches.chrome(ui.ctx(), db)
-        };
-        let chrome_ref = pane_chrome.as_ref();
-        egui::Frame::NONE
-            .inner_margin(egui::Margin::same(20))
-            .show(ui, |ui| {
-                ui.set_min_height(ui.available_height());
-                ui.horizontal(|ui| {
-                    if crate::plate_button(ui, chrome_ref, true, "← Back")
-                        .on_hover_text("Return to the panes (Esc)")
-                        .clicked()
-                    {
-                        frame.leave = true;
-                    }
-                    if crate::plate_button(ui, chrome_ref, true, "Rescan")
-                        .on_hover_text("Re-list the vaults folder for new or removed files")
-                        .clicked()
-                    {
-                        self.rescan_search_docs();
-                    }
-                    let filtering =
-                        !self.search.draft.is_clear() || self.search.source_filter.is_some();
-                    if crate::plate_button(ui, chrome_ref, filtering, "Clear all")
-                        .on_hover_text("Reset every filter — show everything")
-                        .clicked()
-                    {
-                        self.search.draft = FilterDraft::default();
-                        self.search.source_filter = None;
-                        self.search.stale = true;
-                    }
-                    crate::pane_heading(ui, chrome_ref, "Search all vaults");
-                    ui.label(format!(
-                        "{} of {} items",
-                        self.search.rows.len(),
-                        self.search.total
-                    ));
-                    if self.any_dirty() {
-                        ui.weak("Saving…");
-                    }
-                });
-                if ui.ctx().input(|input| input.key_pressed(egui::Key::Escape))
-                    && ui.ctx().memory(|memory| memory.focused().is_none())
-                {
-                    frame.leave = true;
-                }
-                let draft_before = self.search.draft.clone();
-                let source_before = self.search.source_filter;
-                self.show_filter_bar(ui);
-                if self.search.draft != draft_before || self.search.source_filter != source_before {
-                    self.search.stale = true;
-                }
-                if self.search.stale {
-                    self.rebuild_search_rows();
-                }
-                ui.separator();
-                self.show_search_table(ui, &mut frame);
-            });
-        frame
-    }
-
-    fn show_filter_bar(&mut self, ui: &mut egui::Ui) {
-        filter_text_row(ui, &mut self.search.draft);
-        self.show_criteria_rows(ui);
-        self.show_filter_choice_row(ui);
-    }
-
-    /// The dynamic criteria list: one row per stat/affix conjunct,
-    /// each with a scope, an autocompleting text, and a min–max
-    /// value window; rows are added and removed freely.
-    fn show_criteria_rows(&mut self, ui: &mut egui::Ui) {
-        let SearchState {
-            draft,
-            vocab_stats,
-            vocab_affixes,
-            ..
-        } = &mut self.search;
-        if draft.criteria.is_empty() {
-            draft.criteria.push(CriterionDraft::default());
-        }
-        let mut remove = None;
-        for (index, criterion) in draft.criteria.iter_mut().enumerate() {
-            ui.horizontal(|ui| {
-                egui::ComboBox::from_id_salt(("criterion-scope", index))
-                    .selected_text(criterion.scope.label())
-                    .width(96.0)
-                    .show_ui(ui, |ui| {
-                        for scope in CriterionScope::ALL {
-                            ui.selectable_value(&mut criterion.scope, scope, scope.label());
-                        }
-                    });
-                let vocab: &[String] = match criterion.scope {
-                    CriterionScope::AnyStat | CriterionScope::AffixStat => vocab_stats,
-                    CriterionScope::AffixName => vocab_affixes,
-                };
-                suggesting_field(
-                    ui,
-                    ("criterion-text", index),
-                    &mut criterion.text,
-                    "type or pick…",
-                    260.0,
-                    vocab,
-                );
-                match criterion.scope {
-                    CriterionScope::AffixName => {}
-                    CriterionScope::AnyStat | CriterionScope::AffixStat => {
-                        filter_field(ui, &mut criterion.min, "min", 44.0);
-                        ui.label("–");
-                        filter_field(ui, &mut criterion.max, "max", 44.0);
-                    }
-                }
-                if ui
-                    .button("✕")
-                    .on_hover_text("Remove this criterion")
-                    .clicked()
-                {
-                    remove = Some(index);
-                }
-            });
-        }
-        if let Some(index) = remove {
-            draft.criteria.remove(index);
-        }
-        if ui.button("＋ Add stat / affix criterion").clicked() {
-            draft.criteria.push(CriterionDraft::default());
-        }
-    }
-
-    fn show_filter_choice_row(&mut self, ui: &mut egui::Ui) {
-        let draft = &mut self.search.draft;
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Wearable at ≤");
-            ui.label("Lv");
-            filter_field(ui, &mut draft.req_level, "–", 36.0);
-            ui.label("Str");
-            filter_field(ui, &mut draft.req_strength, "–", 44.0);
-            ui.label("Dex");
-            filter_field(ui, &mut draft.req_dexterity, "–", 44.0);
-            ui.label("Int");
-            filter_field(ui, &mut draft.req_intelligence, "–", 44.0);
-            egui::ComboBox::from_id_salt("search-rarity")
-                .selected_text(draft.style.map_or("Any rarity", ItemStyle::label))
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut draft.style, None, "Any rarity");
-                    for item_style in RARITY_CHOICES {
-                        ui.selectable_value(&mut draft.style, Some(item_style), item_style.label());
-                    }
-                });
-            egui::ComboBox::from_id_salt("search-category")
-                .selected_text(draft.category.map_or("Any type", ItemCategory::label))
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut draft.category, None, "Any type");
-                    for category in ItemCategory::ALL {
-                        ui.selectable_value(&mut draft.category, Some(category), category.label());
-                    }
-                });
-            egui::ComboBox::from_id_salt("search-socketed")
-                .selected_text(match draft.socketed {
-                    None => "Socketed or not",
-                    Some(true) => "With relic/charm",
-                    Some(false) => "Without relic/charm",
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut draft.socketed, None, "Socketed or not");
-                    ui.selectable_value(&mut draft.socketed, Some(true), "With relic/charm");
-                    ui.selectable_value(&mut draft.socketed, Some(false), "Without relic/charm");
-                });
-            egui::ComboBox::from_id_salt("search-origin")
-                .selected_text(match draft.origin {
-                    OriginDraft::Any => "Any origin",
-                    OriginDraft::BaseGame => "Base game",
-                    OriginDraft::Expansion(expansion) => expansion.label(),
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut draft.origin, OriginDraft::Any, "Any origin");
-                    ui.selectable_value(&mut draft.origin, OriginDraft::BaseGame, "Base game");
-                    for expansion in Expansion::ALL {
-                        ui.selectable_value(
-                            &mut draft.origin,
-                            OriginDraft::Expansion(expansion),
-                            expansion.label(),
-                        );
-                    }
-                });
-            let source_label = |source: Option<RowSource>| -> String {
-                match source {
-                    None => "All vaults".to_string(),
-                    Some(RowSource::Open) => self.right.as_ref().map_or_else(
-                        || "(open vault)".to_string(),
-                        |pane| vault_label(&pane.path),
-                    ),
-                    Some(RowSource::Doc(index)) => self
-                        .search
-                        .docs
-                        .get(index)
-                        .map_or_else(|| "(gone)".to_string(), |doc| vault_label(&doc.path)),
-                }
-            };
-            let mut source = self.search.source_filter;
-            egui::ComboBox::from_id_salt("search-source")
-                .selected_text(source_label(source))
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut source, None, "All vaults");
-                    if self.right.is_some() {
-                        ui.selectable_value(
-                            &mut source,
-                            Some(RowSource::Open),
-                            source_label(Some(RowSource::Open)),
-                        );
-                    }
-                    for index in 0..self.search.docs.len() {
-                        ui.selectable_value(
-                            &mut source,
-                            Some(RowSource::Doc(index)),
-                            source_label(Some(RowSource::Doc(index))),
-                        );
-                    }
-                });
-            self.search.source_filter = source;
-        });
-    }
-
-    fn show_search_table(&mut self, ui: &mut egui::Ui, frame: &mut SearchFrame) {
-        let App {
-            search,
-            caches,
-            game,
-            ..
-        } = self;
-        let db = match game {
-            GameStatus::Loaded(data) => Some(&*data),
-            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
-        };
-        if db.is_none() {
-            ui.weak("Search needs imported game data — use 'Import game data…' first.");
-            return;
-        }
-        let mut sort = search.sort;
-        let sort_button = |ui: &mut egui::Ui, label: &str, key: SortKey, sort: &mut SortSpec| {
-            let arrow = if sort.key == key {
-                if sort.ascending { " ▲" } else { " ▼" }
-            } else {
-                ""
-            };
             if ui
-                .add(egui::Button::new(format!("{label}{arrow}")).frame(false))
+                .button("✕")
+                .on_hover_text("Remove this criterion")
                 .clicked()
             {
-                *sort = SortSpec {
-                    key,
-                    ascending: if sort.key == key {
-                        !sort.ascending
-                    } else {
-                        true
-                    },
-                };
+                remove = Some(index);
+            }
+        });
+    }
+    if let Some(index) = remove {
+        draft.criteria.remove(index);
+    }
+    if ui.button("＋ Add stat / affix criterion").clicked() {
+        draft.criteria.push(CriterionDraft::default());
+    }
+}
+
+fn show_filter_choice_row(ui: &mut egui::Ui, search: &mut SearchState, right: Option<&VaultPane>) {
+    let SearchState {
+        draft,
+        docs,
+        source_filter,
+        ..
+    } = search;
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Wearable at ≤");
+        ui.label("Lv");
+        filter_field(ui, &mut draft.req_level, "–", 36.0);
+        ui.label("Str");
+        filter_field(ui, &mut draft.req_strength, "–", 44.0);
+        ui.label("Dex");
+        filter_field(ui, &mut draft.req_dexterity, "–", 44.0);
+        ui.label("Int");
+        filter_field(ui, &mut draft.req_intelligence, "–", 44.0);
+    });
+    ui.horizontal_wrapped(|ui| {
+        egui::ComboBox::from_id_salt("search-rarity")
+            .selected_text(draft.style.map_or("Any rarity", ItemStyle::label))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut draft.style, None, "Any rarity");
+                for item_style in RARITY_CHOICES {
+                    ui.selectable_value(&mut draft.style, Some(item_style), item_style.label());
+                }
+            });
+        egui::ComboBox::from_id_salt("search-category")
+            .selected_text(draft.category.map_or("Any type", ItemCategory::label))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut draft.category, None, "Any type");
+                for category in ItemCategory::ALL {
+                    ui.selectable_value(&mut draft.category, Some(category), category.label());
+                }
+            });
+        egui::ComboBox::from_id_salt("search-socketed")
+            .selected_text(match draft.socketed {
+                None => "Socketed or not",
+                Some(true) => "With relic/charm",
+                Some(false) => "Without relic/charm",
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut draft.socketed, None, "Socketed or not");
+                ui.selectable_value(&mut draft.socketed, Some(true), "With relic/charm");
+                ui.selectable_value(&mut draft.socketed, Some(false), "Without relic/charm");
+            });
+    });
+    ui.horizontal_wrapped(|ui| {
+        egui::ComboBox::from_id_salt("search-origin")
+            .selected_text(match draft.origin {
+                OriginDraft::Any => "Any origin",
+                OriginDraft::BaseGame => "Base game",
+                OriginDraft::Expansion(expansion) => expansion.label(),
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut draft.origin, OriginDraft::Any, "Any origin");
+                ui.selectable_value(&mut draft.origin, OriginDraft::BaseGame, "Base game");
+                for expansion in Expansion::ALL {
+                    ui.selectable_value(
+                        &mut draft.origin,
+                        OriginDraft::Expansion(expansion),
+                        expansion.label(),
+                    );
+                }
+            });
+        let source_label = |source: Option<RowSource>| -> String {
+            match source {
+                None => "All vaults".to_string(),
+                Some(RowSource::Open) => right.map_or_else(
+                    || "(open vault)".to_string(),
+                    |pane| vault_label(&pane.path),
+                ),
+                Some(RowSource::Doc(index)) => docs
+                    .get(index)
+                    .map_or_else(|| "(gone)".to_string(), |doc| vault_label(&doc.path)),
             }
         };
-        TableBuilder::new(ui)
-            .striped(true)
-            .resizable(true)
-            .sense(egui::Sense::click())
-            .column(Column::exact(ICON_SIZE + 8.0))
-            .column(Column::initial(230.0).at_least(140.0).clip(true))
-            .column(Column::initial(90.0).clip(true))
-            .column(Column::exact(48.0))
-            .column(Column::initial(150.0).clip(true))
-            .column(Column::remainder())
-            .header(22.0, |mut header| {
-                header.col(|_| {});
-                header.col(|ui| sort_button(ui, "Name", SortKey::Name, &mut sort));
-                header.col(|ui| sort_button(ui, "Rarity", SortKey::Rarity, &mut sort));
-                header.col(|ui| sort_button(ui, "Lv", SortKey::ReqLevel, &mut sort));
-                header.col(|ui| sort_button(ui, "Vault", SortKey::Location, &mut sort));
-                header.col(|ui| {
-                    ui.strong("Stats");
-                });
-            })
-            .body(|body| {
-                let SearchState { rows, selected, .. } = &mut *search;
-                let heights: Vec<f32> = rows.iter().map(|row| row.height).collect();
-                body.heterogeneous_rows(heights.into_iter(), |mut table_row| {
-                    let Some(row) = rows.get(table_row.index()) else {
-                        return;
-                    };
-                    show_row(&mut table_row, row, selected, caches, db, frame);
-                });
+        let mut source = *source_filter;
+        egui::ComboBox::from_id_salt("search-source")
+            .selected_text(source_label(source))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut source, None, "All vaults");
+                if right.is_some() {
+                    ui.selectable_value(
+                        &mut source,
+                        Some(RowSource::Open),
+                        source_label(Some(RowSource::Open)),
+                    );
+                }
+                for index in 0..docs.len() {
+                    ui.selectable_value(
+                        &mut source,
+                        Some(RowSource::Doc(index)),
+                        source_label(Some(RowSource::Doc(index))),
+                    );
+                }
             });
-        if sort != search.sort {
-            search.sort = sort;
-            sort_rows(&mut search.rows, sort);
+        *source_filter = source;
+    });
+}
+
+fn show_table(
+    ui: &mut egui::Ui,
+    search: &mut SearchState,
+    caches: &mut crate::Caches,
+    db: Option<&GameCache>,
+    frame: &mut SearchFrame,
+) {
+    if db.is_none() {
+        ui.weak("Search needs imported game data — use 'Import game data…' first.");
+        return;
+    }
+    let mut sort = search.sort;
+    let sort_button = |ui: &mut egui::Ui, label: &str, key: SortKey, sort: &mut SortSpec| {
+        let arrow = if sort.key == key {
+            if sort.ascending { " ▲" } else { " ▼" }
+        } else {
+            ""
+        };
+        if ui
+            .add(egui::Button::new(format!("{label}{arrow}")).frame(false))
+            .clicked()
+        {
+            *sort = SortSpec {
+                key,
+                ascending: if sort.key == key {
+                    !sort.ascending
+                } else {
+                    true
+                },
+            };
         }
+    };
+    TableBuilder::new(ui)
+        .striped(true)
+        .resizable(true)
+        .sense(egui::Sense::click())
+        .column(Column::exact(ICON_SIZE + 8.0))
+        .column(Column::initial(170.0).at_least(120.0).clip(true))
+        .column(Column::initial(70.0).clip(true))
+        .column(Column::exact(40.0))
+        .column(Column::initial(110.0).clip(true))
+        .column(Column::remainder().clip(true))
+        .header(22.0, |mut header| {
+            header.col(|_| {});
+            header.col(|ui| sort_button(ui, "Name", SortKey::Name, &mut sort));
+            header.col(|ui| sort_button(ui, "Rarity", SortKey::Rarity, &mut sort));
+            header.col(|ui| sort_button(ui, "Lv", SortKey::ReqLevel, &mut sort));
+            header.col(|ui| sort_button(ui, "Vault", SortKey::Location, &mut sort));
+            header.col(|ui| {
+                ui.strong("Stats");
+            });
+        })
+        .body(|body| {
+            let SearchState { rows, selected, .. } = &mut *search;
+            let heights: Vec<f32> = rows.iter().map(|row| row.height).collect();
+            body.heterogeneous_rows(heights.into_iter(), |mut table_row| {
+                let Some(row) = rows.get(table_row.index()) else {
+                    return;
+                };
+                show_row(&mut table_row, row, selected, caches, db, frame);
+            });
+        });
+    if sort != search.sort {
+        search.sort = sort;
+        sort_rows(&mut search.rows, sort);
     }
 }
 
