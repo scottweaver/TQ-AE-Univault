@@ -194,7 +194,7 @@ impl Chrome {
         let ink = if enabled {
             PLATE_INK
         } else {
-            Color32::from_rgb(96, 84, 60)
+            Color32::from_rgb(52, 44, 28)
         };
         let galley = ui.painter().layout_no_wrap(
             text.to_owned(),
@@ -211,7 +211,7 @@ impl Chrome {
             },
         );
         let (texture, tint) = if !enabled {
-            (&self.button_up, Color32::from_gray(135))
+            (&self.button_up, Color32::from_gray(170))
         } else if response.is_pointer_button_down_on() {
             (&self.button_down, Color32::WHITE)
         } else if response.hovered() {
