@@ -17,6 +17,7 @@ pub mod respec;
 pub mod skilltree;
 pub mod stash;
 pub mod stats;
+pub mod store;
 pub mod style;
 pub mod tex;
 pub mod text;
