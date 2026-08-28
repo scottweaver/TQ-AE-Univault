@@ -974,7 +974,14 @@ impl App {
     /// Sends every item in the active left tab to the vault — the
     /// open tab first, spilling into the others as they fill. The
     /// inventory tab covers all sacks; equipped gear stays worn.
-    fn bulk_left_to_vault(&mut self, mode: BulkMode) -> Result<String, String> {
+    /// A bulk send into the open vault tab: the active left
+    /// document, or — for the Inventory — one sack when `sack`
+    /// names it.
+    fn bulk_left_to_vault(
+        &mut self,
+        mode: BulkMode,
+        sack: Option<usize>,
+    ) -> Result<String, String> {
         if self.right.is_none() {
             return Err("load a vault first".to_string());
         }
@@ -985,8 +992,23 @@ impl App {
         let vault_pane = self.right.as_mut().expect("checked above");
         let tab = vault_pane.open_tab;
         let vault = &mut vault_pane.vault;
-        let (outcome, source_grid, label) = match self.active_tab {
-            LeftTab::Inventory => {
+        let (outcome, source_grid, label) = match (self.active_tab, sack) {
+            (LeftTab::Inventory, Some(index)) => {
+                let pane = self.character.as_mut().ok_or("no character loaded")?;
+                let sack = pane
+                    .character
+                    .sacks
+                    .get_mut(index)
+                    .ok_or("that sack no longer exists")?;
+                let outcome = bulk_into_vault(&mut sack.items, vault, tab, db, mode);
+                let label = if index == 0 {
+                    "the Main Sack"
+                } else {
+                    "the sack"
+                };
+                (outcome, GridId::Sack(index), label)
+            }
+            (LeftTab::Inventory, None) => {
                 let pane = self.character.as_mut().ok_or("no character loaded")?;
                 let outcome = pane
                     .character
@@ -999,17 +1021,17 @@ impl App {
                     );
                 (outcome, GridId::Sack(0), "the inventory")
             }
-            LeftTab::Bank => {
+            (LeftTab::Bank, _) => {
                 let pane = self.bank.as_mut().ok_or("no bank loaded")?;
                 let outcome = bulk_into_vault(&mut pane.stash.items, vault, tab, db, mode);
                 (outcome, GridId::Bank, "the bank")
             }
-            LeftTab::Shared => {
+            (LeftTab::Shared, _) => {
                 let pane = self.shared.as_mut().ok_or("no shared bank loaded")?;
                 let outcome = bulk_into_vault(&mut pane.stash.items, vault, tab, db, mode);
                 (outcome, GridId::Shared, "the shared bank")
             }
-            LeftTab::Relic => {
+            (LeftTab::Relic, _) => {
                 let pane = self.relics.as_mut().ok_or("no relic bank loaded")?;
                 let outcome = bulk_into_vault(&mut pane.stash.items, vault, tab, db, mode);
                 (outcome, GridId::Relic, "the relic bank")
@@ -2326,10 +2348,16 @@ impl App {
                 match action {
                     Some(PaneAction::MoveToVault) => self.status = Some(self.move_left_to_vault()),
                     Some(PaneAction::MoveAllToVault) => {
-                        self.status = Some(self.bulk_left_to_vault(BulkMode::Move));
+                        self.status = Some(self.bulk_left_to_vault(BulkMode::Move, None));
                     }
                     Some(PaneAction::CopyAllToVault) => {
-                        self.status = Some(self.bulk_left_to_vault(BulkMode::Copy));
+                        self.status = Some(self.bulk_left_to_vault(BulkMode::Copy, None));
+                    }
+                    Some(PaneAction::MoveSackToVault(sack)) => {
+                        self.status = Some(self.bulk_left_to_vault(BulkMode::Move, Some(sack)));
+                    }
+                    Some(PaneAction::CopySackToVault(sack)) => {
+                        self.status = Some(self.bulk_left_to_vault(BulkMode::Copy, Some(sack)));
                     }
                     Some(PaneAction::MoveToFile) => self.status = Some(self.move_vault_to_left()),
                     Some(PaneAction::OpenSearch) => self.enter_search(),
@@ -2383,6 +2411,8 @@ enum PaneAction {
     MoveToVault,
     MoveAllToVault,
     CopyAllToVault,
+    MoveSackToVault(usize),
+    CopySackToVault(usize),
     MoveToFile,
     PreviewRespec(RespecKind),
     OpenSearch,
@@ -4638,26 +4668,6 @@ fn show_character_section(
         if plate_button(ui, pane_chrome, can_move && selection_here, "→ Vault").clicked() {
             action = Some(PaneAction::MoveToVault);
         }
-        let has_items = pane
-            .character
-            .sacks
-            .iter()
-            .any(|sack| !sack.items.is_empty());
-        if plate_button(ui, pane_chrome, can_move && has_items, "All → Vault")
-            .on_hover_text(
-                "Move every item from all sacks into the open vault tab, \
-                 spilling into the other tabs as it fills; equipped gear stays on",
-            )
-            .clicked()
-        {
-            action = Some(PaneAction::MoveAllToVault);
-        }
-        if plate_button(ui, pane_chrome, can_move && has_items, "Copy all → Vault")
-            .on_hover_text("The same, as copies — every item stays in its sack")
-            .clicked()
-        {
-            action = Some(PaneAction::CopyAllToVault);
-        }
         if plate_button(ui, pane_chrome, true, "Respec attributes").clicked() {
             action = Some(PaneAction::PreviewRespec(RespecKind::Attributes));
         }
@@ -4679,8 +4689,21 @@ fn show_character_section(
     let response = panel.show(ui, &tabs, selected_index, |ui| {
         ui.set_min_width(ui.available_width());
         ui.set_min_height(ui.available_height());
-        show_inventory_body(ui, pane, db, caches, *inventory_tab, selected, drag, frame);
+        show_inventory_body(
+            ui,
+            pane,
+            db,
+            caches,
+            *inventory_tab,
+            can_move,
+            selected,
+            drag,
+            frame,
+        )
     });
+    if let Some(chosen) = response.inner {
+        action = Some(chosen);
+    }
     let target = response.clicked.or(if drag.is_some() {
         response.hovered
     } else {
@@ -4728,10 +4751,12 @@ fn show_inventory_body(
     db: Option<&GameCache>,
     caches: &mut Caches,
     inventory_tab: InventoryTab,
+    can_move: bool,
     selected: &mut Option<(GridId, usize)>,
     drag: Option<&DragState>,
     frame: &mut DragFrame,
-) {
+) -> Option<PaneAction> {
+    let mut action = None;
     match inventory_tab {
         InventoryTab::Equipment => {
             ui.add_space(12.0);
@@ -4748,6 +4773,26 @@ fn show_inventory_body(
         }
         InventoryTab::Sack(index) => {
             if let Some(sack) = pane.character.sacks.get(index) {
+                let pane_chrome = caches.chrome(ui.ctx(), db);
+                let pane_chrome = pane_chrome.as_ref();
+                let has_items = !sack.items.is_empty();
+                ui.horizontal(|ui| {
+                    if plate_button(ui, pane_chrome, can_move && has_items, "All → Vault")
+                        .on_hover_text(
+                            "Move every item from this sack into the open vault tab, \
+                             spilling into the other tabs as it fills",
+                        )
+                        .clicked()
+                    {
+                        action = Some(PaneAction::MoveSackToVault(index));
+                    }
+                    if plate_button(ui, pane_chrome, can_move && has_items, "Copy all → Vault")
+                        .on_hover_text("The same, as copies — every item stays in this sack")
+                        .clicked()
+                    {
+                        action = Some(PaneAction::CopySackToVault(index));
+                    }
+                });
                 let entries: Vec<(usize, &Item)> = sack.items.iter().enumerate().collect();
                 grid_view(
                     ui,
@@ -4763,6 +4808,7 @@ fn show_inventory_body(
             }
         }
     }
+    action
 }
 
 /// Mutable view of the left column's documents and UI state, so the
