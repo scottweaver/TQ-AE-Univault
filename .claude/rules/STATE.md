@@ -5,21 +5,24 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-28 (PR #47 opened)
+Last updated: 2026-08-28 (PR #47 merged + wrapped up)
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
 **Resume here:** PR #47 (filter overhaul: the all-vaults search
 renders in the vault pane's place instead of swapping the whole
-window) is open awaiting the user's look + merge — then wrap-up.
-The user's full release-build pass over the component chrome
-(PRs #43/#44) is still outstanding, then the UIX queue. Remaining
-game-art chrome surfaces (candidates for future components):
-nameplates, plate buttons, grid cells, stone backdrop, tooltip
-frame. Working-tree note: `crates/univault-gui/assets/components/
-gilded-border.png` is modified but uncommitted — the user's own
-in-flight art change; leave it be.
+window) merged 2026-08-28 and is wrapped up. Awaiting the user's
+in-app feel pass on the half-width search table (stats column
+starts narrow; columns are draggable — offer to widen defaults or
+drop the Rarity column if it feels cramped), plus the still-
+outstanding release-build pass over the component chrome
+(PRs #43/#44), then the UIX queue. Remaining game-art chrome
+surfaces (candidates for future components): nameplates, plate
+buttons, grid cells, stone backdrop, tooltip frame. Working-tree
+note: `crates/univault-gui/assets/components/gilded-border.png`
+is modified but uncommitted — the user's own in-flight art
+change; leave it be.
 
 - **egui 0.36 landmines, both user-hit this session:**
   (1) `ui.columns` children share a *stable* id — derive
@@ -115,8 +118,7 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#46 all merged; all gates green |
-| `feat/filter-in-vault-pane` | search view into the vault pane | PR #47 open |
+| `main` | trunk | PRs #1–#47 all merged; all gates green |
 
 ## Next up
 
@@ -163,7 +165,7 @@ buttons shipped in PR #44):
 ## Most recent meaningful progress
 
 - **2026-08-28 — Filter overhaul: search in the vault pane (PR #47,
-  open).** User ask: no more full-window swap — the all-vaults
+  merged).** User ask: no more full-window swap — the all-vaults
   search now renders in the vault column (one "Search all vaults"
   plate) with the character/bank pane live beside it; ⌘F toggles,
   Esc / "← Vault" returns, and sends, bulk sends, and auto-refresh
