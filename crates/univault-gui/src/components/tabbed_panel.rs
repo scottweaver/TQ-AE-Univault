@@ -55,10 +55,11 @@ const INTERIOR: Color32 = Color32::BLACK;
 
 const LABEL_INACTIVE: Color32 = Color32::from_rgb(186, 166, 118);
 const LABEL_ACTIVE: Color32 = Color32::from_rgb(236, 218, 164);
+const LABEL_DISABLED: Color32 = Color32::from_gray(115);
 
 const TAB_GAP: f32 = 12.0;
 const TAB_PAD: f32 = 18.0;
-const TAB_MIN_W: f32 = 80.0;
+const TAB_MIN_W: f32 = 44.0;
 
 /// Content inset: past the tab strip and the rails, with breathing
 /// room inside the interior.
@@ -93,10 +94,40 @@ impl Src {
     }
 }
 
-/// What [`TabbedPanel::show`] reports back: the clicked tab, if
-/// any — the caller owns the selection — and the content's result.
+/// One plate on the strip. A disabled plate renders dim, reports
+/// neither clicks nor hover, and offers `disabled_hint` as its
+/// tooltip.
+pub struct Tab {
+    title: String,
+    enabled: bool,
+    disabled_hint: Option<String>,
+}
+
+impl Tab {
+    pub fn new(title: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            enabled: true,
+            disabled_hint: None,
+        }
+    }
+
+    pub fn disabled(title: impl Into<String>, hint: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            enabled: false,
+            disabled_hint: Some(hint.into()),
+        }
+    }
+}
+
+/// What [`TabbedPanel::show`] reports back: the clicked tab, the
+/// enabled tab under the pointer (for callers that switch tabs
+/// mid-drag) — the caller owns the selection — and the content's
+/// result.
 pub struct TabbedPanelResponse<R> {
     pub clicked: Option<usize>,
+    pub hovered: Option<usize>,
     pub inner: R,
 }
 
@@ -135,12 +166,13 @@ impl TabbedPanel {
 
     /// Lays `content` out inside [`MARGIN`], then dresses the
     /// allocated rect: black interior, rail frame, one plate per
-    /// title with `selected` drawn open through the rail. Reports a
-    /// click on any plate; the caller applies the selection change.
+    /// tab with `selected` drawn open through the rail. Reports
+    /// clicks and hover on enabled plates; the caller applies the
+    /// selection change.
     pub fn show<R>(
         &self,
         ui: &mut egui::Ui,
-        titles: &[&str],
+        tabs: &[Tab],
         selected: usize,
         content: impl FnOnce(&mut egui::Ui) -> R,
     ) -> TabbedPanelResponse<R> {
@@ -152,15 +184,17 @@ impl TabbedPanel {
             .set(fill_slot, egui::Shape::rect_filled(frame, 0.0, INTERIOR));
 
         let strip = ui.painter().with_clip_rect(outer.intersect(ui.clip_rect()));
-        let tab_rects = tab_rects(ui, titles, outer);
-        for (index, (rect, _)) in tab_rects.iter().enumerate() {
+        let pointer = ui.ctx().pointer_latest_pos();
+        let tab_rects = tab_rects(ui, tabs, outer);
+        for (index, rect) in tab_rects.iter().enumerate() {
             if index != selected {
                 self.three_slice(&strip, INACTIVE, INACTIVE_CAPS, *rect);
             }
         }
         self.rail_frame(ui.painter(), frame);
         let mut clicked = None;
-        for (index, (rect, title)) in tab_rects.iter().enumerate() {
+        let mut hovered = None;
+        for ((index, rect), tab) in tab_rects.iter().enumerate().zip(tabs) {
             if index == selected {
                 let open = Rect::from_min_max(
                     pos2(rect.min.x - ACTIVE_WING, rect.min.y),
@@ -168,7 +202,9 @@ impl TabbedPanel {
                 );
                 self.three_slice(&strip, ACTIVE, ACTIVE_CAPS, open);
             }
-            let ink = if index == selected {
+            let ink = if !tab.enabled {
+                LABEL_DISABLED
+            } else if index == selected {
                 LABEL_ACTIVE
             } else {
                 LABEL_INACTIVE
@@ -176,19 +212,30 @@ impl TabbedPanel {
             strip.text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
-                *title,
+                &tab.title,
                 egui::TextStyle::Button.resolve(ui.style()),
                 ink,
             );
-            let response = ui
-                .interact(*rect, ui.id().with(("tabbed-panel", index)), Sense::click())
-                .on_hover_cursor(CursorIcon::PointingHand);
-            if response.clicked() {
-                clicked = Some(index);
+            let response = ui.interact(
+                *rect,
+                inner.response.id.with(("tabbed-panel", index)),
+                Sense::click(),
+            );
+            if tab.enabled {
+                let response = response.on_hover_cursor(CursorIcon::PointingHand);
+                if response.clicked() {
+                    clicked = Some(index);
+                }
+                if pointer.is_some_and(|pos| rect.contains(pos)) {
+                    hovered = Some(index);
+                }
+            } else if let Some(hint) = &tab.disabled_hint {
+                response.on_hover_text(hint.clone());
             }
         }
         TabbedPanelResponse {
             clicked,
+            hovered,
             inner: inner.inner,
         }
     }
@@ -306,25 +353,24 @@ impl TabbedPanel {
     }
 }
 
-/// One plate rect per title, laid left-to-right along the strip
+/// One plate rect per tab, laid left-to-right along the strip
 /// above the rail, each sized to its label. The strip starts past
 /// the corner block so an open plate's wings only ever land on
 /// rail-run — inside the corner, the rail's inner gold line stops
 /// short of the edge, and a wing fragment crossing that quiet zone
 /// reads as a stray horizontal line.
-fn tab_rects<'t>(ui: &egui::Ui, titles: &[&'t str], outer: Rect) -> Vec<(Rect, &'t str)> {
+fn tab_rects(ui: &egui::Ui, tabs: &[Tab], outer: Rect) -> Vec<Rect> {
     let font = egui::TextStyle::Button.resolve(ui.style());
     let mut x = outer.min.x + CORNER;
-    titles
-        .iter()
-        .map(|title| {
+    tabs.iter()
+        .map(|tab| {
             let label =
                 ui.painter()
-                    .layout_no_wrap((*title).to_string(), font.clone(), Color32::WHITE);
+                    .layout_no_wrap(tab.title.clone(), font.clone(), Color32::WHITE);
             let width = (label.rect.width() + 2.0 * TAB_PAD).max(TAB_MIN_W);
             let rect = Rect::from_min_size(pos2(x, outer.min.y), vec2(width, TAB_H));
             x += width + TAB_GAP;
-            (rect, *title)
+            rect
         })
         .collect()
 }
