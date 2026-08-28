@@ -5,23 +5,21 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-28
+Last updated: 2026-08-28 (PR #47 opened)
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** PRs #43 (component workshop + review loop) and
-#44 (components into the app) both merged 2026-08-27 night. The
-app's chrome IS the hand-drawn components now: both panes and the
-inventory sub-tabs render through `TabbedPanel`, the gilded
-border frames the window, and the caravan/leather game chrome is
-deleted (recoverable from git). The user live-tested the
-integrated build and accepted it (tabs, nested sub-tabs,
-auto-open, disabled-button legibility; they rolled with the
-panels' black interior). First items next session: the user's
-full release-build pass, then the UIX queue. Remaining game-art
-chrome surfaces (candidates for future components): nameplates,
-plate buttons, grid cells, stone backdrop, tooltip frame.
+**Resume here:** PR #47 (filter overhaul: the all-vaults search
+renders in the vault pane's place instead of swapping the whole
+window) is open awaiting the user's look + merge — then wrap-up.
+The user's full release-build pass over the component chrome
+(PRs #43/#44) is still outstanding, then the UIX queue. Remaining
+game-art chrome surfaces (candidates for future components):
+nameplates, plate buttons, grid cells, stone backdrop, tooltip
+frame. Working-tree note: `crates/univault-gui/assets/components/
+gilded-border.png` is modified but uncommitted — the user's own
+in-flight art change; leave it be.
 
 - **egui 0.36 landmines, both user-hit this session:**
   (1) `ui.columns` children share a *stable* id — derive
@@ -117,7 +115,8 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#44 all merged; all gates green |
+| `main` | trunk | PRs #1–#46 all merged; all gates green |
+| `feat/filter-in-vault-pane` | search view into the vault pane | PR #47 open |
 
 ## Next up
 
@@ -163,6 +162,19 @@ buttons shipped in PR #44):
 
 ## Most recent meaningful progress
 
+- **2026-08-28 — Filter overhaul: search in the vault pane (PR #47,
+  open).** User ask: no more full-window swap — the all-vaults
+  search now renders in the vault column (one "Search all vaults"
+  plate) with the character/bank pane live beside it; ⌘F toggles,
+  Esc / "← Vault" returns, and sends, bulk sends, and auto-refresh
+  all work while filtering. The search UI's `&mut self` methods
+  became split-borrow functions to render inside the columns
+  closure; filter combos wrap into sized rows and the stats column
+  clips for the half width (screenshot-verified live — the old
+  wrapped row silently overflowed the pane). Risk: half-width
+  table feel (stats column starts narrow; columns are draggable)
+  awaits the user's in-app pass; full-window mode is gone by
+  design.
 - **2026-08-27 — Components into the app + live-fix round (PR #44,
   merged).** Both panes and the inventory sub-tabs now render
   through `TabbedPanel` (per-tab disabled hints, mid-drag hover
@@ -275,28 +287,7 @@ buttons shipped in PR #44):
   too (consistent with the mod's spirit); Ragnarök/Atlantis wild
   heroes use champion-slot pools — deliberately skipped, extend when
   the user reaches those acts.
-- **2026-08-26 — All-vaults search view (PR #33).** User ask,
-  design-dialogued (full-window mode / all vault
-  files / full row actions): "Search vaults…" (⌘F) swaps the panes
-  for one filtered, sortable table over every vault file — icon,
-  rarity-colored name, requirement, vault, full colored stat lines.
-  Filters: name, set, wearable-at req caps, rarity, type, socketed,
-  expansion, per-vault — plus dynamic stat/affix criteria rows
-  (add/remove; any-stat / affix-stat / affix-name; min–max value
-  windows; autocomplete fed by the vaults' own stat templates and
-  affix names — reworked mid-PR after user feedback that single
-  fixed fields couldn't express "pierce res AND poison res AND burn
-  damage"). Core got `query` (Filter conjunction over the cache;
-  `ValueBounds` windows; `stat_template` vocabulary; typed
-  `stats::item_requirements`; `item_name` promoted from MCP);
-  non-open vaults load as docs riding the existing autosave/
-  refresh/conflict rails (`DocId::SearchVault`), and rows are
-  gesture targets via `GridId::SearchDoc` (send/duplicate/copy/
-  extract); double-click adopts the vault into the pane by model
-  handoff — no disk round-trip. A Clear-all button resets every
-  filter (user ask; "Much nicer!" on the criteria rework). 217
-  tests. Risk: table feel (row heights, gestures, autocomplete
-  popup) unverified until the user runs the full in-app pass.
+
 ## Blocked / waiting
 
 - *(nothing)*

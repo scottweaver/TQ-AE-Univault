@@ -547,8 +547,8 @@ struct App {
     /// Documents whose file changed on disk while they hold unsaved
     /// edits — resolved by the conflict modal, never silently.
     conflicts: Vec<DocId>,
-    /// Which surface fills the window: the two panes, or the
-    /// all-vaults search table.
+    /// Which surface fills the vault column: the open vault, or the
+    /// all-vaults search table in its place.
     view: MainView,
     search: search::SearchState,
     /// The hand-drawn component chrome (bundled art, uploaded once).
@@ -556,7 +556,8 @@ struct App {
     gilded_border: GildedBorder,
 }
 
-/// The window's main surface.
+/// The vault column's surface — the game-file pane stays put either
+/// way.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MainView {
     Panes,
@@ -1388,10 +1389,10 @@ impl App {
                         ui,
                         "Search",
                         &[
-                            "\"Search vaults…\" (⌘F) opens one filterable table over \
-                         every vault file.",
+                            "\"Search vaults…\" (⌘F) shows one filterable table over \
+                         every vault file in the vault pane's place.",
                             "Rows take the same gestures as grid items; double-click \
-                         shows an item at home in its vault.",
+                         shows an item at home in its vault. Esc brings the vault back.",
                         ],
                     );
                     help_section(
@@ -2328,75 +2329,74 @@ impl App {
         if let Some(dropped) = first_dropped_path(ui.ctx()) {
             self.status = Some(self.open(&dropped));
         }
-        match self.view {
-            MainView::Panes => {
-                if matches!(self.game, GameStatus::Loaded(_))
-                    && ui.ctx().input_mut(|input| {
-                        input.consume_key(egui::Modifiers::COMMAND, egui::Key::F)
-                    })
-                {
-                    self.enter_search();
-                }
-                self.show_header(ui);
-                ui.separator();
-                let (action, drag_frame) = self.show_panes(ui);
-                if let Some((grid, index)) = drag_frame.duplicate {
-                    self.status = Some(self.duplicate_item(grid, index));
-                }
-                if let Some((grid, index)) = drag_frame.quick_move {
-                    self.status = Some(self.quick_move(grid, index));
-                }
-                if let Some((grid, index)) = drag_frame.copy_across {
-                    self.status = Some(self.copy_across(grid, index));
-                }
-                if let Some((grid, index)) = drag_frame.edit_bonus {
-                    self.request_bonus_edit(grid, index);
-                }
-                if let Some((grid, index)) = drag_frame.extract {
-                    self.status = Some(self.extract_socketed(grid, index));
-                }
-                self.update_drag(ui.ctx(), drag_frame);
-                match action {
-                    Some(PaneAction::MoveToVault) => self.status = Some(self.move_left_to_vault()),
-                    Some(PaneAction::MoveAllToVault) => {
-                        self.status = Some(self.bulk_left_to_vault(BulkMode::Move, None));
-                    }
-                    Some(PaneAction::CopyAllToVault) => {
-                        self.status = Some(self.bulk_left_to_vault(BulkMode::Copy, None));
-                    }
-                    Some(PaneAction::MoveSackToVault(sack)) => {
-                        self.status = Some(self.bulk_left_to_vault(BulkMode::Move, Some(sack)));
-                    }
-                    Some(PaneAction::CopySackToVault(sack)) => {
-                        self.status = Some(self.bulk_left_to_vault(BulkMode::Copy, Some(sack)));
-                    }
-                    Some(PaneAction::MoveToFile) => self.status = Some(self.move_vault_to_left()),
-                    Some(PaneAction::OpenSearch) => self.enter_search(),
-                    Some(PaneAction::PreviewRespec(kind)) => self.preview_respec(kind),
-                    None => {}
-                }
+        if matches!(self.game, GameStatus::Loaded(_))
+            && ui
+                .ctx()
+                .input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::F))
+        {
+            match self.view {
+                MainView::Panes => self.enter_search(),
+                MainView::Search => self.view = MainView::Panes,
             }
-            MainView::Search => {
-                let search_frame = self.show_search_ui(ui);
-                if let Some((grid, index)) = search_frame.duplicate {
-                    self.status = Some(self.duplicate_item(grid, index));
-                }
-                if let Some((grid, index)) = search_frame.quick_move {
-                    self.status = Some(self.quick_move(grid, index));
-                }
-                if let Some((grid, index)) = search_frame.copy_across {
-                    self.status = Some(self.copy_across(grid, index));
-                }
-                if let Some((grid, index)) = search_frame.extract {
-                    self.status = Some(self.extract_socketed(grid, index));
-                }
-                if let Some((grid, index)) = search_frame.jump {
-                    self.jump_to_search_row(grid, index);
-                }
-                if search_frame.leave {
-                    self.view = MainView::Panes;
-                }
+        }
+        self.show_header(ui);
+        ui.separator();
+        let (action, drag_frame, search_frame) = self.show_panes(ui);
+        if let Some((grid, index)) = drag_frame.duplicate {
+            self.status = Some(self.duplicate_item(grid, index));
+        }
+        if let Some((grid, index)) = drag_frame.quick_move {
+            self.status = Some(self.quick_move(grid, index));
+        }
+        if let Some((grid, index)) = drag_frame.copy_across {
+            self.status = Some(self.copy_across(grid, index));
+        }
+        if let Some((grid, index)) = drag_frame.edit_bonus {
+            self.request_bonus_edit(grid, index);
+        }
+        if let Some((grid, index)) = drag_frame.extract {
+            self.status = Some(self.extract_socketed(grid, index));
+        }
+        self.update_drag(ui.ctx(), drag_frame);
+        match action {
+            Some(PaneAction::MoveToVault) => self.status = Some(self.move_left_to_vault()),
+            Some(PaneAction::MoveAllToVault) => {
+                self.status = Some(self.bulk_left_to_vault(BulkMode::Move, None));
             }
+            Some(PaneAction::CopyAllToVault) => {
+                self.status = Some(self.bulk_left_to_vault(BulkMode::Copy, None));
+            }
+            Some(PaneAction::MoveSackToVault(sack)) => {
+                self.status = Some(self.bulk_left_to_vault(BulkMode::Move, Some(sack)));
+            }
+            Some(PaneAction::CopySackToVault(sack)) => {
+                self.status = Some(self.bulk_left_to_vault(BulkMode::Copy, Some(sack)));
+            }
+            Some(PaneAction::MoveToFile) => self.status = Some(self.move_vault_to_left()),
+            Some(PaneAction::OpenSearch) => self.enter_search(),
+            Some(PaneAction::PreviewRespec(kind)) => self.preview_respec(kind),
+            None => {}
+        }
+        if let Some((grid, index)) = search_frame.duplicate {
+            self.status = Some(self.duplicate_item(grid, index));
+        }
+        if let Some((grid, index)) = search_frame.quick_move {
+            self.status = Some(self.quick_move(grid, index));
+        }
+        if let Some((grid, index)) = search_frame.copy_across {
+            self.status = Some(self.copy_across(grid, index));
+        }
+        if let Some((grid, index)) = search_frame.extract {
+            self.status = Some(self.extract_socketed(grid, index));
+        }
+        if let Some((grid, index)) = search_frame.jump {
+            self.jump_to_search_row(grid, index);
+        }
+        if search_frame.rescan {
+            self.rescan_search_docs();
+        }
+        if search_frame.leave {
+            self.view = MainView::Panes;
         }
         self.drive_refresh(ui.ctx());
         self.drive_autosave(ui.ctx());
@@ -3626,7 +3626,11 @@ impl App {
             .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
     }
 
-    fn show_panes(&mut self, ui: &mut egui::Ui) -> (Option<PaneAction>, DragFrame) {
+    fn show_panes(
+        &mut self,
+        ui: &mut egui::Ui,
+    ) -> (Option<PaneAction>, DragFrame, search::SearchFrame) {
+        let dirty = self.any_dirty();
         let caches = &mut self.caches;
         let db = match &self.game {
             GameStatus::Loaded(data) => Some(data),
@@ -3634,6 +3638,7 @@ impl App {
         };
         let drag = self.drag.clone();
         let mut frame = DragFrame::default();
+        let mut search_frame = search::SearchFrame::default();
         let mut action = None;
         let has_left = self.character.is_some()
             || self.bank.is_some()
@@ -3685,36 +3690,38 @@ impl App {
             } else {
                 columns[0].weak("No game file loaded.");
             }
-            if let Some(pane) = &mut self.right {
-                if pane.open_tab >= pane.vault.sacks.len() {
-                    pane.open_tab = 0;
-                }
-                let tabs = vault_tabs(pane);
-                let selected = pane.open_tab;
-                let response = panel.show(&mut columns[1], &tabs, selected, |ui| {
+            if self.view == MainView::Search {
+                let tabs = [tabbed_panel::Tab::new("Search all vaults")];
+                panel.show(&mut columns[1], &tabs, 0, |ui| {
                     ui.set_min_width(ui.available_width());
                     ui.set_min_height(ui.available_height());
-                    show_vault_pane(ui, pane, db, caches, can_move, drag.as_ref(), &mut frame)
+                    search_frame = search::show_search_pane(
+                        ui,
+                        &mut self.search,
+                        self.right.as_ref(),
+                        db,
+                        caches,
+                        dirty,
+                    );
                 });
-                if let Some(chosen) = response.inner {
+            } else if let Some(pane) = &mut self.right {
+                if let Some(chosen) = show_vault_column(
+                    &mut columns[1],
+                    pane,
+                    &panel,
+                    db,
+                    caches,
+                    can_move,
+                    drag.as_ref(),
+                    &mut frame,
+                ) {
                     action = Some(chosen);
-                }
-                let target = response.clicked.or(if drag.is_some() {
-                    response.hovered
-                } else {
-                    None
-                });
-                if let Some(tab) = target
-                    && pane.open_tab != tab
-                {
-                    pane.open_tab = tab;
-                    pane.selected = None;
                 }
             } else {
                 columns[1].weak("No vault loaded.");
             }
         });
-        (action, frame)
+        (action, frame, search_frame)
     }
 }
 
@@ -5013,6 +5020,43 @@ fn show_stash_section(
         frame,
     );
     action
+}
+
+/// The vault column when a vault is open: the sack tab strip around
+/// the open sack's grid, tabs switching on click or mid-drag hover.
+#[allow(clippy::too_many_arguments)] // one call surface, shell-internal
+fn show_vault_column(
+    ui: &mut egui::Ui,
+    pane: &mut VaultPane,
+    panel: &TabbedPanel,
+    db: Option<&GameCache>,
+    caches: &mut Caches,
+    can_move: bool,
+    drag: Option<&DragState>,
+    frame: &mut DragFrame,
+) -> Option<PaneAction> {
+    if pane.open_tab >= pane.vault.sacks.len() {
+        pane.open_tab = 0;
+    }
+    let tabs = vault_tabs(pane);
+    let selected = pane.open_tab;
+    let response = panel.show(ui, &tabs, selected, |ui| {
+        ui.set_min_width(ui.available_width());
+        ui.set_min_height(ui.available_height());
+        show_vault_pane(ui, pane, db, caches, can_move, drag, frame)
+    });
+    let target = response.clicked.or(if drag.is_some() {
+        response.hovered
+    } else {
+        None
+    });
+    if let Some(tab) = target
+        && pane.open_tab != tab
+    {
+        pane.open_tab = tab;
+        pane.selected = None;
+    }
+    response.inner
 }
 
 #[allow(clippy::too_many_arguments)] // one call surface, shell-internal
