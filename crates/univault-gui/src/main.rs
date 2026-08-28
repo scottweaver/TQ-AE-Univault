@@ -4777,7 +4777,7 @@ fn show_inventory_body(
                 let pane_chrome = pane_chrome.as_ref();
                 let has_items = !sack.items.is_empty();
                 ui.horizontal(|ui| {
-                    if plate_button(ui, pane_chrome, can_move && has_items, "All → Vault")
+                    if plate_button(ui, pane_chrome, can_move && has_items, "Move all → Vault")
                         .on_hover_text(
                             "Move every item from this sack into the open vault tab, \
                              spilling into the other tabs as it fills",
@@ -4972,7 +4972,7 @@ fn show_stash_section(
             action = Some(PaneAction::MoveToVault);
         }
         let has_items = !pane.stash.items.is_empty();
-        if plate_button(ui, pane_chrome, can_move && has_items, "All → Vault")
+        if plate_button(ui, pane_chrome, can_move && has_items, "Move all → Vault")
             .on_hover_text(
                 "Move every item in this bank into the open vault tab, \
                  spilling into the other tabs as it fills",
