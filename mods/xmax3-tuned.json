@@ -6,6 +6,7 @@
   ],
   "notes": [
     "Projectile speed: AE lets a player reach 166% movement (playerRunSpeedCapMax in records\\game\\gameengine.dbr) while projectile velocities stayed at their 2006 values, so every cast trails the pace of the fight. multiply_player_projectiles 1.66 restores that ratio.",
+    "Cast speed: TQ has no per-skill cast speed — no player skill carries a cast-timing variable, and characterSpellCastSpeedModifier appears only on buff/passive records as a character stat grant. So the knob is the character, set once on the two Player records beside characterRunSpeed (a mastery-based grant would stack on a dual-mastery character). 66% matches the projectile compensation and reads roughly as a Battle Shrine buff permanently on. Unlike projectile speed this is also a caster DPS multiplier — dial it down if that is not wanted. Player cap is playerSpellCastSpeedCapMax = 300; verify on the character sheet, which shows Casting Speed as a percent.",
     "skillProjectileSpeedModifier on the casting skill was tried first and measured inert in game — Volcanic Orb still took its vanilla 3.0s at 150. It is a character stat granted by passives and gear (Marksmanship, quivers), not a per-skill override. Only projectileVelocity moves flight time.",
     "Volcanic Orb is the outlier: velocity 11 over range 33 is a 3.00s flight, the slowest of any player skill against a 1.3-1.6s norm. Tuned by feel against the user's own casts — 28 (1.18s) read as 'noticeably faster but still slow', so it sits at 55 for a 0.60s flight at full range. Flight time at full range is 33/velocity; the engine ships ProjectileExploding records up to 100, so there is headroom either way. VolcanicOrbLobbed01 is also fired by Colossal Fire Elemental's meteor, which speeds up with it."
   ],
@@ -51,6 +52,16 @@
       ],
       "set": {
         "projectileVelocity": 55.0
+      }
+    },
+    {
+      "kind": "record",
+      "records": [
+        "records\\creature\\pc\\malepc01.dbr",
+        "records\\creature\\pc\\femalepc01.dbr"
+      ],
+      "set": {
+        "characterSpellCastSpeedModifier": 66.0
       }
     },
     {
