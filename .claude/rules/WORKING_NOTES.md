@@ -103,6 +103,13 @@ annotated.
   `Database/`. Entries are lowercase paths like
   `templates/templatebase/skill_warmup.tpl`, readable as plain text
   through `arc::ArcFile::file`.
+- **Check the spec's blanket rules before adding a per-record one.**
+  `mods/xmax3-tuned.json` carries sweeping rules — `skillTargetNumber`
+  ×3 across every player skill that has one (10 skills; Dream Stealer
+  3–8 → 9–24), `skillCooldownTime` zeroed on both summon classes.
+  A request to "triple X" is often already satisfied; adding a rule
+  on top multiplies again. Diff the installed bundle against vanilla
+  first — that is what `moddiff` and the build report are for.
 - **Useful globals in `records\xpack\game\gameengine.dbr`:** distance
   profiles (`meleeRange` 1.2, `shortRange` 5, `moderateRange` 10,
   `longRange` 17, `maximumRange` 30, against a 34-unit
