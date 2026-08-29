@@ -1338,10 +1338,24 @@ impl App {
                         &[
                             "Open (or drop) a Player.chr — its character bank and the \
                          account's shared and relic banks load beside it as tabs.",
-                            "A stash (.dxb / .dxg) or another vault (.json, legacy .vault) \
-                         opens on its own.",
-                            "The default vault opens at launch; the vault pane shows one \
-                         tab at a time — pick it in the strip.",
+                            "A stash (.dxb / .dxg) opens on its own.",
+                            "Your item store opens at launch and holds everything you \
+                         put away. It is one file, and it files each item by type — \
+                         pick a family plate, then a type below it.",
+                        ],
+                    );
+                    help_section(
+                        ui,
+                        "The item store",
+                        &[
+                            "Tabs are types, not containers: an item lands under its own \
+                         type wherever you drop it in the store, and no type ever fills up.",
+                            "\"Import vault…\" reads a TQVaultAE vault into the store \
+                         (that file is never changed); vaults already in your vaults \
+                         folder were imported once, the first time the store was created.",
+                            "\"Export type…\" and \"Export all…\" write a fresh \
+                         TQVaultAE-readable vault — a snapshot to hand to that tool, not \
+                         a live copy.",
                         ],
                     );
                     help_section(
@@ -1349,11 +1363,11 @@ impl App {
                         "Moving items",
                         &[
                             "Drag an item between any two grids.",
-                            "Right-click sends it to the other pane's open tab; \
-                         Shift+Right-click sends a copy.",
+                            "Right-click sends it to the other pane; Shift+Right-click \
+                         sends a copy.",
                             "Shift+Click duplicates in place.",
-                            "\"All → Vault\" and \"Copy all → Vault\" move a whole tab, \
-                         spilling into the next vault tabs as each fills.",
+                            "\"Move all → Store\" and \"Copy all → Store\" send a whole \
+                         sack or bank at once; every item is filed under its own type.",
                         ],
                     );
                     help_section(
@@ -1380,10 +1394,10 @@ impl App {
                         ui,
                         "Search",
                         &[
-                            "\"Search vaults…\" (⌘F) shows one filterable table over \
-                         every vault file in the vault pane's place.",
+                            "\"Search store…\" (⌘F) shows one filterable table over the \
+                         whole store, in the store pane's place.",
                             "Rows take the same gestures as grid items; double-click \
-                         shows an item at home in its vault. Esc brings the vault back.",
+                         jumps to an item's type tab. Esc brings the store back.",
                         ],
                     );
                     help_section(
@@ -2622,7 +2636,8 @@ impl App {
             ui.label(theme::heading("TQ UniVault"));
             ui.label(
                 "Open (or drop) a Player.chr to begin — its banks load beside it \
-                 as tabs, and the default vault is already open on the right.",
+                 as tabs, and your item store is already open on the right, \
+                 sorted into type tabs.",
             );
             ui.label("Every gesture and behavior is described under Help…");
         }
@@ -4851,23 +4866,15 @@ fn bucket_counts(store: &VaultStore, db: Option<&GameCache>) -> HashMap<Bucket, 
     counts
 }
 
-/// Tab strip inputs for the store's family plates, each carrying the
-/// total of its sub-type buckets.
-fn family_tabs(counts: &HashMap<Bucket, usize>) -> Vec<tabbed_panel::Tab> {
+/// Tab strip inputs for the store's family plates. Names only: the
+/// strip lays out on one unwrapped row, and six labelled counts
+/// overflow the half-width column (silently — the plates just run off
+/// the pane, taking Misc with them). Counts live one level down, on
+/// the sub-type strip, with the store's total in the header.
+fn family_tabs() -> Vec<tabbed_panel::Tab> {
     Family::ALL
         .into_iter()
-        .map(|family| {
-            let total: usize = family
-                .buckets()
-                .iter()
-                .map(|bucket| counts.get(bucket).copied().unwrap_or(0))
-                .sum();
-            tabbed_panel::Tab::new(if total == 0 {
-                family.label().to_string()
-            } else {
-                format!("{} ({total})", family.label())
-            })
-        })
+        .map(|family| tabbed_panel::Tab::new(family.label()))
         .collect()
 }
 
@@ -5063,7 +5070,7 @@ fn show_store_column(
     frame: &mut DragFrame,
 ) -> Option<PaneAction> {
     let counts = bucket_counts(&pane.store, db);
-    let tabs = family_tabs(&counts);
+    let tabs = family_tabs();
     let selected = Family::ALL
         .iter()
         .position(|family| *family == pane.family)
