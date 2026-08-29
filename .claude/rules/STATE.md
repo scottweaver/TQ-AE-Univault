@@ -248,10 +248,16 @@ buttons shipped in PR #44):
   **66%** on the two `records\creature\pc\*pc01.dbr` records instead,
   beside `characterRunSpeed`; that is the one home applying exactly
   once, since a mastery grant would stack on a dual-mastery
-  character. Cap is `playerSpellCastSpeedCapMax = 300`. Unlike
-  projectile speed it is also a caster DPS multiplier. Unverified in
+  character. Cap is `playerSpellCastSpeedCapMax = 300`. Unverified in
   game, but **checkable without guessing**: the character sheet shows
-  Casting Speed as a percent.
+  Casting Speed as a percent. A "this also buffs DPS" caveat was
+  raised and then withdrawn on the user's challenge — correctly:
+  every Earth skill the player casts is cooldown-gated (orb 5s,
+  Flame Surge 6s, Rain of Fire 18s, Eruption 20s, Ring of Flame
+  90s/4s), so cast speed there buys root-time, not throughput. The
+  caveat only holds for 0-cooldown spam casters — Storm's Ice Shard
+  / Static Nova / Freezing Blast, Spirit's Ternion. Check the
+  mastery's cooldowns before repeating that warning.
   `scripts/install-mods.sh` now rebuilds and installs both bundles
   from the spec with path preflight and read-back — the tuning loop
   is edit a number, run it, restart.
