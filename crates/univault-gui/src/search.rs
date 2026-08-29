@@ -17,6 +17,7 @@ use univault_core::stats::{self, Requirement};
 use univault_core::store::VaultStore;
 use univault_core::style::{self, ItemStyle};
 
+use crate::sort::SortDirection;
 use crate::theme;
 use crate::{App, ItemAddr, MainView, StorePane, game_color, item_tooltip};
 
@@ -143,17 +144,35 @@ enum SortKey {
     Bucket,
 }
 
+impl SortKey {
+    /// The direction a column reads best in when it is first picked:
+    /// names and type labels A→Z, rarity and level best/highest
+    /// first. Clicking the same header again flips it and it stays.
+    fn natural(self) -> SortDirection {
+        match self {
+            Self::Name | Self::Bucket => SortDirection::Ascending,
+            Self::Rarity | Self::ReqLevel => SortDirection::Descending,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct SortSpec {
     key: SortKey,
-    ascending: bool,
+    direction: SortDirection,
 }
 
 impl Default for SortSpec {
     fn default() -> Self {
+        Self::by(SortKey::Name)
+    }
+}
+
+impl SortSpec {
+    fn by(key: SortKey) -> Self {
         Self {
-            key: SortKey::Name,
-            ascending: true,
+            key,
+            direction: key.natural(),
         }
     }
 }
@@ -349,25 +368,6 @@ fn draft_filters(draft: &FilterDraft) -> Vec<Filter> {
     filters
 }
 
-/// Ascending rarity order for the sortable column.
-fn style_rank(item_style: ItemStyle) -> u8 {
-    match item_style {
-        ItemStyle::Broken => 0,
-        ItemStyle::Mundane => 1,
-        ItemStyle::Common => 2,
-        ItemStyle::Rare => 3,
-        ItemStyle::Epic => 4,
-        ItemStyle::Legendary => 5,
-        ItemStyle::Quest => 6,
-        ItemStyle::Potion => 7,
-        ItemStyle::Scroll => 8,
-        ItemStyle::Parchment => 9,
-        ItemStyle::Relic => 10,
-        ItemStyle::Formulae => 11,
-        ItemStyle::Artifact => 12,
-    }
-}
-
 /// Height budget per stat line: a size-12 galley (~15px) plus the
 /// 4px cell spacing, with slack — over-estimating pads, while
 /// under-estimating clips the cell.
@@ -399,11 +399,7 @@ fn sort_rows(rows: &mut [SearchRow], sort: SortSpec) {
                 .then(by_name),
             SortKey::Bucket => a.bucket.cmp(&b.bucket).then(by_name),
         };
-        if sort.ascending {
-            ordering
-        } else {
-            ordering.reverse()
-        }
+        sort.direction.apply(ordering)
     });
 }
 
@@ -450,7 +446,7 @@ fn rebuild_rows(search: &mut SearchState, db: Option<&GameCache>, pane: Option<&
             item: item.clone(),
             name_sort: name.to_lowercase(),
             name,
-            rarity_rank: style_rank(item_style),
+            rarity_rank: item_style.rarity_rank(),
             item_style,
             req_level,
             bucket: univault_core::store::bucket_of(Some(db), item)
@@ -663,21 +659,26 @@ fn show_table(
     let mut sort = search.sort;
     let sort_button = |ui: &mut egui::Ui, label: &str, key: SortKey, sort: &mut SortSpec| {
         let arrow = if sort.key == key {
-            if sort.ascending { " ▲" } else { " ▼" }
+            format!(" {}", sort.direction.arrow())
         } else {
-            ""
+            String::new()
         };
         if ui
             .add(egui::Button::new(format!("{label}{arrow}")).frame(false))
+            .on_hover_text(if sort.key == key {
+                sort.direction.flip_hint()
+            } else {
+                "Sort by this column"
+            })
             .clicked()
         {
-            *sort = SortSpec {
-                key,
-                ascending: if sort.key == key {
-                    !sort.ascending
-                } else {
-                    true
-                },
+            *sort = if sort.key == key {
+                SortSpec {
+                    key,
+                    direction: sort.direction.flipped(),
+                }
+            } else {
+                SortSpec::by(key)
             };
         }
     };
@@ -1005,7 +1006,7 @@ mod tests {
             &mut rows,
             SortSpec {
                 key: SortKey::Rarity,
-                ascending: true,
+                direction: SortDirection::Ascending,
             },
         );
         let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
@@ -1014,11 +1015,76 @@ mod tests {
             &mut rows,
             SortSpec {
                 key: SortKey::ReqLevel,
-                ascending: false,
+                direction: SortDirection::Descending,
             },
         );
         let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
         assert_eq!(names, ["Bravo", "Charlie", "Alpha"]);
+    }
+
+    #[test]
+    fn every_column_sorts_both_ways() {
+        let row = |name: &str, rarity: u8, level: Option<i32>, bucket: &str| SearchRow {
+            addr: ItemAddr::Stored(sample_id()),
+            item: sample_item(),
+            name: name.to_string(),
+            name_sort: name.to_lowercase(),
+            item_style: ItemStyle::Common,
+            rarity_rank: rarity,
+            req_level: level,
+            bucket: bucket.to_string(),
+            details: stats::ItemDetails {
+                quality: None,
+                style_word: None,
+                blocks: Vec::new(),
+            },
+            height: 40.0,
+        };
+        let seed = || {
+            vec![
+                row("Bravo", 2, Some(30), "Armor"),
+                row("Alpha", 5, Some(50), "Weapon"),
+                row("Charlie", 9, Some(10), "Relic"),
+            ]
+        };
+        for key in [
+            SortKey::Name,
+            SortKey::Rarity,
+            SortKey::ReqLevel,
+            SortKey::Bucket,
+        ] {
+            let mut ascending = seed();
+            sort_rows(
+                &mut ascending,
+                SortSpec {
+                    key,
+                    direction: SortDirection::Ascending,
+                },
+            );
+            let mut descending = seed();
+            sort_rows(
+                &mut descending,
+                SortSpec {
+                    key,
+                    direction: SortDirection::Descending,
+                },
+            );
+            let forward: Vec<&str> = ascending.iter().map(|row| row.name.as_str()).collect();
+            let backward: Vec<&str> = descending.iter().map(|row| row.name.as_str()).collect();
+            assert_eq!(
+                forward,
+                backward.iter().rev().copied().collect::<Vec<&str>>()
+            );
+        }
+    }
+
+    #[test]
+    fn a_fresh_column_opens_in_its_natural_direction() {
+        assert!(SortKey::Name.natural() == SortDirection::Ascending);
+        assert!(SortKey::Bucket.natural() == SortDirection::Ascending);
+        assert!(SortKey::Rarity.natural() == SortDirection::Descending);
+        assert!(SortKey::ReqLevel.natural() == SortDirection::Descending);
+        assert!(SortSpec::default().direction == SortDirection::Ascending);
     }
 
     fn sample_item() -> Item {
