@@ -141,6 +141,13 @@
       "set": {
         "characterRunSpeedModifier": 500.0
       }
+    },
+    {
+      "kind": "record",
+      "record": "records\\xpack\\skills\\dream\\psionictouch_psionicburn.dbr",
+      "set": {
+        "skillTargetRadius": 6.0
+      }
     }
   ]
 }
