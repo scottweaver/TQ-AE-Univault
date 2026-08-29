@@ -278,6 +278,69 @@ pub fn bucket_of(db: Option<&GameCache>, item: &Item) -> Bucket {
         .map_or(Bucket::Unknown, Bucket::Category)
 }
 
+/// What a bulk send's duplicate filter matches on: an item's roll
+/// seed within its own type bucket. The seed is what survives a copy
+/// — the app's own duplicate, a sack sent twice — while the bucket
+/// keeps two unrelated types that happened to roll the same number
+/// from being read as the same item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ItemIdentity {
+    bucket: Bucket,
+    seed: ItemSeed,
+}
+
+impl ItemIdentity {
+    #[must_use]
+    pub fn of(db: Option<&GameCache>, item: &Item) -> Self {
+        Self {
+            bucket: bucket_of(db, item),
+            seed: item.seed,
+        }
+    }
+}
+
+/// A bulk send's running duplicate filter: an item is admitted only
+/// if its [`ItemIdentity`] is neither already in the store nor
+/// already admitted earlier in the same batch — so one send can
+/// neither re-add what is stored nor duplicate within itself.
+///
+/// Absent this guard a bulk send admits everything; the filter is a
+/// property of the operation, never of the store, which is free to
+/// hold duplicates that arrived by other routes.
+#[derive(Debug, Clone)]
+pub struct DuplicateGuard {
+    seen: HashSet<ItemIdentity>,
+    skipped: usize,
+}
+
+impl DuplicateGuard {
+    #[must_use]
+    pub fn over(store: &VaultStore, db: Option<&GameCache>) -> Self {
+        Self {
+            seen: store
+                .entries()
+                .map(|entry| ItemIdentity::of(db, &entry.item))
+                .collect(),
+            skipped: 0,
+        }
+    }
+
+    /// Whether this item should be sent, recording it as seen when it
+    /// is and counting it as skipped when it is not.
+    pub fn admit(&mut self, db: Option<&GameCache>, item: &Item) -> bool {
+        let admitted = self.seen.insert(ItemIdentity::of(db, item));
+        if !admitted {
+            self.skipped += 1;
+        }
+        admitted
+    }
+
+    #[must_use]
+    pub fn skipped(&self) -> usize {
+        self.skipped
+    }
+}
+
 impl Bucket {
     #[must_use]
     pub fn label(self) -> &'static str {
@@ -552,6 +615,41 @@ mod tests {
         assert_ne!(first, second);
         assert_eq!(store.len(), 2);
         assert_eq!(store.get(first).unwrap().position, GridPos { x: 0, y: 0 });
+    }
+
+    #[test]
+    fn the_guard_skips_seeds_already_stored_and_repeats_within_one_batch() {
+        let db = db();
+        let db = Some(&db);
+        let seeded = |base: &str, seed: i32| {
+            Item::bare(
+                RecordId::parse(base.to_string()).unwrap(),
+                ItemSeed::new(seed),
+            )
+        };
+        let helm = "records\\item\\equipmenthelm\\bronzehelm.dbr";
+        let sword = "records\\item\\equipmentweapon\\gladius.dbr";
+        let mut store = VaultStore::new();
+        store.add(seeded(helm, 41823));
+
+        let mut guard = DuplicateGuard::over(&store, db);
+        assert!(!guard.admit(db, &seeded(helm, 41823)));
+        assert!(guard.admit(db, &seeded(helm, 90210)));
+        // Admitting once claims the identity for the rest of the batch.
+        assert!(!guard.admit(db, &seeded(helm, 90210)));
+        // Same seed, different type bucket — a coincidence, not a copy.
+        assert!(guard.admit(db, &seeded(sword, 41823)));
+        assert_eq!(guard.skipped(), 2);
+    }
+
+    #[test]
+    fn a_guard_over_an_empty_store_admits_everything_once() {
+        let db = db();
+        let db = Some(&db);
+        let mut guard = DuplicateGuard::over(&VaultStore::new(), db);
+        assert!(guard.admit(db, &item("records\\item\\equipmenthelm\\bronzehelm.dbr")));
+        assert!(!guard.admit(db, &item("records\\item\\equipmenthelm\\bronzehelm.dbr")));
+        assert_eq!(guard.skipped(), 1);
     }
 
     #[test]

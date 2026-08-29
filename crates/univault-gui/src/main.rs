@@ -43,7 +43,9 @@ use univault_core::gamedata::GameData;
 use univault_core::respec;
 use univault_core::stash::{self, Stash};
 use univault_core::stats;
-use univault_core::store::{Bucket, Family, ImportRecord, StoredItemId, VaultStore};
+use univault_core::store::{
+    Bucket, DuplicateGuard, Family, ImportRecord, StoredItemId, VaultStore,
+};
 use univault_core::style;
 use univault_core::transfer;
 use univault_core::vault::Vault;
@@ -253,6 +255,11 @@ struct StorePane {
     family: Family,
     bucket: Bucket,
     sort: StoreSort,
+    /// Gates bulk sends only: with it set, `All → Store` and the
+    /// per-sack buttons skip an item whose seed is already stored in
+    /// its type. Single sends and drops are deliberate acts and
+    /// always land.
+    skip_duplicate_seeds: bool,
 }
 
 /// One open document, addressable across panes — the unit the
@@ -859,13 +866,21 @@ impl App {
         self.refresh.forget(&path);
         let disk_stamp = stamp_of(&path);
         let kept = self.store.as_ref().filter(|pane| pane.path == path);
-        let (family, bucket, sort) = kept.map_or(
+        let (family, bucket, sort, skip_duplicate_seeds) = kept.map_or(
             (
                 Family::Armor,
                 Family::Armor.buckets()[0],
                 StoreSort::default(),
+                false,
             ),
-            |pane| (pane.family, pane.bucket, pane.sort),
+            |pane| {
+                (
+                    pane.family,
+                    pane.bucket,
+                    pane.sort,
+                    pane.skip_duplicate_seeds,
+                )
+            },
         );
         let existing = path.exists();
         let store = if existing {
@@ -883,6 +898,7 @@ impl App {
             family,
             bucket,
             sort,
+            skip_duplicate_seeds,
         });
         self.search.mark_data_changed();
         if existing {
@@ -1054,7 +1070,10 @@ impl App {
     /// Sends every item of the active left tab into the store: the
     /// whole document, or — for the Inventory — one sack when `sack`
     /// names it. Equipped gear stays worn. Nothing is ever left
-    /// behind; the store has no capacity to run out of.
+    /// behind for want of room; the store has no capacity. The
+    /// store pane's duplicate box is consulted here and only here —
+    /// with it set, an item whose seed is already stored in its type
+    /// is passed over and stays put.
     fn bulk_left_to_store(
         &mut self,
         mode: BulkMode,
@@ -1063,6 +1082,12 @@ impl App {
         if self.store.is_none() {
             return Err("no item store open".to_string());
         }
+        let db = loaded_db(&self.game);
+        let mut guard = self
+            .store
+            .as_ref()
+            .filter(|pane| pane.skip_duplicate_seeds)
+            .map(|pane| DuplicateGuard::over(&pane.store, db));
         let (items, source_grid, label): (Vec<Item>, GridId, &str) = match (self.active_tab, sack) {
             (LeftTab::Inventory, Some(index)) => {
                 let pane = self.character.as_mut().ok_or("no character loaded")?;
@@ -1077,7 +1102,7 @@ impl App {
                     "the sack"
                 };
                 (
-                    drain_or_clone(&mut sack.items, mode),
+                    drain_or_clone(&mut sack.items, mode, db, guard.as_mut()),
                     GridId::Sack(index),
                     label,
                 )
@@ -1088,14 +1113,14 @@ impl App {
                     .character
                     .sacks
                     .iter_mut()
-                    .flat_map(|sack| drain_or_clone(&mut sack.items, mode))
+                    .flat_map(|sack| drain_or_clone(&mut sack.items, mode, db, guard.as_mut()))
                     .collect();
                 (items, GridId::Sack(0), "the inventory")
             }
             (LeftTab::Bank, _) => {
                 let pane = self.bank.as_mut().ok_or("no bank loaded")?;
                 (
-                    drain_or_clone(&mut pane.stash.items, mode),
+                    drain_or_clone(&mut pane.stash.items, mode, db, guard.as_mut()),
                     GridId::Bank,
                     "the bank",
                 )
@@ -1103,7 +1128,7 @@ impl App {
             (LeftTab::Shared, _) => {
                 let pane = self.shared.as_mut().ok_or("no shared bank loaded")?;
                 (
-                    drain_or_clone(&mut pane.stash.items, mode),
+                    drain_or_clone(&mut pane.stash.items, mode, db, guard.as_mut()),
                     GridId::Shared,
                     "the shared bank",
                 )
@@ -1111,14 +1136,22 @@ impl App {
             (LeftTab::Relic, _) => {
                 let pane = self.relics.as_mut().ok_or("no relic bank loaded")?;
                 (
-                    drain_or_clone(&mut pane.stash.items, mode),
+                    drain_or_clone(&mut pane.stash.items, mode, db, guard.as_mut()),
                     GridId::Relic,
                     "the relic bank",
                 )
             }
         };
+        let skipped = guard.map_or(0, |guard| guard.skipped());
         if items.is_empty() {
-            return Err(format!("{label} has no items"));
+            // Everything filtered out is a no-op, not a failure — and
+            // marking the source dirty would autosave identical bytes.
+            return match skipped {
+                0 => Err(format!("{label} has no items")),
+                _ => Ok(format!(
+                    "Nothing sent — every item in {label} is already stored ({skipped} seen)"
+                )),
+            };
         }
         let pane = self.store.as_mut().expect("checked above");
         let moved = pane.store.add_all(items);
@@ -1133,8 +1166,9 @@ impl App {
             BulkMode::Copy => "Copied",
         };
         Ok(format!(
-            "{verb} {} from {label} → store, filed by type",
-            count_items(moved)
+            "{verb} {} from {label} → store, filed by type{}",
+            count_items(moved),
+            skipped_note(skipped)
         ))
     }
 
@@ -2053,10 +2087,32 @@ fn left_label(grid: GridId) -> String {
 }
 
 /// A bulk send's payload: a move drains the source, a copy clones it.
-fn drain_or_clone(items: &mut Vec<Item>, mode: BulkMode) -> Vec<Item> {
+/// A `guard` admits each item first — what it turns down is never
+/// taken, so a skipped duplicate keeps its place and its bytes in the
+/// source file rather than being drained and put back.
+fn drain_or_clone(
+    items: &mut Vec<Item>,
+    mode: BulkMode,
+    db: Option<&GameCache>,
+    guard: Option<&mut DuplicateGuard>,
+) -> Vec<Item> {
+    let Some(guard) = guard else {
+        return match mode {
+            BulkMode::Move => std::mem::take(items),
+            BulkMode::Copy => items.clone(),
+        };
+    };
     match mode {
-        BulkMode::Move => std::mem::take(items),
-        BulkMode::Copy => items.clone(),
+        BulkMode::Move => {
+            let (taken, left) = items.drain(..).partition(|item| guard.admit(db, item));
+            *items = left;
+            taken
+        }
+        BulkMode::Copy => items
+            .iter()
+            .filter(|item| guard.admit(db, item))
+            .cloned()
+            .collect(),
     }
 }
 
@@ -2451,6 +2507,16 @@ enum PaneAction {
 enum BulkMode {
     Move,
     Copy,
+}
+
+/// Tail for a bulk-send toast when the duplicate box turned items
+/// away; empty when it turned none away or was never set.
+fn skipped_note(skipped: usize) -> String {
+    match skipped {
+        0 => String::new(),
+        1 => "; 1 skipped as a duplicate".to_string(),
+        many => format!("; {many} skipped as duplicates"),
+    }
 }
 
 fn count_items(count: usize) -> String {
@@ -5205,6 +5271,11 @@ fn show_store_pane(
             action = Some(PaneAction::ExportAll);
         }
         ui.weak(format!("{} stored", count_items(total)));
+        ui.checkbox(&mut pane.skip_duplicate_seeds, "Skip duplicates")
+            .on_hover_text(
+                "Bulk sends only: pass over an item whose seed is already stored in its \
+                 type. Single sends, right-click sends, and drops always land.",
+            );
     });
 
     let buckets = pane.family.buckets();
@@ -5567,6 +5638,83 @@ mod tests {
             ordered(SortDirection::Descending, &mut names),
             ["charlie", "bravo", "alpha"]
         );
+    }
+
+    fn seeded(stem: &str, seed: i32) -> Item {
+        Item::bare(
+            RecordId::parse(format!("records\\{stem}.dbr")).unwrap(),
+            chr::ItemSeed::new(seed),
+        )
+    }
+
+    fn guard_over(stored: &[(&str, i32)]) -> DuplicateGuard {
+        let mut store = VaultStore::new();
+        for (stem, seed) in stored {
+            store.add(seeded(stem, *seed));
+        }
+        DuplicateGuard::over(&store, None)
+    }
+
+    #[test]
+    fn a_guarded_move_leaves_duplicates_where_they_are() {
+        let mut guard = guard_over(&[("helm", 41823)]);
+        let mut source = vec![seeded("helm", 41823), seeded("helm", 90210)];
+        let taken = drain_or_clone(&mut source, BulkMode::Move, None, Some(&mut guard));
+        assert_eq!(
+            taken
+                .iter()
+                .map(|item| item.seed.value())
+                .collect::<Vec<_>>(),
+            [90210]
+        );
+        assert_eq!(
+            source
+                .iter()
+                .map(|item| item.seed.value())
+                .collect::<Vec<_>>(),
+            [41823],
+            "a skipped duplicate is never drained out of the source"
+        );
+        assert_eq!(guard.skipped(), 1);
+    }
+
+    #[test]
+    fn a_guarded_copy_takes_fresh_seeds_and_never_touches_the_source() {
+        let mut guard = guard_over(&[("helm", 41823)]);
+        let mut source = vec![seeded("helm", 41823), seeded("helm", 90210)];
+        let taken = drain_or_clone(&mut source, BulkMode::Copy, None, Some(&mut guard));
+        assert_eq!(taken.len(), 1);
+        assert_eq!(source.len(), 2);
+        assert_eq!(guard.skipped(), 1);
+    }
+
+    #[test]
+    fn one_batch_cannot_duplicate_within_itself() {
+        let mut guard = guard_over(&[]);
+        let mut source = vec![seeded("helm", 7), seeded("helm", 7), seeded("helm", 7)];
+        let taken = drain_or_clone(&mut source, BulkMode::Move, None, Some(&mut guard));
+        assert_eq!(taken.len(), 1);
+        assert_eq!(source.len(), 2);
+        assert_eq!(guard.skipped(), 2);
+    }
+
+    #[test]
+    fn without_the_box_a_bulk_send_still_takes_everything() {
+        let mut source = vec![seeded("helm", 7), seeded("helm", 7)];
+        let taken = drain_or_clone(&mut source, BulkMode::Move, None, None);
+        assert_eq!(taken.len(), 2);
+        assert!(source.is_empty());
+        let mut source = vec![seeded("helm", 7), seeded("helm", 7)];
+        let copied = drain_or_clone(&mut source, BulkMode::Copy, None, None);
+        assert_eq!(copied.len(), 2);
+        assert_eq!(source.len(), 2);
+    }
+
+    #[test]
+    fn the_skipped_note_stays_grammatical() {
+        assert_eq!(skipped_note(0), "");
+        assert_eq!(skipped_note(1), "; 1 skipped as a duplicate");
+        assert_eq!(skipped_note(4), "; 4 skipped as duplicates");
     }
 
     #[test]
