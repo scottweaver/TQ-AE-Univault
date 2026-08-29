@@ -218,10 +218,6 @@ struct StorePane {
     family: Family,
     bucket: Bucket,
     sort: StoreSort,
-    /// The open bucket's items exactly as rendered this frame, in
-    /// display order — the index half of grid gestures resolves
-    /// through it back to a [`StoredItemId`].
-    display: Vec<StoredItemId>,
 }
 
 /// One open document, addressable across panes — the unit the
@@ -848,7 +844,6 @@ impl App {
             family,
             bucket,
             sort,
-            display: Vec::new(),
         });
         self.search.mark_data_changed();
         if existing {
@@ -5207,7 +5202,6 @@ fn show_bucket_grid(
         .map(univault_core::store::StoredEntry::id)
         .collect();
     sort_stored(&mut ids, &pane.store, db, sort, &mut caches.names);
-    pane.display.clone_from(&ids);
 
     let footprints: Vec<(i32, i32)> = ids
         .iter()

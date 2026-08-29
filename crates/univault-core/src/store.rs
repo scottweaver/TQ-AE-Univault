@@ -137,13 +137,6 @@ impl VaultStore {
         self.entries.iter()
     }
 
-    /// Mutable pass over every entry — the shell's view-layout pass
-    /// writes scratch grid positions here; position never serializes,
-    /// so scribbling it is harmless.
-    pub fn entries_mut(&mut self) -> impl Iterator<Item = &mut StoredEntry> {
-        self.entries.iter_mut()
-    }
-
     #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
