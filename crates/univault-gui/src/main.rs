@@ -5223,25 +5223,12 @@ fn show_bucket_grid(
         })
         .collect();
 
-    if entries.is_empty() {
-        ui.add_space(12.0);
-        ui.weak(format!(
-            "No {} stored yet — send items here from the left.",
-            bucket.label().to_lowercase()
-        ));
-        // An empty bucket still accepts drops: the pane is the
-        // store, and the item files itself by its own type.
-        if drag.is_some() {
-            store_drop_zone(ui, frame);
-        }
-        return;
-    }
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             grid_view_store(
                 ui,
-                (STORE_COLUMNS, rows.max(1)),
+                (STORE_COLUMNS, rows.max(STORE_MIN_ROWS)),
                 &entries,
                 &mut pane.selected,
                 db,
@@ -5252,10 +5239,13 @@ fn show_bucket_grid(
         });
 }
 
-/// Cells across the store's bucket grid — wide enough for the game's
-/// biggest footprints, with the rows growing as far as the bucket
-/// needs.
-const STORE_COLUMNS: i32 = 12;
+/// The bucket grid keeps the game vault tab's own footprint as its
+/// minimum, so a thinly stocked type still paints a full grid instead
+/// of a few tiles stranded on bare panel — and an empty one is a
+/// plain empty grid that takes drops like any other. A well-stocked
+/// type grows past the minimum and scrolls.
+const STORE_COLUMNS: i32 = univault_core::vault::TAB_WIDTH;
+const STORE_MIN_ROWS: i32 = univault_core::vault::TAB_HEIGHT;
 
 /// Orders a bucket's ids for display. Name is the tiebreak
 /// everywhere, so the order is total and stable frame to frame.
@@ -5312,27 +5302,6 @@ fn style_rank(item_style: style::ItemStyle) -> u8 {
     }
 }
 
-/// An empty bucket's drop area: the whole remaining pane accepts the
-/// dragged item, which files itself by type on release.
-fn store_drop_zone(ui: &mut egui::Ui, frame: &mut DragFrame) {
-    let (rect, _) = ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
-    let Some(pointer) = ui.ctx().pointer_latest_pos() else {
-        return;
-    };
-    if !rect.contains(pointer) {
-        return;
-    }
-    paint_fit_preview(ui.painter(), rect.shrink(6.0), true);
-    frame.candidate = Some(DropCandidate {
-        target: DropTarget::Store,
-        cell: univault_core::chr::GridPos { x: 0, y: 0 },
-        fits: true,
-        combine_with: None,
-        socket_into: None,
-        equips: false,
-    });
-}
-
 /// The store's grid: the same painting and gestures as a container
 /// grid, but every drop lands in the store rather than a cell.
 #[allow(clippy::too_many_arguments)] // one call surface, shell-internal
@@ -5346,12 +5315,20 @@ fn grid_view_store(
     drag: Option<&DragState>,
     frame: &mut DragFrame,
 ) {
-    let cell = CELL_SIZE.min(fit_cell_size(
-        egui::vec2(ui.available_width(), f32::INFINITY),
-        (dims.0, 1),
-    ));
+    // Sized off the *minimum* grid, so the cell stays put whether the
+    // bucket is half empty or scrolling well past the fold; a taller
+    // bucket grows downward at the same scale instead of shrinking to
+    // fit. Centered like every other grid — hugging the top-left
+    // reads as a layout slip.
+    let cell = fit_cell_size(ui.available_size(), (dims.0, STORE_MIN_ROWS));
     let size = egui::vec2(cells_at(dims.0, cell), cells_at(dims.1, cell));
-    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+    let pad = ((ui.available_width() - size.x) / 2.0).max(0.0);
+    let (rect, response) = ui
+        .horizontal(|ui| {
+            ui.add_space(pad);
+            ui.allocate_exact_size(size, egui::Sense::click_and_drag())
+        })
+        .inner;
     if !ui.is_rect_visible(rect) {
         return;
     }

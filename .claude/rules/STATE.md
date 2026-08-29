@@ -32,12 +32,15 @@ gilded-border.png art update is committed to main, 2026-08-28
 checkpoint.)
 
 - **Store pane, first look (2026-08-29):** families and sub-types
-  render correctly over the real 295 items and every bucket
-  classified (zero Unknown). One look question left for the user:
-  a short bucket leaves a tall black panel interior below the
-  grid, where the old 18×20 vault grid filled the pane. The grid
-  is content-sized now (12 columns, shelf-packed in reading
-  order); stretching, centering, or capping it is a design call.
+  render correctly over the real 295 items, every one classified
+  (zero Unknown). Two look fixes came out of it, both the user's
+  call: the family strip carries names only (six labelled counts
+  silently overflowed the half-width column and took Misc with
+  them), and the bucket grid pads out to the game vault tab's own
+  18×20 — stretched to the pane and centered — so a thin bucket
+  paints a full grid instead of a few tiles in the top-left. A
+  bucket needing more than 20 rows grows downward at the same cell
+  size and scrolls.
 
 - **egui 0.36 landmines (hard-won):**
   (1) `ui.columns` children share a *stable* id — derive
