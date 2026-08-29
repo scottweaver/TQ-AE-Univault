@@ -464,7 +464,7 @@ fn rebuild_rows(search: &mut SearchState, db: Option<&GameCache>, pane: Option<&
     search.rows = rows;
 }
 
-/// The search surface in the vault pane's place: action row, filter
+/// The search surface in the store pane's place: action row, filter
 /// bar, results table. `dirty` mirrors the autosave indicator; the
 /// caller routes the returned frame's gestures and requests.
 pub(crate) fn show_search_pane(
@@ -718,8 +718,8 @@ fn show_table(
 }
 
 /// One table row: icon, colored name, rarity, level requirement,
-/// vault, and the full colored stat lines — plus the shared item
-/// gestures (select / duplicate / extract / send / copy / jump).
+/// type bucket, and the full colored stat lines — plus the shared
+/// item gestures (select / duplicate / extract / send / copy / jump).
 fn show_row(
     table_row: &mut egui_extras::TableRow<'_, '_>,
     row: &SearchRow,
