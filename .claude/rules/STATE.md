@@ -11,21 +11,33 @@ Last updated: 2026-08-29 (virtual tabs → unified store, built on
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** `feat/vault-store` holds the store rework — four
-commits, all gates green (240 tests, clippy, fmt), **never run in
-the app and no PR opened**. Next step is the user's in-app pass:
-first launch creates the store and migrates the vaults folder once
-(the old vault files are left untouched), then check the family →
-sub-type tabs, drag/drop into a bucket, bulk sends, ⌘F search, and
-Import/Export against a real TQVaultAE vault. Design decisions
-(user-picked this session): import **and** export interchange; one
-unified store, not named vaults; own file format over redb/SQLite;
-family → sub-type two-level tabs. Older threads still open: the
-release-build pass over the component chrome (PRs #43/#44), then
-the UIX queue. Remaining game-art chrome surfaces (candidates for
-future components): nameplates, plate buttons, grid cells, stone
-backdrop, tooltip frame. (The user's gilded-border.png art update
-is committed to main, 2026-08-28 checkpoint.)
+**Resume here:** `feat/vault-store` holds the store rework — six
+commits, all gates green (241 tests, clippy, fmt). Launched once
+against a **scratch `HOME`** holding a copy of the real vault and
+cache (the user's own config was never touched, and still has no
+`vault-store.json`): migration, the two-level tabs, and the real
+295 items all render — see the screenshot note below. Still needs
+the user's own pass on their real config, and specifically on what
+a screenshot cannot exercise: **drag/drop into a bucket, bulk
+sends, ⌘F search, and an export opened in TQVaultAE** (synthetic
+input is banned here, so none of those were clicked). Design
+decisions (user-picked this session): import **and** export
+interchange; one unified store, not named vaults; own file format
+over redb/SQLite; family → sub-type two-level tabs. Older threads
+still open: the release-build pass over the component chrome
+(PRs #43/#44), then the UIX queue. Remaining game-art chrome
+surfaces (candidates for future components): nameplates, plate
+buttons, grid cells, stone backdrop, tooltip frame. (The user's
+gilded-border.png art update is committed to main, 2026-08-28
+checkpoint.)
+
+- **Store pane, first look (2026-08-29):** families and sub-types
+  render correctly over the real 295 items and every bucket
+  classified (zero Unknown). One look question left for the user:
+  a short bucket leaves a tall black panel interior below the
+  grid, where the old 18×20 vault grid filled the pane. The grid
+  is content-sized now (12 columns, shelf-packed in reading
+  order); stretching, centering, or capping it is a design call.
 
 - **egui 0.36 landmines (hard-won):**
   (1) `ui.columns` children share a *stable* id — derive
@@ -128,7 +140,7 @@ only). No issue tracker is bound yet (deliberately deferred).
 | Branch | Purpose | Status |
 |---|---|---|
 | `main` | trunk | PRs #1–#47 all merged; all gates green |
-| `feat/vault-store` | unified store; tabs become type views | 4 commits, gates green, **no PR, not yet run in-app** |
+| `feat/vault-store` | unified store; tabs become type views | 6 commits, gates green, launch-verified on copied data; awaiting the user's interactive pass |
 
 ## Next up
 
@@ -197,11 +209,15 @@ buttons shipped in PR #44):
   and the whole bulk-spill path deleted from `transfer`; search
   collapsed onto the one store; MCP's `list_vaults`/`get_vault`
   became `list_buckets`/`get_store`. ARCHITECTURE.md renegotiated in
-  the same branch. 240 tests. Risk: **zero in-app time** — the
-  migration-on-first-launch path, the two-level tab feel, and
-  export round-tripping into TQVaultAE are all unverified; grid
-  positions for vaulted items are gone by design (the store sorts,
-  the user no longer arranges).
+  the same branch. 241 tests, including an env-gated real-data
+  migration check (the user's 295 items: all classified, lossless
+  round trip, export repacked into 4 sacks with no overlap).
+  Verified by launch against a scratch `HOME`; the family strip
+  overflowed on that first run (Misc unreachable) and was fixed.
+  Risk: no *interactive* time — drag/drop, bulk sends, ⌘F, and an
+  export opened in TQVaultAE are unexercised; grid positions for
+  vaulted items are gone by design (the store sorts, the user no
+  longer arranges).
 - **2026-08-28 — Filter overhaul: search in the vault pane (PR #47,
   merged).** User ask: no more full-window swap — the all-vaults
   search now renders in the vault column (one "Search all vaults"
