@@ -1,46 +1,29 @@
-//! The all-vaults search view: every vault file in the vaults folder
-//! flattened into one filtered, sorted table (icon | name | rarity |
-//! req | vault | stats), shown in the vault pane's place so the
-//! game-file pane stays live beside it. Rows are addressable through
-//! [`GridId`], so the standard gestures act on them — right-click
-//! sends to the active left tab, Shift+Click duplicates in place,
-//! Alt+Click extracts a socketed piece, double-click jumps to the
-//! item in the vault pane. Vaults loaded here ride the same
-//! autosave/refresh/conflict rails as the panes
-//! ([`DocId::SearchVault`]).
-
-use std::path::{Path, PathBuf};
+//! The store search view: everything in the unified store as one
+//! filtered, sorted table (icon | name | rarity | req | type |
+//! stats), shown in the store pane's place so the game-file pane
+//! stays live beside it. Rows carry the item's [`ItemAddr`], so the
+//! standard gestures act on them — right-click sends to the active
+//! left tab, Shift+Click duplicates, Alt+Click extracts a socketed
+//! piece, double-click jumps to the item's type in the store pane.
 
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 use std::collections::BTreeSet;
-use univault_core::cache::{GameCache, SourceStamp};
+use univault_core::cache::GameCache;
 use univault_core::chr::Item;
 
 use univault_core::query::{self, Expansion, Filter, ItemCategory, ValueBounds};
 use univault_core::stats::{self, Requirement};
+use univault_core::store::VaultStore;
 use univault_core::style::{self, ItemStyle};
-use univault_core::vault::Vault;
 
 use crate::theme;
-use crate::{
-    App, DocId, GridId, MainView, VaultPane, game_color, item_tooltip, stamp_of, vaults_dir,
-};
+use crate::{App, ItemAddr, MainView, StorePane, game_color, item_tooltip};
 
-/// One vault file loaded by the search view (never the one open in
-/// the vault pane — that one contributes its in-memory state).
-pub(crate) struct SearchDoc {
-    pub(crate) path: PathBuf,
-    pub(crate) vault: Vault,
-    pub(crate) dirty: bool,
-    pub(crate) disk_stamp: Option<SourceStamp>,
-}
-
-/// The search view's whole state; lives on [`App`] so loaded vaults
-/// stay warm (and autosaving) across view switches.
+/// The search view's whole state; lives on [`App`] so filters and
+/// sort survive a switch back to the store pane.
 #[derive(Default)]
 pub(crate) struct SearchState {
-    pub(crate) docs: Vec<SearchDoc>,
     pub(crate) stale: bool,
     /// The suggestion vocabularies lag behind `stale`: they rebuild
     /// only when item data changed, never on a filter keystroke.
@@ -49,26 +32,18 @@ pub(crate) struct SearchState {
     vocab_affixes: Vec<String>,
     draft: FilterDraft,
     sort: SortSpec,
-    source_filter: Option<RowSource>,
     rows: Vec<SearchRow>,
     total: usize,
-    selected: Option<(GridId, usize)>,
+    selected: Option<ItemAddr>,
 }
 
 impl SearchState {
-    /// Item data changed (edit, reload, rescan, adoption): rows and
-    /// suggestion vocabularies both need a rebuild.
+    /// Item data changed (edit, reload, import): rows and suggestion
+    /// vocabularies both need a rebuild.
     pub(crate) fn mark_data_changed(&mut self) {
         self.stale = true;
         self.vocab_stale = true;
     }
-}
-
-/// Which vault a row came from: the open pane or a loaded doc.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum RowSource {
-    Open,
-    Doc(usize),
 }
 
 /// Widget state of the filter bar; empty text fields (and
@@ -165,7 +140,7 @@ enum SortKey {
     Name,
     Rarity,
     ReqLevel,
-    Location,
+    Bucket,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -186,15 +161,16 @@ impl Default for SortSpec {
 /// One table row, with everything display and sorting need cached at
 /// rebuild time.
 struct SearchRow {
-    grid: GridId,
-    index: usize,
+    addr: ItemAddr,
     item: Item,
     name: String,
     name_sort: String,
     item_style: ItemStyle,
     rarity_rank: u8,
     req_level: Option<i32>,
-    location: String,
+    /// The computed type bucket the item files under — its address in
+    /// the store pane, and the table's location column.
+    bucket: String,
     details: stats::ItemDetails,
     height: f32,
 }
@@ -205,13 +181,12 @@ struct SearchRow {
 /// rescan reconciles against.
 #[derive(Default)]
 pub(crate) struct SearchFrame {
-    pub(crate) duplicate: Option<(GridId, usize)>,
-    pub(crate) quick_move: Option<(GridId, usize)>,
-    pub(crate) copy_across: Option<(GridId, usize)>,
-    pub(crate) extract: Option<(GridId, usize)>,
-    pub(crate) jump: Option<(GridId, usize)>,
+    pub(crate) duplicate: Option<ItemAddr>,
+    pub(crate) quick_move: Option<ItemAddr>,
+    pub(crate) copy_across: Option<ItemAddr>,
+    pub(crate) extract: Option<ItemAddr>,
+    pub(crate) jump: Option<ItemAddr>,
     pub(crate) leave: bool,
-    pub(crate) rescan: bool,
 }
 
 fn filter_field(ui: &mut egui::Ui, value: &mut String, hint: &str, width: f32) {
@@ -279,75 +254,26 @@ fn suggesting_field(
         });
 }
 
-/// The suggestion vocabularies over every loaded vault: distinct
-/// stat-line templates (numbers replaced by `#`) and affix names.
-fn collect_vocab<'a>(
-    db: &GameCache,
-    vaults: impl Iterator<Item = &'a Vault>,
-) -> (Vec<String>, Vec<String>) {
+/// The suggestion vocabularies over the store: distinct stat-line
+/// templates (numbers replaced by `#`) and affix names.
+fn collect_vocab(db: &GameCache, store: &VaultStore) -> (Vec<String>, Vec<String>) {
     let mut stats = BTreeSet::new();
     let mut affixes = BTreeSet::new();
-    for vault in vaults {
-        for sack in &vault.sacks {
-            for entry in &sack.items {
-                let item = &entry.item;
-                for line in query::stat_lines(db, item) {
-                    if !line.text.trim().is_empty() {
-                        stats.insert(query::stat_template(&line.text));
-                    }
-                }
-                for affix in [item.prefix.as_ref(), item.suffix.as_ref()]
-                    .into_iter()
-                    .flatten()
-                {
-                    affixes.insert(query::record_name(Some(db), affix));
-                }
+    for entry in store.entries() {
+        let item = &entry.item;
+        for line in query::stat_lines(db, item) {
+            if !line.text.trim().is_empty() {
+                stats.insert(query::stat_template(&line.text));
             }
+        }
+        for affix in [item.prefix.as_ref(), item.suffix.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            affixes.insert(query::record_name(Some(db), affix));
         }
     }
     (stats.into_iter().collect(), affixes.into_iter().collect())
-}
-
-/// A vault file's display name: its file stem.
-pub(crate) fn vault_label(path: &Path) -> String {
-    path.file_stem().map_or_else(
-        || path.display().to_string(),
-        |stem| stem.to_string_lossy().into_owned(),
-    )
-}
-
-/// Reads one vault file for the search view.
-pub(crate) fn load_search_doc(path: &Path) -> Result<SearchDoc, String> {
-    let disk_stamp = stamp_of(path);
-    let text =
-        std::fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
-    let vault = Vault::from_json(&text).map_err(|error| format!("{}: {error}", path.display()))?;
-    Ok(SearchDoc {
-        path: path.to_path_buf(),
-        vault,
-        dirty: false,
-        disk_stamp,
-    })
-}
-
-/// The vault files in the vaults folder, sorted by name.
-fn list_vault_files() -> Vec<PathBuf> {
-    let Some(dir) = vaults_dir() else {
-        return Vec::new();
-    };
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut files: Vec<PathBuf> = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
-        })
-        .collect();
-    files.sort();
-    files
 }
 
 fn draft_filters(draft: &FilterDraft) -> Vec<Filter> {
@@ -471,7 +397,7 @@ fn sort_rows(rows: &mut [SearchRow], sort: SortSpec) {
                 .unwrap_or(0)
                 .cmp(&b.req_level.unwrap_or(0))
                 .then(by_name),
-            SortKey::Location => a.location.cmp(&b.location).then(by_name),
+            SortKey::Bucket => a.bucket.cmp(&b.bucket).then(by_name),
         };
         if sort.ascending {
             ordering
@@ -481,212 +407,61 @@ fn sort_rows(rows: &mut [SearchRow], sort: SortSpec) {
     });
 }
 
-#[allow(clippy::too_many_arguments)] // one call surface, view-internal
-fn collect_rows(
-    db: &GameCache,
-    filters: &[Filter],
-    vault: &Vault,
-    source: RowSource,
-    label: &str,
-    total: &mut usize,
-    rows: &mut Vec<SearchRow>,
-) {
-    for (tab, sack) in vault.sacks.iter().enumerate() {
-        for (index, entry) in sack.items.iter().enumerate() {
-            let item = &entry.item;
-            *total += 1;
-            if !query::matches(db, item, filters) {
-                continue;
-            }
-            let details = stats::item_details(db, item);
-            let item_style = style::item_style(Some(db), item);
-            let name = query::item_name(Some(db), item);
-            let req_level = stats::item_requirements(db, item)
-                .into_iter()
-                .find(|(key, _)| *key == Requirement::Level)
-                .map(|(_, value)| value);
-            rows.push(SearchRow {
-                grid: match source {
-                    RowSource::Open => GridId::VaultTab(tab),
-                    RowSource::Doc(doc) => GridId::SearchDoc { doc, tab },
-                },
-                index,
-                item: item.clone(),
-                name_sort: name.to_lowercase(),
-                name,
-                rarity_rank: style_rank(item_style),
-                item_style,
-                req_level,
-                location: format!("{label} · tab {}", tab + 1),
-                height: row_height(&details),
-                details,
-            });
-        }
-    }
-}
-
 impl App {
-    /// Switches to the search view, re-listing the vaults folder.
+    /// Switches to the search view.
     pub(crate) fn enter_search(&mut self) {
         self.view = MainView::Search;
-        self.rescan_search_docs();
-    }
-
-    /// Re-lists the vaults folder: keeps the in-memory state of
-    /// already-loaded files, loads new ones, drops clean docs whose
-    /// file vanished (dirty ones stay — autosave recreates them).
-    /// The vault open in the pane is excluded; its rows come from
-    /// the pane's live model.
-    pub(crate) fn rescan_search_docs(&mut self) {
-        let mut kept = std::mem::take(&mut self.search.docs);
-        let mut docs = Vec::new();
-        let mut failures = Vec::new();
-        for path in list_vault_files() {
-            if self.right.as_ref().is_some_and(|pane| pane.path == path) {
-                continue;
-            }
-            if let Some(position) = kept.iter().position(|doc| doc.path == path) {
-                docs.push(kept.swap_remove(position));
-            } else {
-                match load_search_doc(&path) {
-                    Ok(doc) => docs.push(doc),
-                    Err(error) => failures.push(error),
-                }
-            }
-        }
-        docs.extend(kept.into_iter().filter(|doc| doc.dirty));
-        self.search.docs = docs;
-        self.search.source_filter = None;
         self.search.mark_data_changed();
-        if !failures.is_empty() {
-            self.status = Some(Err(format!(
-                "some vaults could not be read: {}",
-                failures.join("; ")
-            )));
-        }
-    }
-
-    /// Moves search doc `doc` into the vault pane (and the pane's
-    /// previous vault into the doc list), preserving unsaved edits
-    /// and stamps on both sides — no disk round-trip.
-    pub(crate) fn adopt_search_doc(
-        &mut self,
-        doc: usize,
-        open_tab: usize,
-        selected: Option<(GridId, usize)>,
-    ) {
-        if doc >= self.search.docs.len() {
-            return;
-        }
-        let adopted = self.search.docs.remove(doc);
-        let absorbed_index = self.right.take().map(|pane| {
-            self.search.docs.push(SearchDoc {
-                path: pane.path,
-                vault: pane.vault,
-                dirty: pane.dirty,
-                disk_stamp: pane.disk_stamp,
-            });
-            self.search.docs.len() - 1
-        });
-        self.right = Some(VaultPane {
-            path: adopted.path,
-            vault: adopted.vault,
-            dirty: adopted.dirty,
-            selected,
-            disk_stamp: adopted.disk_stamp,
-            open_tab,
-        });
-        for conflict in &mut self.conflicts {
-            *conflict = match *conflict {
-                DocId::Character => DocId::Character,
-                DocId::Stash(slot) => DocId::Stash(slot),
-                DocId::Vault => absorbed_index.map_or(DocId::Vault, DocId::SearchVault),
-                DocId::SearchVault(index) => match index.cmp(&doc) {
-                    std::cmp::Ordering::Equal => DocId::Vault,
-                    std::cmp::Ordering::Greater => DocId::SearchVault(index - 1),
-                    std::cmp::Ordering::Less => DocId::SearchVault(index),
-                },
-            };
-        }
-        self.search.mark_data_changed();
-    }
-
-    /// Double-click on a row: show the item at home in the vault
-    /// pane, adopting its vault there first when needed.
-    pub(crate) fn jump_to_search_row(&mut self, grid: GridId, index: usize) {
-        match grid {
-            GridId::VaultTab(tab) => {
-                if let Some(pane) = self.right.as_mut() {
-                    pane.open_tab = tab;
-                    pane.selected = Some((GridId::VaultTab(tab), index));
-                }
-            }
-            GridId::SearchDoc { doc, tab } => {
-                self.adopt_search_doc(doc, tab, Some((GridId::VaultTab(tab), index)));
-            }
-            GridId::Sack(_)
-            | GridId::Equipment(_)
-            | GridId::Bank
-            | GridId::Shared
-            | GridId::Relic => {}
-        }
-        self.view = MainView::Panes;
     }
 }
 
 /// Rebuilds the filtered row set (and, when item data changed, the
-/// suggestion vocabularies) from the open vault pane and the loaded
-/// docs.
-fn rebuild_rows(search: &mut SearchState, db: Option<&GameCache>, right: Option<&VaultPane>) {
+/// suggestion vocabularies) from the store.
+fn rebuild_rows(search: &mut SearchState, db: Option<&GameCache>, pane: Option<&StorePane>) {
     search.stale = false;
     search.total = 0;
-    let Some(db) = db else {
+    let (Some(db), Some(pane)) = (db, pane) else {
         search.rows.clear();
         return;
     };
     if search.vocab_stale {
-        let vaults = right
-            .iter()
-            .map(|pane| &pane.vault)
-            .chain(search.docs.iter().map(|doc| &doc.vault));
-        let (stats, affixes) = collect_vocab(db, vaults);
+        let (stats, affixes) = collect_vocab(db, &pane.store);
         search.vocab_stats = stats;
         search.vocab_affixes = affixes;
         search.vocab_stale = false;
     }
     let filters = draft_filters(&search.draft);
-    let wanted = search.source_filter;
-    let mut total = 0;
     let mut rows = Vec::new();
-    if let Some(pane) = right
-        && wanted.is_none_or(|source| source == RowSource::Open)
-    {
-        collect_rows(
-            db,
-            &filters,
-            &pane.vault,
-            RowSource::Open,
-            &vault_label(&pane.path),
-            &mut total,
-            &mut rows,
-        );
-    }
-    for (index, doc) in search.docs.iter().enumerate() {
-        if wanted.is_none_or(|source| source == RowSource::Doc(index)) {
-            collect_rows(
-                db,
-                &filters,
-                &doc.vault,
-                RowSource::Doc(index),
-                &vault_label(&doc.path),
-                &mut total,
-                &mut rows,
-            );
+    for entry in pane.store.entries() {
+        let item = &entry.item;
+        search.total += 1;
+        if !query::matches(db, item, &filters) {
+            continue;
         }
+        let details = stats::item_details(db, item);
+        let item_style = style::item_style(Some(db), item);
+        let name = query::item_name(Some(db), item);
+        let req_level = stats::item_requirements(db, item)
+            .into_iter()
+            .find(|(key, _)| *key == Requirement::Level)
+            .map(|(_, value)| value);
+        rows.push(SearchRow {
+            addr: ItemAddr::Stored(entry.id()),
+            item: item.clone(),
+            name_sort: name.to_lowercase(),
+            name,
+            rarity_rank: style_rank(item_style),
+            item_style,
+            req_level,
+            bucket: univault_core::store::bucket_of(Some(db), item)
+                .label()
+                .to_string(),
+            height: row_height(&details),
+            details,
+        });
     }
     sort_rows(&mut rows, search.sort);
     search.rows = rows;
-    search.total = total;
 }
 
 /// The search surface in the vault pane's place: action row, filter
@@ -695,37 +470,30 @@ fn rebuild_rows(search: &mut SearchState, db: Option<&GameCache>, right: Option<
 pub(crate) fn show_search_pane(
     ui: &mut egui::Ui,
     search: &mut SearchState,
-    right: Option<&VaultPane>,
+    pane: Option<&StorePane>,
     db: Option<&GameCache>,
     caches: &mut crate::Caches,
     dirty: bool,
 ) -> SearchFrame {
     let mut frame = SearchFrame::default();
     if search.stale {
-        rebuild_rows(search, db, right);
+        rebuild_rows(search, db, pane);
     }
     let pane_chrome = caches.chrome(ui.ctx(), db);
     let chrome_ref = pane_chrome.as_ref();
     ui.horizontal_wrapped(|ui| {
-        if crate::plate_button(ui, chrome_ref, true, "← Vault")
-            .on_hover_text("Show the vault again (Esc)")
+        if crate::plate_button(ui, chrome_ref, true, "← Store")
+            .on_hover_text("Show the store again (Esc)")
             .clicked()
         {
             frame.leave = true;
         }
-        if crate::plate_button(ui, chrome_ref, true, "Rescan")
-            .on_hover_text("Re-list the vaults folder for new or removed files")
-            .clicked()
-        {
-            frame.rescan = true;
-        }
-        let filtering = !search.draft.is_clear() || search.source_filter.is_some();
+        let filtering = !search.draft.is_clear();
         if crate::plate_button(ui, chrome_ref, filtering, "Clear all")
             .on_hover_text("Reset every filter — show everything")
             .clicked()
         {
             search.draft = FilterDraft::default();
-            search.source_filter = None;
             search.stale = true;
         }
         ui.label(format!("{} of {} items", search.rows.len(), search.total));
@@ -739,23 +507,22 @@ pub(crate) fn show_search_pane(
         frame.leave = true;
     }
     let draft_before = search.draft.clone();
-    let source_before = search.source_filter;
-    show_filter_bar(ui, search, right);
-    if search.draft != draft_before || search.source_filter != source_before {
+    show_filter_bar(ui, search);
+    if search.draft != draft_before {
         search.stale = true;
     }
     if search.stale {
-        rebuild_rows(search, db, right);
+        rebuild_rows(search, db, pane);
     }
     ui.separator();
     show_table(ui, search, caches, db, &mut frame);
     frame
 }
 
-fn show_filter_bar(ui: &mut egui::Ui, search: &mut SearchState, right: Option<&VaultPane>) {
+fn show_filter_bar(ui: &mut egui::Ui, search: &mut SearchState) {
     filter_text_row(ui, &mut search.draft);
     show_criteria_rows(ui, search);
-    show_filter_choice_row(ui, search, right);
+    show_filter_choice_row(ui, search);
 }
 
 /// The dynamic criteria list: one row per stat/affix conjunct,
@@ -819,13 +586,8 @@ fn show_criteria_rows(ui: &mut egui::Ui, search: &mut SearchState) {
     }
 }
 
-fn show_filter_choice_row(ui: &mut egui::Ui, search: &mut SearchState, right: Option<&VaultPane>) {
-    let SearchState {
-        draft,
-        docs,
-        source_filter,
-        ..
-    } = search;
+fn show_filter_choice_row(ui: &mut egui::Ui, search: &mut SearchState) {
+    let SearchState { draft, .. } = search;
     ui.horizontal_wrapped(|ui| {
         ui.label("Wearable at ≤");
         ui.label("Lv");
@@ -884,39 +646,6 @@ fn show_filter_choice_row(ui: &mut egui::Ui, search: &mut SearchState, right: Op
                     );
                 }
             });
-        let source_label = |source: Option<RowSource>| -> String {
-            match source {
-                None => "All vaults".to_string(),
-                Some(RowSource::Open) => right.map_or_else(
-                    || "(open vault)".to_string(),
-                    |pane| vault_label(&pane.path),
-                ),
-                Some(RowSource::Doc(index)) => docs
-                    .get(index)
-                    .map_or_else(|| "(gone)".to_string(), |doc| vault_label(&doc.path)),
-            }
-        };
-        let mut source = *source_filter;
-        egui::ComboBox::from_id_salt("search-source")
-            .selected_text(source_label(source))
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut source, None, "All vaults");
-                if right.is_some() {
-                    ui.selectable_value(
-                        &mut source,
-                        Some(RowSource::Open),
-                        source_label(Some(RowSource::Open)),
-                    );
-                }
-                for index in 0..docs.len() {
-                    ui.selectable_value(
-                        &mut source,
-                        Some(RowSource::Doc(index)),
-                        source_label(Some(RowSource::Doc(index))),
-                    );
-                }
-            });
-        *source_filter = source;
     });
 }
 
@@ -967,7 +696,7 @@ fn show_table(
             header.col(|ui| sort_button(ui, "Name", SortKey::Name, &mut sort));
             header.col(|ui| sort_button(ui, "Rarity", SortKey::Rarity, &mut sort));
             header.col(|ui| sort_button(ui, "Lv", SortKey::ReqLevel, &mut sort));
-            header.col(|ui| sort_button(ui, "Vault", SortKey::Location, &mut sort));
+            header.col(|ui| sort_button(ui, "Type", SortKey::Bucket, &mut sort));
             header.col(|ui| {
                 ui.strong("Stats");
             });
@@ -994,12 +723,12 @@ fn show_table(
 fn show_row(
     table_row: &mut egui_extras::TableRow<'_, '_>,
     row: &SearchRow,
-    selected: &mut Option<(GridId, usize)>,
+    selected: &mut Option<ItemAddr>,
     caches: &mut crate::Caches,
     db: Option<&GameCache>,
     frame: &mut SearchFrame,
 ) {
-    table_row.set_selected(*selected == Some((row.grid, row.index)));
+    table_row.set_selected(*selected == Some(row.addr));
     let (_, icon_response) = table_row.col(|ui| {
         if let Some(texture) = caches.icon(ui.ctx(), db, &row.item) {
             ui.image((texture.id(), egui::vec2(ICON_SIZE, ICON_SIZE)));
@@ -1034,7 +763,7 @@ fn show_row(
         }
     });
     table_row.col(|ui| {
-        ui.label(egui::RichText::new(&row.location).size(12.0));
+        ui.label(egui::RichText::new(&row.bucket).size(12.0));
     });
     table_row.col(|ui| {
         ui.spacing_mut().item_spacing.y = 4.0;
@@ -1056,7 +785,7 @@ fn show_row(
         }
     });
     let response = table_row.response();
-    let address = (row.grid, row.index);
+    let address = row.addr;
     if response.double_clicked() {
         frame.jump = Some(address);
     } else if response.clicked() {
@@ -1252,15 +981,14 @@ mod tests {
     #[test]
     fn rows_sort_by_key_with_name_tiebreak() {
         let row = |name: &str, rarity: u8, level: Option<i32>| SearchRow {
-            grid: GridId::VaultTab(0),
-            index: 0,
+            addr: ItemAddr::Stored(sample_id()),
             item: sample_item(),
             name: name.to_string(),
             name_sort: name.to_lowercase(),
             item_style: ItemStyle::Common,
             rarity_rank: rarity,
             req_level: level,
-            location: String::new(),
+            bucket: String::new(),
             details: stats::ItemDetails {
                 quality: None,
                 style_word: None,
@@ -1294,10 +1022,14 @@ mod tests {
     }
 
     fn sample_item() -> Item {
-        let json =
-            r#"{"sacks":[{"items":[{"baseName":"records\\a.dbr","stackSize":1,"seed":1}]}]}"#;
-        Vault::from_json(json).unwrap().sacks[0].items[0]
-            .item
-            .clone()
+        Item::bare(
+            univault_core::chr::RecordId::parse("records\\a.dbr".to_string()).unwrap(),
+            univault_core::chr::ItemSeed::new(1),
+        )
+    }
+
+    fn sample_id() -> univault_core::store::StoredItemId {
+        let mut store = VaultStore::new();
+        store.add(sample_item())
     }
 }

@@ -101,7 +101,7 @@ pub fn expansion_origin(item: &Item) -> Option<Expansion> {
 
 /// Coarse item category for filtering: an equipment family for gear,
 /// the item kind for everything else.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ItemCategory {
     Gear(GearSlot),
     Relic,

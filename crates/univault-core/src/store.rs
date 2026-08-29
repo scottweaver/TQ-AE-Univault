@@ -137,6 +137,13 @@ impl VaultStore {
         self.entries.iter()
     }
 
+    /// Mutable pass over every entry — the shell's view-layout pass
+    /// writes scratch grid positions here; position never serializes,
+    /// so scribbling it is harmless.
+    pub fn entries_mut(&mut self) -> impl Iterator<Item = &mut StoredEntry> {
+        self.entries.iter_mut()
+    }
+
     #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -266,7 +273,7 @@ pub fn export_to_vault(items: impl IntoIterator<Item = Item>, db: Option<&GameCa
 /// The computed bucket an item files into: its [`ItemCategory`], or
 /// [`Bucket::Unknown`] when no cache is loaded or the record isn't in
 /// it (a mod item after the mod is gone).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Bucket {
     Category(ItemCategory),
     Unknown,
@@ -422,13 +429,25 @@ struct EntryDto {
     id: u64,
     #[serde(rename = "baseName")]
     base_name: String,
-    #[serde(rename = "prefixName", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "prefixName",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     prefix_name: Option<String>,
-    #[serde(rename = "suffixName", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "suffixName",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     suffix_name: Option<String>,
     #[serde(rename = "relicName", default, skip_serializing_if = "Option::is_none")]
     relic_name: Option<String>,
-    #[serde(rename = "relicBonus", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "relicBonus",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     relic_bonus: Option<String>,
     seed: i32,
     var1: i32,
@@ -506,10 +525,7 @@ mod tests {
     use crate::text::TextDb;
 
     fn item(base: &str) -> Item {
-        Item::bare(
-            RecordId::parse(base.to_string()).unwrap(),
-            ItemSeed::new(7),
-        )
+        Item::bare(RecordId::parse(base.to_string()).unwrap(), ItemSeed::new(7))
     }
 
     fn db() -> GameCache {
