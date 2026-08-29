@@ -5,8 +5,9 @@
     "LootPlusXMAX3Tuned1xBoss: base LootPlusXMAXFTWx3x1 (same item) — monsters x3, named bosses x1, heroes exact-3x; build with the bundle-name override"
   ],
   "notes": [
-    "Projectile speed: AE lets a player reach 166% movement (playerRunSpeedCapMax in records\\game\\gameengine.dbr) while projectile velocities stayed at their 2006 values, so every cast trails the pace of the fight. set_player_projectile_speed 66 restores that ratio for player-side skills only.",
-    "Volcanic Orb is the outlier the sweep can't reach: at velocity 11 over range 33 it is the slowest projectile any player skill fires (3.00s end to end, against a 1.3-1.6s norm), so it takes 150% for a 1.20s flight. Its projectile record is shared with monster skills, hence the per-skill modifier rather than a velocity edit."
+    "Projectile speed: AE lets a player reach 166% movement (playerRunSpeedCapMax in records\\game\\gameengine.dbr) while projectile velocities stayed at their 2006 values, so every cast trails the pace of the fight. multiply_player_projectiles 1.66 restores that ratio.",
+    "skillProjectileSpeedModifier on the casting skill was tried first and measured inert in game — Volcanic Orb still took its vanilla 3.0s at 150. It is a character stat granted by passives and gear (Marksmanship, quivers), not a per-skill override. Only projectileVelocity moves flight time.",
+    "Volcanic Orb is the outlier: velocity 11 over range 33 is a 3.00s flight, the slowest of any player skill against a 1.3-1.6s norm. 1.66x leaves it at 1.81s, still worst in class, so its projectile is set to 28 for a 1.18s flight. VolcanicOrbLobbed01 is also fired by Colossal Fire Elemental's meteor, which speeds up with it."
   ],
   "rules": [
     {
@@ -38,19 +39,18 @@
       "value": 0.0
     },
     {
-      "kind": "set_player_projectile_speed",
-      "percent": 66.0
+      "kind": "multiply_player_projectiles",
+      "factor": 1.66
     },
     {
       "kind": "record",
       "records": [
-        "records\\skills\\earth\\volcanicorb.dbr",
-        "records\\xpack2\\skills\\item skills\\ring_volcanicorb.dbr",
-        "records\\xpack3\\skills\\item skills\\ring_volcanicorb.dbr",
-        "records\\xpack\\skills\\artifactskills\\e_ga_heartofearth_flamestrike.dbr"
+        "records\\effects\\earth\\volcanicorblobbed01.dbr",
+        "records\\effects\\earth\\volcanicorblobbed01_medium.dbr",
+        "records\\effects\\earth\\volcanicorblobbed01_low.dbr"
       ],
       "set": {
-        "skillProjectileSpeedModifier": 150.0
+        "projectileVelocity": 28.0
       }
     },
     {

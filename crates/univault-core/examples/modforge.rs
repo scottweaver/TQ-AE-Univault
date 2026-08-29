@@ -20,7 +20,7 @@
 //! Usage: `cargo run --release -p univault-core --example modforge -- \
 //!     "<TQ AE install dir>" "<base mod dir>" <patch.json> "<CustomMaps dir>"`
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use serde::Deserialize;
@@ -63,15 +63,23 @@ enum Rule {
         #[serde(default)]
         set: BTreeMap<String, serde_json::Value>,
     },
-    /// Raises the projectile speed of every player-side skill that
-    /// fires one, through the engine's own per-skill
-    /// `skillProjectileSpeedModifier` (a percent, as gear and
-    /// Marksmanship use). Written on the *casting skill*, never on
-    /// the projectile record — 48 of the 69 projectiles a player
-    /// skill can reach are also fired by monsters, so editing those
-    /// would hand enemies the same buff. Never lowers a skill that
-    /// already asks for more.
-    SetPlayerProjectileSpeed { percent: f64 },
+    /// Multiplies `projectileVelocity` on every projectile a
+    /// player-side skill can fire, following fragment chains.
+    ///
+    /// `skillProjectileSpeedModifier` on the casting skill was tried
+    /// first and measured inert for the player — Volcanic Orb still
+    /// took its vanilla 3.0s at 150. That variable is a character
+    /// stat granted by passives and gear (Marksmanship, quivers),
+    /// not a per-skill override. The projectile's own velocity is
+    /// the only knob that moves flight time.
+    ///
+    /// Velocity does not affect range: `projectileDistance` is an
+    /// independent cap, uncorrelated with ballistic range across
+    /// every record carrying `launchAngle`.
+    ///
+    /// Projectile records shared with monsters are reported, since
+    /// speeding one up speeds up the enemy firing it too.
+    MultiplyPlayerProjectiles { factor: f64 },
     /// Repeats the vanilla entry list of every spawn pool whose
     /// monsters are all Hero-classified (the star-marked ones)
     /// `factor` times — pool entry count is the engine's spawn
@@ -196,27 +204,51 @@ fn main() {
                     patched.insert(key, record);
                 }
             }
-            Rule::SetPlayerProjectileSpeed { percent } => {
-                let targets: Vec<RecordId> = main_db
-                    .record_ids()
-                    .filter(|id| player_skill(&normalize(id.as_str())))
-                    .cloned()
-                    .collect();
-                for id in targets {
-                    let key = normalize(id.as_str());
-                    let record = patched.get(&key).cloned().or_else(|| effective(&id));
-                    let Some(mut record) = record else { continue };
-                    if record.variable("skillProjectileName").is_none() {
+            Rule::MultiplyPlayerProjectiles { factor } => {
+                // Speeding a projectile speeds it up for everyone who
+                // fires it, so anything an enemy also uses is left
+                // alone here — a deliberate `record` rule is the way
+                // to take that trade knowingly.
+                let mut enemy_fired: BTreeSet<String> = BTreeSet::new();
+                for id in main_db.record_ids() {
+                    if player_skill(&normalize(id.as_str())) {
                         continue;
                     }
-                    let Some(changed) =
-                        raise_variable(&mut record, "skillProjectileSpeedModifier", *percent)
+                    let Some(record) = effective(id) else { continue };
+                    enemy_fired.extend(projectile_refs(&record));
+                }
+                let mut queue: Vec<String> = main_db
+                    .record_ids()
+                    .filter(|id| player_skill(&normalize(id.as_str())))
+                    .filter_map(&effective)
+                    .flat_map(|record| projectile_refs(&record))
+                    .collect();
+                let mut seen: BTreeSet<String> = BTreeSet::new();
+                let mut shared = 0_usize;
+                while let Some(key) = queue.pop() {
+                    if !seen.insert(key.clone()) {
+                        continue;
+                    }
+                    let Some(id) = RecordId::parse(key.clone()) else {
+                        continue;
+                    };
+                    let record = patched.get(&key).cloned().or_else(|| effective(&id));
+                    let Some(mut record) = record else { continue };
+                    queue.extend(projectile_refs(&record));
+                    if enemy_fired.contains(&key) {
+                        shared += 1;
+                        continue;
+                    }
+                    let Some(changed) = multiply_variable(&mut record, "projectileVelocity", *factor)
                     else {
                         continue;
                     };
-                    report.push(format!("{key}: skillProjectileSpeedModifier {changed}"));
+                    report.push(format!("{key}: projectileVelocity {changed}"));
                     patched.insert(key, record);
                 }
+                report.push(format!(
+                    "({shared} projectiles left at vanilla speed — enemies fire them too)"
+                ));
             }
             Rule::RevertVariables { record, variables } => {
                 let id = RecordId::parse(record.clone()).expect("record id in patch");
@@ -530,37 +562,26 @@ fn multiply_variable(record: &mut DbRecord, variable: &str, factor: f64) -> Opti
     Some(description)
 }
 
-/// Raises every value of `variable` to at least `percent`, adding
-/// the variable when the record omits it — an all-zero template
-/// default is not stored, which is the usual state of a skill that
-/// has never specified a projectile speed. Per-level arrays keep
-/// their length, so a skill that already ramps the value across
-/// levels only has its low levels lifted. `None` when the record
-/// already asks for at least this much everywhere.
-fn raise_variable(record: &mut DbRecord, variable: &str, percent: f64) -> Option<String> {
-    #[allow(clippy::cast_possible_truncation)] // patch data
-    let floor = percent as f32;
-    let existing = match record.variable(variable).map(|current| &current.values) {
-        Some(DbValues::Floats(values)) => values.clone(),
-        #[allow(clippy::cast_precision_loss)] // game-scale ints
-        Some(DbValues::Integers(values)) => values.iter().map(|&value| value as f32).collect(),
-        Some(DbValues::Strings(_) | DbValues::Booleans(_)) => return None,
-        None => Vec::new(),
-    };
-    let raised: Vec<f32> = if existing.is_empty() {
-        vec![floor]
-    } else {
-        existing.iter().map(|&value| value.max(floor)).collect()
-    };
-    if raised == existing {
-        return None;
-    }
-    let description = format!("{existing:?} -> {raised:?}");
-    record.set_variable(DbVariable {
-        name: variable.to_string(),
-        values: DbValues::Floats(raised),
-    });
-    Some(description)
+/// Every projectile record a skill or projectile points at —
+/// `skillProjectileName` carries a per-level list, and a projectile
+/// can burst into further projectiles through
+/// `projectileFragmentsName`.
+fn projectile_refs(record: &DbRecord) -> Vec<String> {
+    [
+        "skillProjectileName",
+        "projectileFragmentsName",
+        "projectileName",
+        "projectileNames",
+    ]
+    .iter()
+    .filter_map(|name| record.variable(name))
+    .flat_map(|variable| match &variable.values {
+        DbValues::Strings(values) => values.clone(),
+        DbValues::Integers(_) | DbValues::Floats(_) | DbValues::Booleans(_) => Vec::new(),
+    })
+    .filter(|value| !value.trim().is_empty())
+    .map(|value| normalize(&value))
+    .collect()
 }
 
 /// Overwrites every value of `variable` with `value`, preserving the
