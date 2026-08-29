@@ -5,8 +5,8 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-29 (checkpoint — skilltree unlock-level review;
-durable notes graduated to WORKING_NOTES.md)
+Last updated: 2026-08-29 (mod: Phantom Strike reach + cooldown,
+PR open)
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
@@ -92,6 +92,7 @@ only). No issue tracker is bound yet (deliberately deferred).
 |---|---|---|
 | `main` | trunk | PRs #1–#54 all merged; all gates green |
 | `worktree-fix+projectile-speeds-ae` | a parallel session's cast-speed / DPS docs work | pushed, no PR; locked worktree under `.claude/worktrees/` — not the main session's to touch |
+| `mod/phantom-strike-speed` | Mod: Phantom Strike reach `Long`→`Maximum`, cooldown 16s→1s | PR open; both bundles recomposed + installed, in-game check pending |
 
 ## Next up
 
@@ -149,6 +150,31 @@ buttons shipped in PR #44):
    the whole store loads and filters in memory.
 
 ## Most recent meaningful progress
+
+- **2026-08-29 — Mod: Phantom Strike reaches across the screen
+  (PR open).** User ask: make Phantom Strike substantially faster,
+  "where it feels like a teleport". Investigated the class first —
+  `Skill_AttackWeaponBlink.tpl` adds nothing but a header over
+  `Skill_AttackWeapon.tpl` (it is literally a "Copy of
+  Skill_AttackWeaponCharge.tpl"), and the whole include chain,
+  `Skill_WarmUp` included, exposes **no travel-speed, distance, or
+  warm-up-duration variable**. The vanish→reappear timing is
+  engine/animation-driven and not data-tunable; do not go looking
+  for that knob again. What is tunable: `distanceProfile`, a
+  picklist whose ranges live in `gameengine.dbr`
+  (melee 1.2 / short 5 / moderate 10 / long 17 / **maximum 30**,
+  against a 34-unit camera distance). Phantom Strike moves
+  `Long`→`Maximum` (17→30, +76% ground per cast, near the full
+  visible screen) and `skillCooldownTime` 16s→1s so it chains as a
+  movement skill rather than a once-a-fight gap-closer. Dream
+  Stealer is a `Skill_Modifier` carrying neither variable, so the
+  base record is the only one to patch. Both bundles recomposed +
+  installed; dump-verified in each. Risk: **no shipped
+  `Skill_AttackWeaponBlink` uses `Maximum`** — if the engine caps
+  the blink's actual travel below the targeting range, a far target
+  may make the character walk instead of blink. Fully reversible
+  (rebuild the bundles); needs the user's in-game pass. 1s was
+  chosen over 0s to avoid re-casting into the skill's own animation.
 
 - **2026-08-29 — `unlocks_at_mastery_level` reviewed; correct as
   built (no PR).** User report: the field looked missing for a
@@ -292,11 +318,6 @@ buttons shipped in PR #44):
   Terracotta Servants — all summons, per the mod's spirit). Both
   bundles recomposed + installed; nymph cooldown dump-verified 0.0.
   Risk: in-game acceptance after a session restart.
-- **2026-08-27 — Skilltree: real mastery unlock levels (PR #40,
-  merged; parallel session).** The skilltree surface reported
-  vestigial unlock-level data; it now reports the real mastery
-  unlock levels.
-
 ## Blocked / waiting
 
 - *(nothing)*

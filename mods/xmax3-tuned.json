@@ -134,6 +134,14 @@
         "offensiveSlowOffensiveAbilityDurationMin": 3.0,
         "offensiveSlowRunSpeedDurationMin": 3.0
       }
+    },
+    {
+      "kind": "record",
+      "record": "records\\xpack\\skills\\dream\\phantomstrike.dbr",
+      "set": {
+        "distanceProfile": "Maximum",
+        "skillCooldownTime": 1.0
+      }
     }
   ]
 }
