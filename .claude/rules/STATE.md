@@ -5,23 +5,22 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-29 (PR #50 merged — the unified item store;
-checkpointed)
+Last updated: 2026-08-29 (PR #52 merged — sorts read both ways)
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** PR #50 (virtual tabs → one unified item store)
-merged to `main` as `da227aa` and is wrapped up. It was **merged
-on the user's explicit call without the interactive acceptance
-pass** — so that pass is the first thing next session, on the
-user's own config: **drag/drop into a bucket, bulk sends, ⌘F
-search, and an export opened in TQVaultAE**. None of those were
-ever clicked (synthetic input is banned here); everything else was
-verified — real-data migration, both tab levels, the MCP surface
-over stdio. A regression there is fixed forward or reverted
-(`git revert da227aa`), not re-branched. First launch on the
-user's real config will create `vault-store.json` and migrate
+**Resume here:** PR #52 (every sort reads both ways) merged as
+`b67c8da`. The interactive acceptance pass over the store is still
+the first thing next session, and PR #52 adds to its checklist:
+**drag/drop into a bucket, bulk sends, ⌘F search, an export opened
+in TQVaultAE**, plus the new **▲/▼ direction toggle** beside the
+store's sort combo and the search table's column headers. None of
+those have been clicked (synthetic input is banned here). PR #50's
+own risk note still stands: it was merged on the user's explicit
+call without that pass; a regression there is fixed forward or
+reverted (`git revert da227aa`), not re-branched. First launch on
+the user's real config will create `vault-store.json` and migrate
 their vaults folder once, leaving the vault files untouched.
 Older threads still open: the release-build pass over the
 component chrome (PRs #43/#44), then the UIX queue. Remaining
@@ -158,7 +157,7 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#50 all merged; all gates green |
+| `main` | trunk | PRs #1–#52 all merged; all gates green |
 
 ## Next up
 
@@ -183,8 +182,9 @@ Default vault + bank tabs + autosave ACCEPTED 2026-08-25 ("Ah,
 that's better") and merged as PR #7.
 
 0. **The store's interactive acceptance pass** (merged, unverified):
-   drops into a bucket, bulk sends, ⌘F search, and an export opened
-   in TQVaultAE — on the user's own config.
+   drops into a bucket, bulk sends, ⌘F search, an export opened in
+   TQVaultAE, and the ▲/▼ sort-direction toggle (store combo +
+   search headers, PR #52) — on the user's own config.
 0b. **Component-ize remaining chrome surfaces as the user directs:**
    nameplates, plate buttons, grid cells, stone backdrop, tooltip
    frame — each through the preview + review loop first, from new
@@ -210,6 +210,24 @@ buttons shipped in PR #44):
 
 ## Most recent meaningful progress
 
+- **2026-08-29 — Every sort reads both ways (PR #52, merged).**
+  User ask, one line: all sorting operations should offer
+  ascending/descending. Two surfaces existed — the search table
+  could already flip via its headers (spelling direction as
+  `ascending: bool`), while the store pane's combo was one-way and
+  its rarity key faked descending by negating its own rank. Both
+  now share a `SortDirection` (new gui `sort.rs`): the store gains a
+  ▲/▼ plate toggle beside the combo, ranks are built ascending
+  everywhere and oriented once at the comparison, and a freshly
+  picked key opens in its natural direction (names/type A→Z, rarity
+  and level best-first) so the store's old rarity view is preserved.
+  Two divergent rarity ladders collapsed into
+  `ItemStyle::rarity_rank` in core — "by rarity" had meant two
+  different orders in one app. 248 tests; toggle rendering confirmed
+  in the real chrome under a scratch `HOME`. Risk: no click has
+  landed on either control (synthetic input banned), and rarity
+  descending now floats artifacts/relics above legendaries in a
+  bucket that mixes them.
 - **2026-08-29 — Tabs become views onto a normalized store (PR #50,
   merged).** User ask: stop letting tabs be
   arbitrary buckets — dedicate each to an item type — and make
@@ -330,22 +348,6 @@ buttons shipped in PR #44):
   through the cache for true TQ chrome — the egui restyle is the
   foundation, not the end state. 223 tests. Risk: look acceptance is
   wholly in the user's eyes; expect palette iteration.
-- **2026-08-26 — Bulk send: whole tab → vault (PR #37, merged
-  2026-08-27).** User ask: move or copy every item in the active game
-  storage tab into the vault without per-item clicks. Design
-  settled in-dialog: transfers start in the open vault tab and
-  spill into the other tabs as each fills (the pre-existing
-  `transfer::place_in_vault` cycle, which single sends deliberately
-  stopped using in PR #31 — bulk is the sanctioned spill case);
-  inventory means all sacks, never the doll. Core:
-  `move_all_into_vault`/`copy_all_into_vault` over any item Vec plus
-  `BulkOutcome` counts (placed / left-behind / spilled) — an
-  unfittable item stays in place while the rest keep moving. GUI:
-  "All → Vault" and "Copy all → Vault" buttons on the character and
-  bank section headers; one toast summarizes the counts. 221 tests.
-  Risk: in-app acceptance pending — header-button feel and toast
-  wording; a full vault leaves the remainder behind by design.
-
 ## Blocked / waiting
 
 - *(nothing)*
