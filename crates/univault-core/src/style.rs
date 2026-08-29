@@ -45,6 +45,29 @@ impl ItemStyle {
             Self::Artifact => "Artifact",
         }
     }
+
+    /// Ascending rarity order for sorting: the quality ladder from
+    /// broken to legendary, then the styles that sit outside it
+    /// (quest, relic, consumable, artifact) — the game gives those no
+    /// place on the ladder, so they follow it rather than interleave.
+    #[must_use]
+    pub fn rarity_rank(self) -> u8 {
+        match self {
+            Self::Broken => 0,
+            Self::Mundane => 1,
+            Self::Common => 2,
+            Self::Rare => 3,
+            Self::Epic => 4,
+            Self::Legendary => 5,
+            Self::Quest => 6,
+            Self::Relic => 7,
+            Self::Potion => 8,
+            Self::Scroll => 9,
+            Self::Parchment => 10,
+            Self::Formulae => 11,
+            Self::Artifact => 12,
+        }
+    }
 }
 
 /// An sRGB color from the game's fixed text palette.
@@ -467,6 +490,43 @@ mod tests {
         );
         let data = GameData::from_parts(ArzFile::parse(builder.build()).unwrap(), TextDb::new());
         data.build_cache(Vec::new())
+    }
+
+    #[test]
+    fn rarity_rank_climbs_the_quality_ladder_and_is_total() {
+        let ladder = [
+            ItemStyle::Broken,
+            ItemStyle::Mundane,
+            ItemStyle::Common,
+            ItemStyle::Rare,
+            ItemStyle::Epic,
+            ItemStyle::Legendary,
+        ];
+        assert!(
+            ladder
+                .windows(2)
+                .all(|pair| pair[0].rarity_rank() < pair[1].rarity_rank())
+        );
+        let off_ladder = [
+            ItemStyle::Quest,
+            ItemStyle::Relic,
+            ItemStyle::Potion,
+            ItemStyle::Scroll,
+            ItemStyle::Parchment,
+            ItemStyle::Formulae,
+            ItemStyle::Artifact,
+        ];
+        assert!(
+            off_ladder
+                .iter()
+                .all(|style| style.rarity_rank() > ItemStyle::Legendary.rarity_rank())
+        );
+        let ranks: std::collections::BTreeSet<u8> = ladder
+            .iter()
+            .chain(off_ladder.iter())
+            .map(|style| style.rarity_rank())
+            .collect();
+        assert_eq!(ranks.len(), ladder.len() + off_ladder.len());
     }
 
     #[test]

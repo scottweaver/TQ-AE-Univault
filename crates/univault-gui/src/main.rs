@@ -28,6 +28,7 @@
 mod chrome;
 mod safe_write;
 mod search;
+mod sort;
 mod theme;
 
 use std::collections::{HashMap, HashSet};
@@ -35,6 +36,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use eframe::egui;
+use sort::SortDirection;
 use univault_core::cache::{GameCache, SourceStamp};
 use univault_core::chr::{self, EquipSlot, Item, PlayerCharacter, RecordId};
 use univault_core::gamedata::GameData;
@@ -187,15 +189,16 @@ impl LeftTab {
     }
 }
 
-/// How the store pane orders each bucket's items.
+/// What the store pane orders each bucket's items *by*; which way it
+/// reads is [`SortDirection`], carried alongside in [`StoreSort`].
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum StoreSort {
+enum StoreSortKey {
     Name,
     Rarity,
     Level,
 }
 
-impl StoreSort {
+impl StoreSortKey {
     const ALL: [Self; 3] = [Self::Name, Self::Rarity, Self::Level];
 
     fn label(self) -> &'static str {
@@ -203,6 +206,38 @@ impl StoreSort {
             Self::Name => "By name",
             Self::Rarity => "By rarity",
             Self::Level => "By level",
+        }
+    }
+
+    /// The direction a freshly picked key reads best in — names run
+    /// A→Z, but "best first" is what anyone picking rarity or level
+    /// means. The toggle overrides it and then stays put.
+    fn natural(self) -> SortDirection {
+        match self {
+            Self::Name => SortDirection::Ascending,
+            Self::Rarity | Self::Level => SortDirection::Descending,
+        }
+    }
+}
+
+/// The store pane's full ordering: a key and the way it reads.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct StoreSort {
+    key: StoreSortKey,
+    direction: SortDirection,
+}
+
+impl Default for StoreSort {
+    fn default() -> Self {
+        Self::by(StoreSortKey::Name)
+    }
+}
+
+impl StoreSort {
+    fn by(key: StoreSortKey) -> Self {
+        Self {
+            key,
+            direction: key.natural(),
         }
     }
 }
@@ -825,7 +860,11 @@ impl App {
         let disk_stamp = stamp_of(&path);
         let kept = self.store.as_ref().filter(|pane| pane.path == path);
         let (family, bucket, sort) = kept.map_or(
-            (Family::Armor, Family::Armor.buckets()[0], StoreSort::Name),
+            (
+                Family::Armor,
+                Family::Armor.buckets()[0],
+                StoreSort::default(),
+            ),
             |pane| (pane.family, pane.bucket, pane.sort),
         );
         let existing = path.exists();
@@ -5126,13 +5165,25 @@ fn show_store_pane(
             action = Some(PaneAction::OpenSearch);
         }
         let sort = egui::ComboBox::from_id_salt("store-sort")
-            .selected_text(pane.sort.label())
+            .selected_text(pane.sort.key.label())
             .width(110.0);
         sort.show_ui(ui, |ui| {
-            for option in StoreSort::ALL {
-                ui.selectable_value(&mut pane.sort, option, option.label());
+            for key in StoreSortKey::ALL {
+                if ui
+                    .selectable_label(pane.sort.key == key, key.label())
+                    .clicked()
+                    && pane.sort.key != key
+                {
+                    pane.sort = StoreSort::by(key);
+                }
             }
         });
+        if plate_button(ui, pane_chrome, true, pane.sort.direction.arrow())
+            .on_hover_text(pane.sort.direction.flip_hint())
+            .clicked()
+        {
+            pane.sort.direction = pane.sort.direction.flipped();
+        }
     });
     ui.horizontal_wrapped(|ui| {
         if plate_button(ui, pane_chrome, true, "Import vault…")
@@ -5247,8 +5298,10 @@ fn show_bucket_grid(
 const STORE_COLUMNS: i32 = univault_core::vault::TAB_WIDTH;
 const STORE_MIN_ROWS: i32 = univault_core::vault::TAB_HEIGHT;
 
-/// Orders a bucket's ids for display. Name is the tiebreak
-/// everywhere, so the order is total and stable frame to frame.
+/// Orders a bucket's ids for display. Ranks are always built
+/// ascending and oriented once by the pane's direction; name is the
+/// tiebreak everywhere, so the order is total and stable frame to
+/// frame.
 fn sort_stored(
     ids: &mut [StoredItemId],
     store: &VaultStore,
@@ -5263,12 +5316,12 @@ fn sort_stored(
             continue;
         };
         let name = names.item_label(db, item).to_lowercase();
-        let rank = match sort {
-            StoreSort::Name => 0,
-            StoreSort::Rarity => db.map_or(0, |db| {
-                -i32::from(style_rank(style::item_style(Some(db), item)))
+        let rank = match sort.key {
+            StoreSortKey::Name => 0,
+            StoreSortKey::Rarity => db.map_or(0, |db| {
+                i32::from(style::item_style(Some(db), item).rarity_rank())
             }),
-            StoreSort::Level => db.map_or(0, |db| {
+            StoreSortKey::Level => db.map_or(0, |db| {
                 stats::item_requirements(db, item)
                     .into_iter()
                     .find(|(key, _)| *key == stats::Requirement::Level)
@@ -5277,28 +5330,9 @@ fn sort_stored(
         };
         keyed.push(((rank, name), *id));
     }
-    keyed.sort_by(|a, b| a.0.cmp(&b.0));
+    keyed.sort_by(|a, b| sort.direction.apply(a.0.cmp(&b.0)));
     for (slot, (_, id)) in ids.iter_mut().zip(keyed) {
         *slot = id;
-    }
-}
-
-/// Rarity order for the store's sort, highest first.
-fn style_rank(item_style: style::ItemStyle) -> u8 {
-    match item_style {
-        style::ItemStyle::Broken => 0,
-        style::ItemStyle::Mundane => 1,
-        style::ItemStyle::Common => 2,
-        style::ItemStyle::Potion => 3,
-        style::ItemStyle::Scroll => 4,
-        style::ItemStyle::Parchment => 5,
-        style::ItemStyle::Quest => 6,
-        style::ItemStyle::Relic => 7,
-        style::ItemStyle::Formulae => 8,
-        style::ItemStyle::Artifact => 9,
-        style::ItemStyle::Rare => 10,
-        style::ItemStyle::Epic => 11,
-        style::ItemStyle::Legendary => 12,
     }
 }
 
@@ -5493,6 +5527,54 @@ mod tests {
         assert!(!tracker.settled(path, None, Some(&ours)));
         assert!(!tracker.settled(path, Some(&changed), Some(&ours)));
         assert!(tracker.settled(path, Some(&changed), Some(&ours)));
+    }
+
+    #[test]
+    fn the_store_grid_sorts_both_ways() {
+        let mut store = VaultStore::new();
+        let ids: Vec<StoredItemId> = ["charlie", "alpha", "bravo"]
+            .into_iter()
+            .map(|stem| {
+                store.add(Item::bare(
+                    RecordId::parse(format!("records\\{stem}.dbr")).unwrap(),
+                    chr::ItemSeed::new(1),
+                ))
+            })
+            .collect();
+        let mut names = NameCache::default();
+        let ordered = |direction, names: &mut NameCache| {
+            let mut ids = ids.clone();
+            sort_stored(
+                &mut ids,
+                &store,
+                None,
+                StoreSort {
+                    key: StoreSortKey::Name,
+                    direction,
+                },
+                names,
+            );
+            ids.iter()
+                .filter_map(|id| store.get(*id))
+                .map(|item| names.item_label(None, item))
+                .collect::<Vec<String>>()
+        };
+        assert_eq!(
+            ordered(SortDirection::Ascending, &mut names),
+            ["alpha", "bravo", "charlie"]
+        );
+        assert_eq!(
+            ordered(SortDirection::Descending, &mut names),
+            ["charlie", "bravo", "alpha"]
+        );
+    }
+
+    #[test]
+    fn a_fresh_store_key_opens_in_its_natural_direction() {
+        assert!(StoreSortKey::Name.natural() == SortDirection::Ascending);
+        assert!(StoreSortKey::Rarity.natural() == SortDirection::Descending);
+        assert!(StoreSortKey::Level.natural() == SortDirection::Descending);
+        assert!(StoreSort::default().direction == SortDirection::Ascending);
     }
 
     #[test]
