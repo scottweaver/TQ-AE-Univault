@@ -220,7 +220,7 @@ buttons shipped in PR #44):
   New modforge rule `set_player_projectile_speed` writes the
   engine's own per-skill `skillProjectileSpeedModifier` (66%,
   anchored to `playerRunSpeedCapMax = 166` in
-  `records\game\gameengine.dbr`) onto the 132 player-side skills
+  `records\game\gameengine.dbr`) onto the 127 player-side skills
   that fire a projectile, with Volcanic Orb's four variants set to
   150% for a 1.20s flight. The modifier goes on the **casting
   skill**, never the projectile record: 48 of the 69 projectiles a
