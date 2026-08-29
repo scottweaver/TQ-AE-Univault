@@ -5,14 +5,18 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-29 (mod: Phantom Strike blink speed, PR open)
+Last updated: 2026-08-29 (PR #58 merged — Phantom Strike blink speed)
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** nothing is in flight from the last session — it was
-a read-only review (no code changes, tree clean, nothing unpushed).
-The interactive acceptance pass over the store is still the first
+**Resume here:** PR #58 merged (Phantom Strike blink speed —
+`characterRunSpeedModifier` 0→500); both mod bundles are rebuilt and
+installed, so it needs only the user's in-game pass after a session
+restart. If the blink still feels slow, the next suspect is
+`playerRunSpeedCapMax` (166) clamping the 500 — that is a global
+affecting all player run speed and needs its own decision, so ask
+first. The interactive acceptance pass over the store is still the first
 thing next session: **drag/drop into a bucket, bulk sends, ⌘F
 search, an export opened in TQVaultAE**, the **▲/▼
 sort-direction toggle** (store combo + search headers, PR #52), and
@@ -45,7 +49,8 @@ checkpoint.)
 - **Stale remote branches worth pruning:**
   `feat/components-in-app`, `feat/tq-chrome`, `feat/ui-components`,
   `fix/skilltree-unlock-levels` — all from merged PRs.
-- User in-game checks outstanding (mod acceptance): pet Energy
+- User in-game checks outstanding (mod acceptance): **Phantom
+  Strike blink speed (PR #58) — the freshest one**; pet Energy
   ×2.5 / regen ×1.75 on Core Dweller (875 / 5.25 at level
   20) and Call of the Wild wolves (255 / 3.5); vanilla XP restored
   (even-level trash mob on Normal ≈ level×15); target caps
@@ -89,10 +94,8 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#54 all merged; all gates green |
+| `main` | trunk | PRs #1–#58 all merged; all gates green |
 | `worktree-fix+projectile-speeds-ae` | a parallel session's cast-speed / DPS docs work | pushed, no PR; locked worktree under `.claude/worktrees/` — not the main session's to touch |
-| `mod/phantom-strike-runspeed` | Mod: Phantom Strike blink speed via `characterRunSpeedModifier` 0→500 | PR open; both bundles rebuilt + installed, in-game check pending |
-| `mod/phantom-strike-speed` | abandoned — wrong change, PR #57 closed | remote branch stale; delete once confirmed |
 
 ## Next up
 
@@ -151,7 +154,8 @@ buttons shipped in PR #44):
 
 ## Most recent meaningful progress
 
-- **2026-08-29 — Mod: Phantom Strike blinks at speed (PR open).**
+- **2026-08-29 — Mod: Phantom Strike blinks at speed (PR #58,
+  merged).**
   User ask: make the blink substantially faster, "feels like a
   teleport". The knob is `characterRunSpeedModifier` on
   `records\xpack\skills\dream\phantomstrike.dbr`, shipped at `0.0`;
@@ -161,7 +165,8 @@ buttons shipped in PR #44):
   semantics") — the short version: a `.tpl` is the editor's schema,
   the engine reads variables by name, and the monster twin
   `HERO_PHANTOMSTRIKE.DBR` ships the same class at `300.0`. Both
-  bundles rebuilt + installed, dump-verified. Risk: `500` exceeds
+  bundles rebuilt + installed, dump-verified. Awaiting the user's
+  in-game pass. Risk: `500` exceeds
   `playerRunSpeedCapMax` (166), so the engine may clamp it — if the
   blink still feels slow in game, that global is the next suspect
   (raising it affects all player run speed, so it needs its own
