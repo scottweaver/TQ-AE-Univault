@@ -79,6 +79,38 @@ annotated.
   choices whenever more than one exists, so record tools need an
   explicit `mod` argument here.
 
+## Reading the game's record semantics
+
+- **A `.tpl` is the editor's schema, not the engine's contract.** The
+  engine reads DBR variables **by name**; a variable missing from a
+  record's template can still be honoured. Never conclude "the game
+  can't do this" from a template alone — that mistake cost a session
+  on 2026-08-29 and shipped an unwanted change to the user's install.
+- **The reliable method: find a sibling record of the same class that
+  already does the thing, and diff it.** Monster/hero variants of a
+  player skill are the richest source — they are usually the same
+  class with the interesting knobs turned on.
+- **Worked example — blink/charge travel speed is
+  `characterRunSpeedModifier`.** Phantom Strike
+  (`records\xpack\skills\dream\phantomstrike.dbr`,
+  `Skill_AttackWeaponBlink`) ships it at `0.0`, while the monster copy
+  `HERO_PHANTOMSTRIKE.DBR` — identical class — ships `300.0`, as do
+  the `Skill_AttackWeaponCharge` skills Shield Charge and Take Down.
+  `Skill_AttackWeaponBlink.tpl` declares none of it; it is a bare
+  header over `Skill_AttackWeapon.tpl` (literally "Copy of
+  Skill_AttackWeaponCharge.tpl").
+- **Templates live in `Toolset/Templates.arc`**, not under
+  `Database/`. Entries are lowercase paths like
+  `templates/templatebase/skill_warmup.tpl`, readable as plain text
+  through `arc::ArcFile::file`.
+- **Useful globals in `records\xpack\game\gameengine.dbr`:** distance
+  profiles (`meleeRange` 1.2, `shortRange` 5, `moderateRange` 10,
+  `longRange` 17, `maximumRange` 30, against a 34-unit
+  `CameraDistanceDefault`) and the run-speed ceilings
+  (`playerRunSpeedCapMax` 166, `monsterRunSpeedCapMax` 400,
+  `absoluteRunSpeedCapMax` 500). These are global — prefer changing a
+  skill's own `distanceProfile` over editing a shared range.
+
 ## Cache and first launch
 
 Cache format is `UVC8`; import reads `InGameUI.arc` + `XPack/UI.arc`

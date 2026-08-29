@@ -134,6 +134,13 @@
         "offensiveSlowOffensiveAbilityDurationMin": 3.0,
         "offensiveSlowRunSpeedDurationMin": 3.0
       }
+    },
+    {
+      "kind": "record",
+      "record": "records\\xpack\\skills\\dream\\phantomstrike.dbr",
+      "set": {
+        "characterRunSpeedModifier": 500.0
+      }
     }
   ]
 }

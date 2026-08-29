@@ -5,8 +5,7 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-29 (checkpoint — skilltree unlock-level review;
-durable notes graduated to WORKING_NOTES.md)
+Last updated: 2026-08-29 (mod: Phantom Strike blink speed, PR open)
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
@@ -92,6 +91,8 @@ only). No issue tracker is bound yet (deliberately deferred).
 |---|---|---|
 | `main` | trunk | PRs #1–#54 all merged; all gates green |
 | `worktree-fix+projectile-speeds-ae` | a parallel session's cast-speed / DPS docs work | pushed, no PR; locked worktree under `.claude/worktrees/` — not the main session's to touch |
+| `mod/phantom-strike-runspeed` | Mod: Phantom Strike blink speed via `characterRunSpeedModifier` 0→500 | PR open; both bundles rebuilt + installed, in-game check pending |
+| `mod/phantom-strike-speed` | abandoned — wrong change, PR #57 closed | remote branch stale; delete once confirmed |
 
 ## Next up
 
@@ -149,6 +150,25 @@ buttons shipped in PR #44):
    the whole store loads and filters in memory.
 
 ## Most recent meaningful progress
+
+- **2026-08-29 — Mod: Phantom Strike blinks at speed (PR open).**
+  User ask: make the blink substantially faster, "feels like a
+  teleport". The knob is `characterRunSpeedModifier` on
+  `records\xpack\skills\dream\phantomstrike.dbr`, shipped at `0.0`;
+  set to `500.0` (the user's pick — `absoluteRunSpeedCapMax`),
+  per-skill only, no globals touched. Method and the caps/profile
+  numbers are now in WORKING_NOTES.md ("Reading the game's record
+  semantics") — the short version: a `.tpl` is the editor's schema,
+  the engine reads variables by name, and the monster twin
+  `HERO_PHANTOMSTRIKE.DBR` ships the same class at `300.0`. Both
+  bundles rebuilt + installed, dump-verified. Risk: `500` exceeds
+  `playerRunSpeedCapMax` (166), so the engine may clamp it — if the
+  blink still feels slow in game, that global is the next suspect
+  (raising it affects all player run speed, so it needs its own
+  decision). **Process note:** an earlier attempt this session shipped
+  `distanceProfile`/cooldown changes the user had not asked for; they
+  were rejected, reverted, and PR #57 closed. Ask before substituting
+  scope — especially when the artifact lands in `CustomMaps/`.
 
 - **2026-08-29 — `unlocks_at_mastery_level` reviewed; correct as
   built (no PR).** User report: the field looked missing for a
@@ -292,11 +312,6 @@ buttons shipped in PR #44):
   Terracotta Servants — all summons, per the mod's spirit). Both
   bundles recomposed + installed; nymph cooldown dump-verified 0.0.
   Risk: in-game acceptance after a session restart.
-- **2026-08-27 — Skilltree: real mastery unlock levels (PR #40,
-  merged; parallel session).** The skilltree surface reported
-  vestigial unlock-level data; it now reports the real mastery
-  unlock levels.
-
 ## Blocked / waiting
 
 - *(nothing)*
