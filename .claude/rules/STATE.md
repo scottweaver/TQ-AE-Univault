@@ -46,9 +46,6 @@ checkpoint.)
   the installed bundle is "overlaid by default". Harmless for unlock
   levels, but the user's LootPlus skill edits are invisible in
   mastery output. Listed under "Next up".
-- **Stale remote branches worth pruning:**
-  `feat/components-in-app`, `feat/tq-chrome`, `feat/ui-components`,
-  `fix/skilltree-unlock-levels` — all from merged PRs.
 - User in-game checks outstanding (mod acceptance): **Phantom
   Strike blink speed (PR #58) — the freshest one**; pet Energy
   ×2.5 / regen ×1.75 on Core Dweller (875 / 5.25 at level
@@ -96,6 +93,10 @@ only). No issue tracker is bound yet (deliberately deferred).
 |---|---|---|
 | `main` | trunk | PRs #1–#58 all merged; all gates green |
 | `worktree-fix+projectile-speeds-ae` | a parallel session's cast-speed / DPS docs work | pushed, no PR; locked worktree under `.claude/worktrees/` — not the main session's to touch |
+
+The remote is now just these two: every merged branch has been pruned
+(2026-08-29). A local `docs/checkpoint-2026-08-29` worktree lingers
+whose remote branch is already gone — remove it when convenient.
 
 ## Next up
 
