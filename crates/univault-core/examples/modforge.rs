@@ -217,37 +217,49 @@ fn main() {
                     let Some(record) = effective(id) else { continue };
                     enemy_fired.extend(projectile_refs(&record));
                 }
-                let mut queue: Vec<String> = main_db
+                // Per skill, not per projectile: a skill names one
+                // projectile per level (Low/Medium/full art tiers).
+                // Speeding only the unshared tiers would make the
+                // skill slow down as it levels, so a family with any
+                // enemy-fired member is left alone whole.
+                let skills: Vec<RecordId> = main_db
                     .record_ids()
                     .filter(|id| player_skill(&normalize(id.as_str())))
-                    .filter_map(&effective)
-                    .flat_map(|record| projectile_refs(&record))
+                    .cloned()
                     .collect();
-                let mut seen: BTreeSet<String> = BTreeSet::new();
-                let mut shared = 0_usize;
-                while let Some(key) = queue.pop() {
-                    if !seen.insert(key.clone()) {
+                let mut done: BTreeSet<String> = BTreeSet::new();
+                let mut skipped: BTreeSet<String> = BTreeSet::new();
+                for skill in skills {
+                    let Some(record) = effective(&skill) else { continue };
+                    let family = projectile_family(&record, &effective);
+                    if family.is_empty() {
                         continue;
                     }
-                    let Some(id) = RecordId::parse(key.clone()) else {
-                        continue;
-                    };
-                    let record = patched.get(&key).cloned().or_else(|| effective(&id));
-                    let Some(mut record) = record else { continue };
-                    queue.extend(projectile_refs(&record));
-                    if enemy_fired.contains(&key) {
-                        shared += 1;
+                    if family.iter().any(|key| enemy_fired.contains(key)) {
+                        skipped.insert(normalize(skill.as_str()));
                         continue;
                     }
-                    let Some(changed) = multiply_variable(&mut record, "projectileVelocity", *factor)
-                    else {
-                        continue;
-                    };
-                    report.push(format!("{key}: projectileVelocity {changed}"));
-                    patched.insert(key, record);
+                    for key in family {
+                        if !done.insert(key.clone()) {
+                            continue;
+                        }
+                        let Some(id) = RecordId::parse(key.clone()) else {
+                            continue;
+                        };
+                        let target = patched.get(&key).cloned().or_else(|| effective(&id));
+                        let Some(mut target) = target else { continue };
+                        let Some(changed) =
+                            multiply_variable(&mut target, "projectileVelocity", *factor)
+                        else {
+                            continue;
+                        };
+                        report.push(format!("{key}: projectileVelocity {changed}"));
+                        patched.insert(key, target);
+                    }
                 }
                 report.push(format!(
-                    "({shared} projectiles left at vanilla speed — enemies fire them too)"
+                    "({} skills left at vanilla speed — enemies fire their projectiles too)",
+                    skipped.len()
                 ));
             }
             Rule::RevertVariables { record, variables } => {
@@ -560,6 +572,29 @@ fn multiply_variable(record: &mut DbRecord, variable: &str, factor: f64) -> Opti
         values,
     });
     Some(description)
+}
+
+/// Every projectile one skill can put in the air: the per-level
+/// entries of `skillProjectileName` plus everything they burst into,
+/// followed transitively.
+fn projectile_family(
+    skill: &DbRecord,
+    effective: &impl Fn(&RecordId) -> Option<DbRecord>,
+) -> BTreeSet<String> {
+    let mut family = BTreeSet::new();
+    let mut queue = projectile_refs(skill);
+    while let Some(key) = queue.pop() {
+        if !family.insert(key.clone()) {
+            continue;
+        }
+        let Some(id) = RecordId::parse(key) else {
+            continue;
+        };
+        if let Some(record) = effective(&id) {
+            queue.extend(projectile_refs(&record));
+        }
+    }
+    family
 }
 
 /// Every projectile record a skill or projectile points at —
