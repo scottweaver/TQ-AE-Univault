@@ -5,7 +5,7 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-29 (PR #52 merged — sorts read both ways)
+Last updated: 2026-08-29 (projectile speeds vs AE movement, unmerged)
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
@@ -158,6 +158,7 @@ only). No issue tracker is bound yet (deliberately deferred).
 | Branch | Purpose | Status |
 |---|---|---|
 | `main` | trunk | PRs #1–#52 all merged; all gates green |
+| `fix/projectile-speeds-ae` | mod: player projectile speed vs AE movement | composed + verified against the real database; **not installed** |
 
 ## Next up
 
@@ -210,6 +211,28 @@ buttons shipped in PR #44):
 
 ## Most recent meaningful progress
 
+- **2026-08-29 — Mod: player projectiles keep up with AE movement
+  (`fix/projectile-speeds-ae`, unmerged).** User ask: compensate
+  projectile speed for the movement speed AE introduced; the case
+  that prompted it was Volcanic Orb's travel time. The database
+  agreed — Volcanic Orb fires at velocity 11 over range 33, a 3.00s
+  flight, the slowest of any player skill against a 1.3–1.6s norm.
+  New modforge rule `set_player_projectile_speed` writes the
+  engine's own per-skill `skillProjectileSpeedModifier` (66%,
+  anchored to `playerRunSpeedCapMax = 166` in
+  `records\game\gameengine.dbr`) onto the 132 player-side skills
+  that fire a projectile, with Volcanic Orb's four variants set to
+  150% for a 1.20s flight. The modifier goes on the **casting
+  skill**, never the projectile record: 48 of the 69 projectiles a
+  player skill can reach are also fired by monsters, so editing
+  those would have handed enemies the same buff — verified absent
+  from the composed bundle. Ruled out first that velocity drives
+  range (`projectileDistance` is an independent cap; ballistic
+  range and `dist` are uncorrelated across every `launchAngle`
+  record). 255 tests, both bundles compose and self-check. Risk:
+  no in-game pass — the percentages are reasoned from the data,
+  not felt, and 150% is a judgment call about what "fast enough"
+  means; bundles are built to scratch and **not installed**.
 - **2026-08-29 — Every sort reads both ways (PR #52, merged).**
   User ask, one line: all sorting operations should offer
   ascending/descending. Two surfaces existed — the search table

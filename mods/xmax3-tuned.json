@@ -4,6 +4,10 @@
     "LootPlusXMAX3Tuned: base LootPlusXMAXFTWx3 (Workshop 1779344333) — monsters x3, bosses x3, heroes exact-3x via multiply_hero_pools",
     "LootPlusXMAX3Tuned1xBoss: base LootPlusXMAXFTWx3x1 (same item) — monsters x3, named bosses x1, heroes exact-3x; build with the bundle-name override"
   ],
+  "notes": [
+    "Projectile speed: AE lets a player reach 166% movement (playerRunSpeedCapMax in records\\game\\gameengine.dbr) while projectile velocities stayed at their 2006 values, so every cast trails the pace of the fight. set_player_projectile_speed 66 restores that ratio for player-side skills only.",
+    "Volcanic Orb is the outlier the sweep can't reach: at velocity 11 over range 33 it is the slowest projectile any player skill fires (3.00s end to end, against a 1.3-1.6s norm), so it takes 150% for a 1.20s flight. Its projectile record is shared with monster skills, hence the per-skill modifier rather than a velocity edit."
+  ],
   "rules": [
     {
       "kind": "multiply_hero_pools",
@@ -32,6 +36,22 @@
       "class": "Skill_AttackProjectileSpawnPet",
       "variable": "skillCooldownTime",
       "value": 0.0
+    },
+    {
+      "kind": "set_player_projectile_speed",
+      "percent": 66.0
+    },
+    {
+      "kind": "record",
+      "records": [
+        "records\\skills\\earth\\volcanicorb.dbr",
+        "records\\xpack2\\skills\\item skills\\ring_volcanicorb.dbr",
+        "records\\xpack3\\skills\\item skills\\ring_volcanicorb.dbr",
+        "records\\xpack\\skills\\artifactskills\\e_ga_heartofearth_flamestrike.dbr"
+      ],
+      "set": {
+        "skillProjectileSpeedModifier": 150.0
+      }
     },
     {
       "kind": "revert_variables",

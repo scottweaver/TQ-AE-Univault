@@ -63,6 +63,15 @@ enum Rule {
         #[serde(default)]
         set: BTreeMap<String, serde_json::Value>,
     },
+    /// Raises the projectile speed of every player-side skill that
+    /// fires one, through the engine's own per-skill
+    /// `skillProjectileSpeedModifier` (a percent, as gear and
+    /// Marksmanship use). Written on the *casting skill*, never on
+    /// the projectile record — 48 of the 69 projectiles a player
+    /// skill can reach are also fired by monsters, so editing those
+    /// would hand enemies the same buff. Never lowers a skill that
+    /// already asks for more.
+    SetPlayerProjectileSpeed { percent: f64 },
     /// Repeats the vanilla entry list of every spawn pool whose
     /// monsters are all Hero-classified (the star-marked ones)
     /// `factor` times — pool entry count is the engine's spawn
@@ -184,6 +193,28 @@ fn main() {
                         continue;
                     };
                     report.push(format!("{key}: {variable} {changed}"));
+                    patched.insert(key, record);
+                }
+            }
+            Rule::SetPlayerProjectileSpeed { percent } => {
+                let targets: Vec<RecordId> = main_db
+                    .record_ids()
+                    .filter(|id| player_skill(&normalize(id.as_str())))
+                    .cloned()
+                    .collect();
+                for id in targets {
+                    let key = normalize(id.as_str());
+                    let record = patched.get(&key).cloned().or_else(|| effective(&id));
+                    let Some(mut record) = record else { continue };
+                    if record.variable("skillProjectileName").is_none() {
+                        continue;
+                    }
+                    let Some(changed) =
+                        raise_variable(&mut record, "skillProjectileSpeedModifier", *percent)
+                    else {
+                        continue;
+                    };
+                    report.push(format!("{key}: skillProjectileSpeedModifier {changed}"));
                     patched.insert(key, record);
                 }
             }
@@ -495,6 +526,39 @@ fn multiply_variable(record: &mut DbRecord, variable: &str, factor: f64) -> Opti
     record.set_variable(DbVariable {
         name: variable.to_string(),
         values,
+    });
+    Some(description)
+}
+
+/// Raises every value of `variable` to at least `percent`, adding
+/// the variable when the record omits it — an all-zero template
+/// default is not stored, which is the usual state of a skill that
+/// has never specified a projectile speed. Per-level arrays keep
+/// their length, so a skill that already ramps the value across
+/// levels only has its low levels lifted. `None` when the record
+/// already asks for at least this much everywhere.
+fn raise_variable(record: &mut DbRecord, variable: &str, percent: f64) -> Option<String> {
+    #[allow(clippy::cast_possible_truncation)] // patch data
+    let floor = percent as f32;
+    let existing = match record.variable(variable).map(|current| &current.values) {
+        Some(DbValues::Floats(values)) => values.clone(),
+        #[allow(clippy::cast_precision_loss)] // game-scale ints
+        Some(DbValues::Integers(values)) => values.iter().map(|&value| value as f32).collect(),
+        Some(DbValues::Strings(_) | DbValues::Booleans(_)) => return None,
+        None => Vec::new(),
+    };
+    let raised: Vec<f32> = if existing.is_empty() {
+        vec![floor]
+    } else {
+        existing.iter().map(|&value| value.max(floor)).collect()
+    };
+    if raised == existing {
+        return None;
+    }
+    let description = format!("{existing:?} -> {raised:?}");
+    record.set_variable(DbVariable {
+        name: variable.to_string(),
+        values: DbValues::Floats(raised),
     });
     Some(description)
 }
