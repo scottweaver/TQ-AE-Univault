@@ -5,23 +5,42 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-28 (PR #47 merged + wrapped; checkpointed)
+Last updated: 2026-08-29 (virtual tabs → unified store, built on
+`feat/vault-store`; no PR yet)
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** PR #47 (filter overhaul: the all-vaults search
-renders in the vault pane's place instead of swapping the whole
-window) merged 2026-08-28 and is wrapped up. Awaiting the user's
-in-app feel pass on the half-width search table (stats column
-starts narrow; columns are draggable — offer to widen defaults or
-drop the Rarity column if it feels cramped), plus the still-
-outstanding release-build pass over the component chrome
+**Resume here:** `feat/vault-store` holds the store rework — six
+commits, all gates green (241 tests, clippy, fmt). Launched once
+against a **scratch `HOME`** holding a copy of the real vault and
+cache (the user's own config was never touched, and still has no
+`vault-store.json`): migration, the two-level tabs, and the real
+295 items all render — see the screenshot note below. Still needs
+the user's own pass on their real config, and specifically on what
+a screenshot cannot exercise: **drag/drop into a bucket, bulk
+sends, ⌘F search, and an export opened in TQVaultAE** (synthetic
+input is banned here, so none of those were clicked). Design
+decisions (user-picked this session): import **and** export
+interchange; one unified store, not named vaults; own file format
+over redb/SQLite; family → sub-type two-level tabs. Older threads
+still open: the release-build pass over the component chrome
 (PRs #43/#44), then the UIX queue. Remaining game-art chrome
 surfaces (candidates for future components): nameplates, plate
 buttons, grid cells, stone backdrop, tooltip frame. (The user's
 gilded-border.png art update is committed to main, 2026-08-28
 checkpoint.)
+
+- **Store pane, first look (2026-08-29):** families and sub-types
+  render correctly over the real 295 items, every one classified
+  (zero Unknown). Two look fixes came out of it, both the user's
+  call: the family strip carries names only (six labelled counts
+  silently overflowed the half-width column and took Misc with
+  them), and the bucket grid pads out to the game vault tab's own
+  18×20 — stretched to the pane and centered — so a thin bucket
+  paints a full grid instead of a few tiles in the top-left. A
+  bucket needing more than 20 rows grows downward at the same cell
+  size and scrolls.
 
 - **egui 0.36 landmines (hard-won):**
   (1) `ui.columns` children share a *stable* id — derive
@@ -105,14 +124,16 @@ read-only MCP stdio server for AI agents). Working today: full
 read stack (chr, stash, vault JSON + legacy import, ARZ/ARC/text/
 textures) with localized names, real footprints, and icons; grid
 rendering; left tab strip (inventory + character/shared/relic banks,
-auto-discovered from the character path) ⇄ auto-created default
-vault, with drag-and-drop, right-click sends, copy/duplicate,
+auto-discovered from the character path) ⇄ the unified item store
+(on `feat/vault-store`; auto-created default vault on `main`), with
+drag-and-drop, right-click sends, copy/duplicate,
 respec, Reload, gold editing, and autosaved backup-first splice
 writes — user-accepted against a real network-mounted save tree.
 The mod forge (arz composer + patch specs) tunes the user's live
 LootPlus x3 mod. Binding decisions in ARCHITECTURE.md
-(autosave + per-load backup-first + targeted-splice writes,
-TQVaultAE JSON vault schema,
+(autosave + per-load backup-first + targeted-splice writes, one
+unified store file with computed type buckets and TQVaultAE JSON as
+import/export interchange,
 hand-rolled parsers ported from MIT TQVaultAE — GPL refs eyes-only,
 docs/format-references.md; MIT OR Apache-2.0; TQ AE + expansions
 only). No issue tracker is bound yet (deliberately deferred).
@@ -122,15 +143,16 @@ only). No issue tracker is bound yet (deliberately deferred).
 | Branch | Purpose | Status |
 |---|---|---|
 | `main` | trunk | PRs #1–#47 all merged; all gates green |
+| `feat/vault-store` | unified store; tabs become type views | 6 commits, gates green, launch-verified on copied data; awaiting the user's interactive pass |
 
 ## Next up
 
 Product priority set by the user (2026-08-24): the core feature is
 saving items out of a character inventory or transfer stash into
-external vault storage, and transferring/copying them back later.
-Vault-format decision reconfirmed 2026-08-24: TQVaultAE-style vault
-files; a local SQLite DB is a recorded **stretch idea** only, not a
-constraint change. The entire read stack is done and validated
+external storage, and transferring/copying them back later. Storage
+decision **renegotiated 2026-08-29** (see the progress entry): one
+unified normalized store, own file format, TQVaultAE JSON as
+import/export interchange. The read stack is done and validated
 against the user's real install + save tree (mounted; path in agent
 memory). Sequence:
 
@@ -138,13 +160,17 @@ User acceptance PASSED 2026-08-24: the user saved real transfer
 edits through the app on their network-mounted save tree ("It
 worked!"). Respec acceptance PASSED 2026-08-25: "I tested it and
 it works great!" — both respec buttons verified in-game. Residual
-check whenever convenient: confirm a transferred-back item in-game
-and open our vault JSON in TQVaultAE.
+check whenever convenient: confirm a transferred-back item in-game,
+and open an exported vault in TQVaultAE (now an export, not the
+live store).
 
 Default vault + bank tabs + autosave ACCEPTED 2026-08-25 ("Ah,
 that's better") and merged as PR #7.
 
-0. **Component-ize remaining chrome surfaces as the user directs:**
+0. **The store's first in-app run** (`feat/vault-store`): migration
+   on first launch, the two-level tabs, drops into a bucket, and an
+   export opened in TQVaultAE. Then open the PR.
+0b. **Component-ize remaining chrome surfaces as the user directs:**
    nameplates, plate buttons, grid cells, stone backdrop, tooltip
    frame — each through the preview + review loop first, from new
    art in `~/Documents/tq-desgins/`.
@@ -162,11 +188,39 @@ buttons shipped in PR #44):
    `platform`) to preseed the one-time Import dialog.
 2. DXT1/3 decode for the ~7 compressed item bitmaps (currently an
    initial-letter fallback tile).
-3. Stretch (unscheduled): local SQLite index across vaults for
-   search — would be additive, vault files stay the source of truth.
+3. Stretch (unscheduled): an on-disk index over the store for
+   search, if a linear scan ever stops being instant. The 2026-08-29
+   dialog declined SQLite/redb for the store itself — at ~10⁴ items
+   the whole store loads and filters in memory.
 
 ## Most recent meaningful progress
 
+- **2026-08-29 — Tabs become views onto a normalized store
+  (`feat/vault-store`, no PR yet).** User ask: stop letting tabs be
+  arbitrary buckets — dedicate each to an item type — and make
+  storage "a true database of sorts" while keeping the app portable.
+  Design-dialogued (all four picks the user's): one unified store
+  file rather than named vaults; own format over redb/SQLite (a
+  DBMS buys nothing at ~10⁴ items and SQLite is the native dep the
+  rules gate); TQVaultAE JSON demoted from two-way wire contract to
+  import **and** export interchange; family → sub-type tabs. New
+  `core/store.rs`: a flat set of `{StoredItemId, Item}` in one
+  versioned self-describing file, with buckets *computed* from each
+  item's record (`bucket_of`), so misfiling is unrepresentable and
+  buckets are unbounded. Addressing unified as `ItemAddr` (game
+  containers positional, the store identity-addressed); "no room"
+  and the whole bulk-spill path deleted from `transfer`; search
+  collapsed onto the one store; MCP's `list_vaults`/`get_vault`
+  became `list_buckets`/`get_store`. ARCHITECTURE.md renegotiated in
+  the same branch. 241 tests, including an env-gated real-data
+  migration check (the user's 295 items: all classified, lossless
+  round trip, export repacked into 4 sacks with no overlap).
+  Verified by launch against a scratch `HOME`; the family strip
+  overflowed on that first run (Misc unreachable) and was fixed.
+  Risk: no *interactive* time — drag/drop, bulk sends, ⌘F, and an
+  export opened in TQVaultAE are unexercised; grid positions for
+  vaulted items are gone by design (the store sorts, the user no
+  longer arranges).
 - **2026-08-28 — Filter overhaul: search in the vault pane (PR #47,
   merged).** User ask: no more full-window swap — the all-vaults
   search now renders in the vault column (one "Search all vaults"
@@ -275,23 +329,6 @@ buttons shipped in PR #44):
   bank section headers; one toast summarizes the counts. 221 tests.
   Risk: in-app acceptance pending — header-button feel and toast
   wording; a full vault leaves the remainder behind by design.
-- **2026-08-26 — Mod: star heroes actually triple (mod/hero-pools-x3,
-  PR open).** User report: quest bosses 3x (Leucus) but star heroes
-  never multiplied in the base game. Root cause via record dumps:
-  the x3 base duplicates only each hero pool's top-two level
-  variants — under the engine's level-band eligibility that adds
-  zero heroes on Normal (bosses got every entry duplicated, hence
-  visible). New `multiply_hero_pools` modforge rule: every vanilla
-  `ProxyPool` under the proxy trees whose entries are hero-evidenced
-  (explicit `monsterClassification: Hero`, or `HERO_*` stem when the
-  variant omits it — most do) and carry no explicit Boss/Quest entry
-  gets its vanilla entry list repeated ×3. 71 pools per bundle; both
-  bundles recomposed + installed; dump-verified (Wheedletongue/Hanif
-  9 entries; Euryale 6 in x3, 1 in 1xBoss; Thrym untouched). Risks:
-  in-game acceptance after session restart; side-quest stars triple
-  too (consistent with the mod's spirit); Ragnarök/Atlantis wild
-  heroes use champion-slot pools — deliberately skipped, extend when
-  the user reaches those acts.
 
 ## Blocked / waiting
 

@@ -31,8 +31,19 @@ bootstrap Q&A).
 - The game's own files — character saves and the transfer stash —
   are the authoritative store for character data. The game owns
   them; this app is a guest editor. (2026-08-24)
-- Vault files in this app's own native format are the authoritative
-  store for vaulted items. (2026-08-24)
+- **One unified store file** in this app's own native format is the
+  authoritative store for vaulted items: a flat, normalized set of
+  items, each carrying a stable id and its full identity, in one
+  versioned self-describing JSON file (`vault-store.json`, format tag
+  `univault-store`) under the platform config directory. Type buckets
+  are **computed views** over that set (derived from each item's own
+  base record), never stored membership — so an item cannot be
+  misfiled, and moving or copying its bytes cannot change what it is.
+  Buckets are unbounded: the store has no capacity, and no grid
+  positions are persisted. Renegotiated 2026-08-29 (virtual-tabs
+  design dialog) from "vault files in this app's own native format",
+  which made a tab an arbitrary bucket the user had to fill by hand.
+  (2026-08-29)
 - The game's ARC/ARZ archives (item database, textures, strings) are
   read-only reference data. This app never writes them. (2026-08-24)
 - The `Game.dll` socket-gate patch is the **single sanctioned write
@@ -63,7 +74,7 @@ bootstrap Q&A).
 ## Crate layering
 
 - Cargo workspace with three members: `crates/univault-core` (file
-  formats, vault logic, in-memory model — GUI-agnostic),
+  formats, store and vault logic, in-memory model — GUI-agnostic),
   `crates/univault-gui` (egui/eframe front-end), and
   `crates/univault-mcp` (read-only MCP server shell). (2026-08-24,
   third member added 2026-08-26, MCP design dialog)
@@ -81,7 +92,7 @@ bootstrap Q&A).
 
 ## Data flow
 
-- Load: core parses game/vault files into a typed model. Edit: the
+- Load: core parses game files and the store into a typed model. Edit: the
   UI mutates the model only. Save: core serializes and the shell
   writes **automatically** once an edit has been quiet briefly
   (autosave); there are no manual save buttons. All format knowledge
@@ -100,7 +111,7 @@ bootstrap Q&A).
   TQVaultAE's `TQVaultData\Backup` behavior. This app mutates
   people's save files; this constraint is non-negotiable.
   (2026-08-24, autosave refinement 2026-08-25)
-- The shell watches the open files (character, banks, vault) by
+- The shell watches the open files (character, banks, item store) by
   polling and keeps panes current: an external change reloads a
   clean pane automatically, but only after the file's stamp holds
   stable across two polls (never read a file mid-write). **The app
@@ -121,26 +132,34 @@ bootstrap Q&A).
 ## External boundaries
 
 - External boundaries are the file formats — TQ save/stash format,
-  ARC/ARZ archives, and this app's vault format, each guarded by its
+  ARC/ARZ archives, this app's store format, and the TQVaultAE vault
+  format it imports and exports, each guarded by its
   own module in core with typed read/write surfaces — plus the
   read-only MCP stdio surface recorded under "Source of truth".
-  (2026-08-24, MCP added 2026-08-26)
+  (2026-08-24, MCP added 2026-08-26, store/vault split 2026-08-29)
 - The MCP surface (`univault-mcp`) is a sanctioned **read-only**
   boundary: an MCP server speaking JSON-RPC over **stdio only** — the
   client spawns it as a child process; no listening sockets, ever.
-  It exposes game data (characters, banks, vaults, skill trees, item
+  It exposes game data (characters, banks, the item store and its
+  type buckets, skill trees, item
   stats, and the full record database with installed-mod overlays
   and vanilla diffs) to AI agents and never writes any file. Adding write tools
   or a network transport (HTTP/SSE) is a structural change requiring
   its own design dialog. The "no network services" constraint below
   stands — stdio IPC is not a network service. (2026-08-26, MCP
   design dialog)
-- The native vault format is TQVaultAE's JSON vault schema — its
-  `VaultDto`/`SackDto`/`ItemDto` field names are the wire contract —
-  giving full two-way compatibility so both tools can open the same
-  vaults. Legacy binary `.vault` files are import-only. Renegotiated
-  2026-08-24 (from "own format + one-way import") after the parser
-  survey found modern TQVaultAE vaults are plain JSON. (2026-08-24)
+- TQVaultAE's JSON vault schema (its `VaultDto`/`SackDto`/`ItemDto`
+  field names) is an **interchange format, not the store**: vault
+  files are read in on demand (`Import vault…`, plus a one-time
+  migration of the vaults folder when the store is first created) and
+  written out on demand as fresh snapshots (`Export…`, items packed
+  first-fit into sacks). Legacy binary `.vault` files remain
+  import-only. An exported file is a snapshot, never a live mirror —
+  the app never treats a vault file as authoritative and never writes
+  one except when the user asks for an export. Renegotiated
+  2026-08-29 (virtual-tabs design dialog) from the two-way
+  same-file wire contract, which a normalized store cannot honor
+  faithfully (a TQVaultAE vault *is* positioned buckets). (2026-08-29)
 - No network services, no telemetry, no online features.
   (2026-08-24)
 
@@ -174,7 +193,7 @@ cleanup:
 - `Cargo.toml` (workspace root) and `crates/*/Cargo.toml` —
   dependency-direction and native-dep constraints
 - `crates/univault-core/src/*.rs` format modules (`reader`, `chr`,
-  and future `stash`/`vault`/`arz`/`arc`/`platform`) — boundary
+  `stash`, `vault`, `store`, `arz`, `arc`, `platform`) — boundary
   contracts and the platform-confinement rule
 - Any module implementing the save/write-back path — the
   backup-first and targeted-splice rules
@@ -189,8 +208,10 @@ appearing in core or any reversal of the crate DAG; a new external
 boundary (network access, a new file format, telemetry); a change to
 who holds authoritative state; writing to the game's own ARC/ARZ
 files (composing new mod bundles is the sanctioned exception,
-recorded above); a change to the
-vault JSON schema contract; weakening or bypassing the backup-first
+recorded above); a change to the store format's identity rules (a
+breaking schema version, storing bucket membership rather than
+deriving it, or splitting the store across files); a change to the
+vault interchange contract; weakening or bypassing the backup-first
 or targeted-splice write rules; adding write tools or a network
 transport to the MCP surface; any game-binary patch beyond the
 recorded `Game.dll` socket-gate signature; adopting a parser-derive

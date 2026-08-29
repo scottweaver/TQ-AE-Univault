@@ -127,7 +127,7 @@ impl Classification {
 /// allow-flags for, mapped from equipment record classes. Socketing
 /// rules are per family (a ring relic fits any ring); rarity never
 /// enters into it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GearSlot {
     Head,
     UpperBody,

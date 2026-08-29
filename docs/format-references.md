@@ -93,8 +93,9 @@ dependencies"); this file is the working reference map.
 
 ### Vault files
 
-- **Native format = TQVaultAE's JSON schema** (two-way compatible;
-  see ARCHITECTURE.md). Schema source: `TQVaultAE.Domain/Dto/` —
+- **Import/export interchange = TQVaultAE's JSON schema** (this app's
+  own storage is the unified store file; see ARCHITECTURE.md).
+  Schema source: `TQVaultAE.Domain/Dto/` —
   `VaultDto` `{disabledtooltip:[int], currentlyFocusedSackNumber,
   currentlySelectedSackNumber, sacks:[SackDto]}`; `ItemDto`
   `{stackSize, seed, baseName, prefixName, suffixName, relicName,

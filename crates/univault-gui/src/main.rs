@@ -6,11 +6,14 @@
 //! (`Player.chr`) with, discovered automatically beside it, the
 //! character's bank (its `winsys.dxb`) and the account's shared and
 //! relic banks (`SaveData/Sys/winsys.dxb` and `miscsys.dxb`). Right
-//! pane: a vault — the default vault under the config directory
-//! opens (and is created) at launch; `Open vault…` swaps in any
-//! other vault file, and the vault shows one tab at a time. Click
-//! or drag items across; right-click sends an item straight to the
-//! other pane's open tab; Shift+Right-click sends a copy; Shift+Click
+//! pane: the unified vault store — one file under the config
+//! directory, opened (and created) at launch; its tabs are computed
+//! type buckets (family plates over a sub-type strip), never stored
+//! structure, so dropping an item anywhere in the pane files it by
+//! type. `TQVaultAE` vault files are interchange: `Import vault…`
+//! (and `--vault`) pulls one in, `Export…` packs items back out.
+//! Click or drag items across; right-click sends an item straight to
+//! the other pane; Shift+Right-click sends a copy; Shift+Click
 //! duplicates in place; double-click a completed relic/charm or an
 //! artifact to (re)pick its completion bonus — chosen from the list,
 //! rolled at the game's odds, or removed. Every edit autosaves after a short quiet
@@ -38,6 +41,7 @@ use univault_core::gamedata::GameData;
 use univault_core::respec;
 use univault_core::stash::{self, Stash};
 use univault_core::stats;
+use univault_core::store::{Bucket, Family, ImportRecord, StoredItemId, VaultStore};
 use univault_core::style;
 use univault_core::transfer;
 use univault_core::vault::Vault;
@@ -183,38 +187,55 @@ impl LeftTab {
     }
 }
 
-struct VaultPane {
+/// How the store pane orders each bucket's items.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StoreSort {
+    Name,
+    Rarity,
+    Level,
+}
+
+impl StoreSort {
+    const ALL: [Self; 3] = [Self::Name, Self::Rarity, Self::Level];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Name => "By name",
+            Self::Rarity => "By rarity",
+            Self::Level => "By level",
+        }
+    }
+}
+
+struct StorePane {
     path: PathBuf,
-    vault: Vault,
+    store: VaultStore,
     dirty: bool,
-    selected: Option<(GridId, usize)>,
+    selected: Option<ItemAddr>,
     disk_stamp: Option<SourceStamp>,
-    /// The one tab on screen — only one is ever open, and it is
-    /// where sends, copies, and extractions land.
-    open_tab: usize,
+    /// The open family tab and the open bucket inside it — pure view
+    /// state; the store itself has no tab structure.
+    family: Family,
+    bucket: Bucket,
+    sort: StoreSort,
 }
 
 /// One open document, addressable across panes — the unit the
 /// auto-refresh watcher reloads or reports conflicts on.
-/// `SearchVault` indexes the search view's loaded vaults, which ride
-/// the same autosave/refresh/conflict rails as the fixed panes.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DocId {
     Character,
     Stash(StashSlot),
-    Vault,
-    SearchVault(usize),
+    Store,
 }
 
 impl DocId {
-    /// The fixed pane documents; search vaults join dynamically via
-    /// [`App::all_docs`].
     const FIXED: [Self; 5] = [
         Self::Character,
         Self::Stash(StashSlot::Bank),
         Self::Stash(StashSlot::Shared),
         Self::Stash(StashSlot::Relic),
-        Self::Vault,
+        Self::Store,
     ];
 }
 
@@ -509,11 +530,11 @@ struct App {
     bank: Option<StashPane>,
     shared: Option<StashPane>,
     relics: Option<StashPane>,
-    right: Option<VaultPane>,
+    store: Option<StorePane>,
     /// The one selected item across all left-side grids (sacks and
-    /// the banks); the vault keeps its own so cross-pane moves can
+    /// the banks); the store keeps its own so cross-pane moves can
     /// aim at the other pane's last selection.
-    left_selected: Option<(GridId, usize)>,
+    left_selected: Option<ItemAddr>,
     /// Which left-side document the tab strip is showing — also the
     /// destination of vault → left sends.
     active_tab: LeftTab,
@@ -547,8 +568,8 @@ struct App {
     /// Documents whose file changed on disk while they hold unsaved
     /// edits — resolved by the conflict modal, never silently.
     conflicts: Vec<DocId>,
-    /// Which surface fills the vault column: the open vault, or the
-    /// all-vaults search table in its place.
+    /// Which surface fills the store column: the type-bucket pane, or
+    /// the search table in its place.
     view: MainView,
     search: search::SearchState,
     /// The hand-drawn component chrome (bundled art, uploaded once).
@@ -556,7 +577,7 @@ struct App {
     gilded_border: GildedBorder,
 }
 
-/// The vault column's surface — the game-file pane stays put either
+/// The store column's surface — the game-file pane stays put either
 /// way.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MainView {
@@ -597,7 +618,7 @@ impl App {
             bank: None,
             shared: None,
             relics: None,
-            right: None,
+            store: None,
             left_selected: None,
             active_tab: LeftTab::Inventory,
             backed_up: HashSet::new(),
@@ -620,10 +641,10 @@ impl App {
             tabbed_panel: TabbedPanel::load(ctx),
             gilded_border: GildedBorder::load(ctx),
         };
-        app.status = Some(match args.vault {
-            Some(path) => app.open(&path),
-            None => app.open_default_vault(),
-        });
+        app.status = Some(app.open_store());
+        if let Some(path) = args.vault {
+            app.status = Some(app.import_vault_file(&path));
+        }
         if let Some(path) = args.file {
             app.status = Some(app.open(&path));
         } else if let Some(last) = app
@@ -647,8 +668,8 @@ impl App {
             .extension()
             .map(|extension| extension.to_string_lossy().to_ascii_lowercase());
         match extension.as_deref() {
-            Some("json") => self.open_vault(path),
-            Some("vault") => self.import_legacy_vault(path),
+            Some("json") => self.import_vault_file(path),
+            Some("vault") => self.import_legacy_vault_file(path),
             Some("dxb" | "dxg") => {
                 let slot = stash_slot_for(path);
                 let opened = self.open_stash(slot, path)?;
@@ -793,94 +814,148 @@ impl App {
         Ok(opened)
     }
 
-    fn open_vault(&mut self, path: &Path) -> Result<String, String> {
-        // A vault the search view already holds moves over model and
-        // all — unsaved edits included — never via a disk round-trip.
-        if let Some(doc) = self.search.docs.iter().position(|doc| doc.path == path) {
-            self.adopt_search_doc(doc, 0, None);
-            return Ok(format!("opened {}", path.display()));
-        }
-        self.backed_up.remove(path);
-        self.refresh.forget(path);
-        let disk_stamp = stamp_of(path);
-        // A reload of the already-open file (auto-refresh, Reload)
-        // keeps the user's tab; a different vault starts at tab 1.
-        let open_tab = self
-            .right
-            .as_ref()
-            .filter(|pane| pane.path == path)
-            .map_or(0, |pane| pane.open_tab);
-        let vault = if path.exists() {
-            let text = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
-            Vault::from_json(&text).map_err(|error| error.to_string())?
+    /// Opens the unified store — the one authoritative file for
+    /// vaulted items — creating it on first launch so storage exists
+    /// without any setup. Legacy `TQVaultAE` vaults sitting in the
+    /// vaults folder are migrated in once, on that first creation.
+    fn open_store(&mut self) -> Result<String, String> {
+        let path = store_path().ok_or("no config directory on this platform")?;
+        self.backed_up.remove(&path);
+        self.refresh.forget(&path);
+        let disk_stamp = stamp_of(&path);
+        let kept = self.store.as_ref().filter(|pane| pane.path == path);
+        let (family, bucket, sort) = kept.map_or(
+            (Family::Armor, Family::Armor.buckets()[0], StoreSort::Name),
+            |pane| (pane.family, pane.bucket, pane.sort),
+        );
+        let existing = path.exists();
+        let store = if existing {
+            let text = std::fs::read_to_string(&path).map_err(|error| error.to_string())?;
+            VaultStore::from_json(&text).map_err(|error| error.to_string())?
         } else {
-            Vault::new(12)
+            VaultStore::new()
         };
-        let created = !path.exists();
-        self.right = Some(VaultPane {
-            path: path.to_path_buf(),
-            vault,
-            dirty: created,
+        self.store = Some(StorePane {
+            path: path.clone(),
+            store,
+            dirty: false,
             selected: None,
             disk_stamp,
-            open_tab,
+            family,
+            bucket,
+            sort,
         });
-        // The pane's rows in the search table point at the old model.
         self.search.mark_data_changed();
-        Ok(if created {
-            format!(
-                "new vault (12 tabs) — will be created at {}",
-                path.display()
-            )
-        } else {
-            format!("opened {}", path.display())
+        if existing {
+            return Ok(format!("opened {}", path.display()));
+        }
+        let migrated = self.migrate_legacy_vaults();
+        let pane = self.store.as_mut().expect("just set");
+        pane.dirty = true;
+        Ok(match migrated {
+            0 => format!("new item store — will be created at {}", path.display()),
+            count => format!(
+                "new item store at {} — migrated {} from the vaults folder",
+                path.display(),
+                count_items(count)
+            ),
         })
     }
 
-    /// Legacy vaults are import-only: the pane's save path becomes the
-    /// `.json` sibling so the binary original is never written.
-    fn import_legacy_vault(&mut self, path: &Path) -> Result<String, String> {
+    /// One-time migration on store creation: every `TQVaultAE` vault
+    /// in the vaults folder is read in, its provenance recorded so a
+    /// later rescan never double-imports, and the files themselves are
+    /// left untouched.
+    fn migrate_legacy_vaults(&mut self) -> usize {
+        let Some(pane) = self.store.as_mut() else {
+            return 0;
+        };
+        let mut migrated = 0;
+        for path in vault_files_in_vaults_dir() {
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(vault) = Vault::from_json(&text) else {
+                continue;
+            };
+            let Some(source) = import_source_name(&path) else {
+                continue;
+            };
+            if pane.store.is_imported(&source) {
+                continue;
+            }
+            let count = pane.store.import_vault(&vault);
+            pane.store
+                .record_import(import_record(&path, source, count));
+            migrated += count;
+        }
+        migrated
+    }
+
+    /// Imports one `TQVaultAE` vault file into the store. The file is
+    /// only ever read — interchange, never a second authoritative
+    /// store — and re-importing the same file is the user's call to
+    /// make, so it simply adds again.
+    fn import_vault_file(&mut self, path: &Path) -> Result<String, String> {
+        let text = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
+        let vault = Vault::from_json(&text).map_err(|error| error.to_string())?;
+        self.absorb_vault(path, &vault)
+    }
+
+    /// Imports a legacy binary `.vault` file into the store; the
+    /// binary original is never written.
+    fn import_legacy_vault_file(&mut self, path: &Path) -> Result<String, String> {
         let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
         let vault = Vault::from_legacy_binary(&bytes).map_err(|error| error.to_string())?;
-        let json_path = path.with_extension("json");
-        self.right = Some(VaultPane {
-            path: json_path.clone(),
-            vault,
-            dirty: true,
-            selected: None,
-            disk_stamp: stamp_of(&json_path),
-            open_tab: 0,
-        });
+        self.absorb_vault(path, &vault)
+    }
+
+    fn absorb_vault(&mut self, path: &Path, vault: &Vault) -> Result<String, String> {
+        let pane = self.store.as_mut().ok_or("no item store open")?;
+        let count = pane.store.import_vault(vault);
+        if let Some(source) = import_source_name(path) {
+            pane.store.record_import(import_record(path, source, count));
+        }
+        pane.dirty = true;
         self.search.mark_data_changed();
         Ok(format!(
-            "imported legacy vault; saving writes {}",
-            json_path.display()
+            "imported {} from {}",
+            count_items(count),
+            path.display()
         ))
     }
 
-    /// Opens the standing default vault, creating the file on first
-    /// launch so a vault exists without any setup. `Open vault…`
-    /// still swaps in any other vault file.
-    fn open_default_vault(&mut self) -> Result<String, String> {
-        let path = default_vault_path().ok_or("no config directory on this platform")?;
-        if !path.exists() {
-            let empty = Vault::new(12);
-            let json = empty.to_json().map_err(|error| error.to_string())?;
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-            }
-            std::fs::write(&path, json).map_err(|error| error.to_string())?;
-            self.right = Some(VaultPane {
-                path: path.clone(),
-                vault: empty,
-                dirty: false,
-                selected: None,
-                disk_stamp: stamp_of(&path),
-                open_tab: 0,
-            });
-            return Ok(format!("created default vault at {}", path.display()));
+    /// Exports the store (or just the open bucket) as a fresh
+    /// `TQVaultAE`-readable vault file: a snapshot for the other tool,
+    /// never a live mirror.
+    fn export_vault_file(&mut self, path: &Path, whole_store: bool) -> Result<String, String> {
+        let db = loaded_db(&self.game);
+        let pane = self.store.as_ref().ok_or("no item store open")?;
+        let items: Vec<Item> = if whole_store {
+            pane.store
+                .entries()
+                .map(|entry| entry.item.clone())
+                .collect()
+        } else {
+            let bucket = pane.bucket;
+            pane.store
+                .entries()
+                .filter(|entry| univault_core::store::bucket_of(db, &entry.item) == bucket)
+                .map(|entry| entry.item.clone())
+                .collect()
+        };
+        if items.is_empty() {
+            return Err("nothing to export".to_string());
         }
-        self.open_vault(&path)
+        let count = items.len();
+        let vault = univault_core::store::export_to_vault(items, db);
+        let json = vault.to_json().map_err(|error| error.to_string())?;
+        safe_write::backup_first_write(path, json.as_bytes()).map_err(|error| error.to_string())?;
+        Ok(format!(
+            "exported {} to {}",
+            count_items(count),
+            path.display()
+        ))
     }
 
     /// Removes the item at `(grid, index)` from its left-side
@@ -907,104 +982,49 @@ impl App {
                 let pane = self.relics.as_mut().ok_or("no relic bank loaded")?;
                 transfer::take_from_stash(&mut pane.stash, index)
             }
-            GridId::VaultTab(_) | GridId::SearchDoc { .. } => None,
         }
         .ok_or_else(|| "selection is stale — pick the item again".to_string())
     }
 
-    /// Auto-places an item back into the left-side document it was
-    /// taken from; `false` when even that fails.
-    fn restore_to_left(&mut self, grid: GridId, item: Item) -> bool {
-        let db = match &self.game {
-            GameStatus::Loaded(data) => Some(data),
-            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
+    fn move_left_to_store(&mut self) -> Result<String, String> {
+        let Some(ItemAddr::Grid { grid, index }) = self.left_selected else {
+            return Err("select an item on the left".to_string());
         };
-        match grid {
-            GridId::Sack(sack) => self.character.as_mut().is_some_and(|pane| {
-                transfer::place_in_character(&mut pane.character, item, sack, db).is_ok()
-            }),
-            GridId::Equipment(slot) => self.character.as_mut().is_some_and(|pane| {
-                transfer::equip(&mut pane.character, item, slot)
-                    .or_else(|rejected| {
-                        transfer::place_in_character(&mut pane.character, *rejected.item, 0, db)
-                            .map(|_| ())
-                    })
-                    .is_ok()
-            }),
-            GridId::Bank => self
-                .bank
-                .as_mut()
-                .is_some_and(|pane| transfer::place_in_stash(&mut pane.stash, item, db).is_ok()),
-            GridId::Shared => self
-                .shared
-                .as_mut()
-                .is_some_and(|pane| transfer::place_in_stash(&mut pane.stash, item, db).is_ok()),
-            GridId::Relic => self
-                .relics
-                .as_mut()
-                .is_some_and(|pane| transfer::place_in_stash(&mut pane.stash, item, db).is_ok()),
-            GridId::VaultTab(_) | GridId::SearchDoc { .. } => false,
-        }
+        self.send_left_to_store(grid, index)
     }
 
-    fn move_left_to_vault(&mut self) -> Result<String, String> {
-        let (grid, index) = self.left_selected.ok_or("select an item on the left")?;
-        self.send_left_to_vault(grid, index)
-    }
-
-    fn send_left_to_vault(&mut self, grid: GridId, index: usize) -> Result<String, String> {
-        if self.right.is_none() {
-            return Err("load a vault first".to_string());
+    /// Sends one left-side item into the store. The store is
+    /// unbounded and files by type, so — unlike the old fixed vault
+    /// tabs — this cannot fail for want of room.
+    fn send_left_to_store(&mut self, grid: GridId, index: usize) -> Result<String, String> {
+        if self.store.is_none() {
+            return Err("no item store open".to_string());
         }
         let item = self.take_from_left(grid, index)?;
-        let db = match &self.game {
-            GameStatus::Loaded(data) => Some(data),
-            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
-        };
-        let label = self.caches.names.item_label(db, &item);
-        let vault_pane = self.right.as_mut().expect("checked above");
-        let tab = vault_pane.open_tab;
-        match transfer::place_in_vault_tab(&mut vault_pane.vault, item, tab, db) {
-            Ok(()) => {
-                vault_pane.dirty = true;
-                self.mark_dirty(grid);
-                self.left_selected = None;
-                Ok(format!("{label} → vault tab {}", tab + 1))
-            }
-            Err(rejected) => {
-                let reason = rejected.reason;
-                let restored = self.restore_to_left(grid, *rejected.item);
-                Err(if restored {
-                    format!("{reason}; item returned to its container")
-                } else {
-                    format!("{reason}; item could not be returned — reload without saving")
-                })
-            }
-        }
+        let label = self.caches.names.item_label(loaded_db(&self.game), &item);
+        let bucket = univault_core::store::bucket_of(loaded_db(&self.game), &item);
+        let pane = self.store.as_mut().expect("checked above");
+        pane.store.add(item);
+        pane.dirty = true;
+        self.mark_left_dirty(grid);
+        self.left_selected = None;
+        self.search.mark_data_changed();
+        Ok(format!("{label} → {}", bucket.label()))
     }
 
-    /// Sends every item in the active left tab to the vault — the
-    /// open tab first, spilling into the others as they fill. The
-    /// inventory tab covers all sacks; equipped gear stays worn.
-    /// A bulk send into the open vault tab: the active left
-    /// document, or — for the Inventory — one sack when `sack`
-    /// names it.
-    fn bulk_left_to_vault(
+    /// Sends every item of the active left tab into the store: the
+    /// whole document, or — for the Inventory — one sack when `sack`
+    /// names it. Equipped gear stays worn. Nothing is ever left
+    /// behind; the store has no capacity to run out of.
+    fn bulk_left_to_store(
         &mut self,
         mode: BulkMode,
         sack: Option<usize>,
     ) -> Result<String, String> {
-        if self.right.is_none() {
-            return Err("load a vault first".to_string());
+        if self.store.is_none() {
+            return Err("no item store open".to_string());
         }
-        let db = match &self.game {
-            GameStatus::Loaded(data) => Some(data),
-            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
-        };
-        let vault_pane = self.right.as_mut().expect("checked above");
-        let tab = vault_pane.open_tab;
-        let vault = &mut vault_pane.vault;
-        let (outcome, source_grid, label) = match (self.active_tab, sack) {
+        let (items, source_grid, label): (Vec<Item>, GridId, &str) = match (self.active_tab, sack) {
             (LeftTab::Inventory, Some(index)) => {
                 let pane = self.character.as_mut().ok_or("no character loaded")?;
                 let sack = pane
@@ -1012,95 +1032,84 @@ impl App {
                     .sacks
                     .get_mut(index)
                     .ok_or("that sack no longer exists")?;
-                let outcome = bulk_into_vault(&mut sack.items, vault, tab, db, mode);
                 let label = if index == 0 {
                     "the Main Sack"
                 } else {
                     "the sack"
                 };
-                (outcome, GridId::Sack(index), label)
+                (
+                    drain_or_clone(&mut sack.items, mode),
+                    GridId::Sack(index),
+                    label,
+                )
             }
             (LeftTab::Inventory, None) => {
                 let pane = self.character.as_mut().ok_or("no character loaded")?;
-                let outcome = pane
+                let items = pane
                     .character
                     .sacks
                     .iter_mut()
-                    .map(|sack| bulk_into_vault(&mut sack.items, vault, tab, db, mode))
-                    .fold(
-                        transfer::BulkOutcome::default(),
-                        transfer::BulkOutcome::merge,
-                    );
-                (outcome, GridId::Sack(0), "the inventory")
+                    .flat_map(|sack| drain_or_clone(&mut sack.items, mode))
+                    .collect();
+                (items, GridId::Sack(0), "the inventory")
             }
             (LeftTab::Bank, _) => {
                 let pane = self.bank.as_mut().ok_or("no bank loaded")?;
-                let outcome = bulk_into_vault(&mut pane.stash.items, vault, tab, db, mode);
-                (outcome, GridId::Bank, "the bank")
+                (
+                    drain_or_clone(&mut pane.stash.items, mode),
+                    GridId::Bank,
+                    "the bank",
+                )
             }
             (LeftTab::Shared, _) => {
                 let pane = self.shared.as_mut().ok_or("no shared bank loaded")?;
-                let outcome = bulk_into_vault(&mut pane.stash.items, vault, tab, db, mode);
-                (outcome, GridId::Shared, "the shared bank")
+                (
+                    drain_or_clone(&mut pane.stash.items, mode),
+                    GridId::Shared,
+                    "the shared bank",
+                )
             }
             (LeftTab::Relic, _) => {
                 let pane = self.relics.as_mut().ok_or("no relic bank loaded")?;
-                let outcome = bulk_into_vault(&mut pane.stash.items, vault, tab, db, mode);
-                (outcome, GridId::Relic, "the relic bank")
+                (
+                    drain_or_clone(&mut pane.stash.items, mode),
+                    GridId::Relic,
+                    "the relic bank",
+                )
             }
         };
-        if outcome.placed > 0 {
-            self.mark_dirty(GridId::VaultTab(tab));
-            if mode == BulkMode::Move {
-                self.mark_dirty(source_grid);
-                self.left_selected = None;
-            }
-        }
-        let total = outcome.placed + outcome.left_behind;
-        if total == 0 {
+        if items.is_empty() {
             return Err(format!("{label} has no items"));
+        }
+        let pane = self.store.as_mut().expect("checked above");
+        let moved = pane.store.add_all(items);
+        pane.dirty = true;
+        self.search.mark_data_changed();
+        if mode == BulkMode::Move {
+            self.mark_left_dirty(source_grid);
+            self.left_selected = None;
         }
         let verb = match mode {
             BulkMode::Move => "Moved",
             BulkMode::Copy => "Copied",
         };
-        if outcome.placed == 0 {
-            return Err(format!(
-                "no room in any vault tab — nothing fits from {label}"
-            ));
-        }
-        let spill_note = if outcome.spilled > 0 {
-            format!(
-                " ({} spilled into other tabs)",
-                count_items(outcome.spilled)
-            )
-        } else {
-            String::new()
-        };
-        let message = if outcome.left_behind > 0 {
-            format!(
-                "{verb} {} of {} from {label} → vault; {} fit in no tab{spill_note}",
-                outcome.placed,
-                count_items(total),
-                outcome.left_behind
-            )
-        } else {
-            format!(
-                "{verb} {} from {label} → vault tab {}{spill_note}",
-                count_items(outcome.placed),
-                tab + 1
-            )
-        };
-        Ok(message)
+        Ok(format!(
+            "{verb} {} from {label} → store, filed by type",
+            count_items(moved)
+        ))
     }
 
-    /// The grid the active left tab addresses — where vault → left
+    /// The grid the active left tab addresses — where store → left
     /// sends land. The inventory tab prefers the selected sack.
     /// `None` when the tab's document isn't loaded.
     fn active_tab_grid(&self) -> Option<GridId> {
         match self.active_tab {
             LeftTab::Inventory => self.character.as_ref().map(|_| {
-                if let Some((GridId::Sack(sack), _)) = self.left_selected {
+                if let Some(ItemAddr::Grid {
+                    grid: GridId::Sack(sack),
+                    ..
+                }) = self.left_selected
+                {
                     GridId::Sack(sack)
                 } else {
                     GridId::Sack(0)
@@ -1112,99 +1121,80 @@ impl App {
         }
     }
 
-    fn move_vault_to_left(&mut self) -> Result<String, String> {
-        let selected = self.right.as_ref().and_then(|pane| pane.selected);
-        let Some((grid @ GridId::VaultTab(_), index)) = selected else {
-            return Err("select an item in the vault".to_string());
-        };
-        self.send_vault_to_left(grid, index)
+    fn move_store_to_left(&mut self) -> Result<String, String> {
+        let id = self
+            .store
+            .as_ref()
+            .and_then(|pane| pane.selected)
+            .and_then(ItemAddr::stored_id)
+            .ok_or("select an item in the store")?;
+        self.send_store_to_left(id)
     }
 
-    /// Sends the item at a vault-side grid (the open pane or a
-    /// search-loaded vault) to the active left tab.
-    fn send_vault_to_left(&mut self, grid: GridId, index: usize) -> Result<String, String> {
-        let tab = vault_tab_of(grid).ok_or("select an item in the vault")?;
+    /// Sends one stored item to the active left tab; a failed
+    /// placement puts it straight back in the store.
+    fn send_store_to_left(&mut self, id: StoredItemId) -> Result<String, String> {
         let destination = self
             .active_tab_grid()
             .ok_or("the active left tab has nothing loaded")?;
-        let db = match &self.game {
-            GameStatus::Loaded(data) => Some(data),
-            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
+        let item = self
+            .store
+            .as_mut()
+            .ok_or("no item store open")?
+            .store
+            .remove(id)
+            .ok_or("selection is stale — pick the item again")?;
+        let db = loaded_db(&self.game);
+        let label = self.caches.names.item_label(db, &item);
+        let bad_index = |item: Item| transfer::Rejected {
+            item: Box::new(item),
+            reason: transfer::TransferError::BadIndex,
         };
-        let vault_item = {
-            let (vault, _) = vault_source_mut(&mut self.right, &mut self.search.docs, grid)
-                .ok_or("load a vault first")?;
-            transfer::take_from_vault(vault, tab, index)
-                .ok_or("selection is stale — pick the item again")?
-        };
-        let label = self.caches.names.item_label(db, &vault_item.item);
         let placed = match destination {
             GridId::Sack(preferred) => match self.character.as_mut() {
-                Some(pane) => transfer::place_in_character(
-                    &mut pane.character,
-                    vault_item.item,
-                    preferred,
-                    db,
-                )
-                .map(|sack| format!("{label} → sack {}", sack + 1)),
-                None => Err(transfer::Rejected {
-                    item: Box::new(vault_item.item),
-                    reason: transfer::TransferError::BadIndex,
-                }),
+                Some(pane) => {
+                    transfer::place_in_character(&mut pane.character, item, preferred, db)
+                        .map(|sack| format!("{label} → sack {}", sack + 1))
+                }
+                None => Err(bad_index(item)),
             },
             GridId::Bank => match self.bank.as_mut() {
-                Some(pane) => transfer::place_in_stash(&mut pane.stash, vault_item.item, db)
+                Some(pane) => transfer::place_in_stash(&mut pane.stash, item, db)
                     .map(|()| format!("{label} → bank")),
-                None => Err(transfer::Rejected {
-                    item: Box::new(vault_item.item),
-                    reason: transfer::TransferError::BadIndex,
-                }),
+                None => Err(bad_index(item)),
             },
             GridId::Shared => match self.shared.as_mut() {
-                Some(pane) => transfer::place_in_stash(&mut pane.stash, vault_item.item, db)
+                Some(pane) => transfer::place_in_stash(&mut pane.stash, item, db)
                     .map(|()| format!("{label} → shared bank")),
-                None => Err(transfer::Rejected {
-                    item: Box::new(vault_item.item),
-                    reason: transfer::TransferError::BadIndex,
-                }),
+                None => Err(bad_index(item)),
             },
             GridId::Relic => match self.relics.as_mut() {
-                Some(pane) => transfer::place_in_stash(&mut pane.stash, vault_item.item, db)
+                Some(pane) => transfer::place_in_stash(&mut pane.stash, item, db)
                     .map(|()| format!("{label} → relic bank")),
-                None => Err(transfer::Rejected {
-                    item: Box::new(vault_item.item),
-                    reason: transfer::TransferError::BadIndex,
-                }),
+                None => Err(bad_index(item)),
             },
-            GridId::Equipment(_) | GridId::VaultTab(_) | GridId::SearchDoc { .. } => {
-                Err(transfer::Rejected {
-                    item: Box::new(vault_item.item),
-                    reason: transfer::TransferError::BadIndex,
-                })
-            }
+            GridId::Equipment(_) => Err(bad_index(item)),
         };
         match placed {
             Ok(message) => {
-                self.mark_dirty(destination);
-                self.mark_dirty(grid);
-                if matches!(grid, GridId::VaultTab(_))
-                    && let Some(pane) = self.right.as_mut()
-                {
+                self.mark_left_dirty(destination);
+                self.mark_store_dirty();
+                if let Some(pane) = self.store.as_mut() {
                     pane.selected = None;
                 }
                 Ok(message)
             }
             Err(rejected) => {
                 let reason = rejected.reason;
-                let restored = vault_source_mut(&mut self.right, &mut self.search.docs, grid)
-                    .is_some_and(|(vault, _)| {
-                        transfer::place_in_vault(vault, *rejected.item, tab, db).is_ok()
-                    });
-                Err(if restored {
-                    format!("{reason}; item returned to the vault")
-                } else {
-                    format!("{reason}; item could not be returned — reload without saving")
-                })
+                match self.store.as_mut() {
+                    Some(pane) => {
+                        pane.store.add(*rejected.item);
+                        Err(format!("{reason}; item returned to the store"))
+                    }
+                    None => Err(format!(
+                        "{reason}; item could not be returned — reload without saving"
+                    )),
+                }
             }
         }
     }
@@ -1295,16 +1285,12 @@ impl App {
         }
     }
 
-    /// Right-click: sends a left-side item straight to the vault, or
-    /// a vault item back to the left side.
-    fn quick_move(&mut self, grid: GridId, index: usize) -> Result<String, String> {
-        match grid {
-            GridId::Sack(_)
-            | GridId::Equipment(_)
-            | GridId::Bank
-            | GridId::Shared
-            | GridId::Relic => self.send_left_to_vault(grid, index),
-            GridId::VaultTab(_) | GridId::SearchDoc { .. } => self.send_vault_to_left(grid, index),
+    /// Right-click: sends a left-side item straight to the store, or
+    /// a stored item back to the left side.
+    fn quick_move(&mut self, addr: ItemAddr) -> Result<String, String> {
+        match addr {
+            ItemAddr::Grid { grid, index } => self.send_left_to_store(grid, index),
+            ItemAddr::Stored(id) => self.send_store_to_left(id),
         }
     }
 
@@ -1347,10 +1333,24 @@ impl App {
                         &[
                             "Open (or drop) a Player.chr — its character bank and the \
                          account's shared and relic banks load beside it as tabs.",
-                            "A stash (.dxb / .dxg) or another vault (.json, legacy .vault) \
-                         opens on its own.",
-                            "The default vault opens at launch; the vault pane shows one \
-                         tab at a time — pick it in the strip.",
+                            "A stash (.dxb / .dxg) opens on its own.",
+                            "Your item store opens at launch and holds everything you \
+                         put away. It is one file, and it files each item by type — \
+                         pick a family plate, then a type below it.",
+                        ],
+                    );
+                    help_section(
+                        ui,
+                        "The item store",
+                        &[
+                            "Tabs are types, not containers: an item lands under its own \
+                         type wherever you drop it in the store, and no type ever fills up.",
+                            "\"Import vault…\" reads a TQVaultAE vault into the store \
+                         (that file is never changed); vaults already in your vaults \
+                         folder were imported once, the first time the store was created.",
+                            "\"Export type…\" and \"Export all…\" write a fresh \
+                         TQVaultAE-readable vault — a snapshot to hand to that tool, not \
+                         a live copy.",
                         ],
                     );
                     help_section(
@@ -1358,11 +1358,11 @@ impl App {
                         "Moving items",
                         &[
                             "Drag an item between any two grids.",
-                            "Right-click sends it to the other pane's open tab; \
-                         Shift+Right-click sends a copy.",
+                            "Right-click sends it to the other pane; Shift+Right-click \
+                         sends a copy.",
                             "Shift+Click duplicates in place.",
-                            "\"All → Vault\" and \"Copy all → Vault\" move a whole tab, \
-                         spilling into the next vault tabs as each fills.",
+                            "\"Move all → Store\" and \"Copy all → Store\" send a whole \
+                         sack or bank at once; every item is filed under its own type.",
                         ],
                     );
                     help_section(
@@ -1389,10 +1389,10 @@ impl App {
                         ui,
                         "Search",
                         &[
-                            "\"Search vaults…\" (⌘F) shows one filterable table over \
-                         every vault file in the vault pane's place.",
+                            "\"Search store…\" (⌘F) shows one filterable table over the \
+                         whole store, in the store pane's place.",
                             "Rows take the same gestures as grid items; double-click \
-                         shows an item at home in its vault. Esc brings the vault back.",
+                         jumps to an item's type tab. Esc brings the store back.",
                         ],
                     );
                     help_section(
@@ -1415,8 +1415,21 @@ impl App {
     }
 
     /// A clone of the item at `(grid, index)`.
-    fn item_at(&self, grid: GridId, index: usize) -> Result<Item, String> {
+    fn item_at(&self, addr: ItemAddr) -> Result<Item, String> {
         let stale = "item changed under the click — try again";
+        let (grid, index) = match addr {
+            ItemAddr::Stored(id) => {
+                return self
+                    .store
+                    .as_ref()
+                    .ok_or("no item store open")?
+                    .store
+                    .get(id)
+                    .cloned()
+                    .ok_or_else(|| stale.to_string());
+            }
+            ItemAddr::Grid { grid, index } => (grid, index),
+        };
         match grid {
             GridId::Sack(sack) => self
                 .character
@@ -1464,46 +1477,29 @@ impl App {
                 .get(index)
                 .cloned()
                 .ok_or_else(|| stale.to_string()),
-            GridId::VaultTab(tab) => self
-                .right
-                .as_ref()
-                .ok_or("no vault loaded")?
-                .vault
-                .sacks
-                .get(tab)
-                .and_then(|sack| sack.items.get(index))
-                .map(|entry| entry.item.clone())
-                .ok_or_else(|| stale.to_string()),
-            GridId::SearchDoc { doc, tab } => self
-                .search
-                .docs
-                .get(doc)
-                .ok_or("vault list changed — rescan")?
-                .vault
-                .sacks
-                .get(tab)
-                .and_then(|sack| sack.items.get(index))
-                .map(|entry| entry.item.clone())
-                .ok_or_else(|| stale.to_string()),
         }
     }
 
-    /// Shift+Click: clones the item at `(grid, index)` — same seed,
-    /// so an exact copy — and auto-places it in its own container,
-    /// spilling to sibling sacks/tabs when the source grid is full.
-    fn duplicate_item(&mut self, grid: GridId, index: usize) -> Result<String, String> {
-        let item = self.item_at(grid, index)?;
-        let db = match &self.game {
-            GameStatus::Loaded(data) => Some(data),
-            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
+    /// Auto-places `item` into the container `addr` names: the store
+    /// files it by type (never full), a grid finds it an open spot —
+    /// and a worn item's companion lands in the sacks, since the doll
+    /// has no free slots to auto-place into. The home for duplicates,
+    /// extracted pieces, and items coming back from a failed move.
+    fn place_beside(&mut self, addr: ItemAddr, item: Item) -> Result<(), String> {
+        let db = loaded_db(&self.game);
+        let grid = match addr {
+            ItemAddr::Stored(_) => {
+                let pane = self.store.as_mut().ok_or("no item store open")?;
+                pane.store.add(item);
+                return Ok(());
+            }
+            ItemAddr::Grid { grid, .. } => grid,
         };
-        let label = self.caches.names.item_label(db, &item);
-        let placed = match grid {
+        match grid {
             GridId::Sack(sack) => {
                 let pane = self.character.as_mut().ok_or("no character loaded")?;
                 transfer::place_in_character(&mut pane.character, item, sack, db).map(|_| ())
             }
-            // A worn item's copy lands in the inventory sacks.
             GridId::Equipment(_) => {
                 let pane = self.character.as_mut().ok_or("no character loaded")?;
                 transfer::place_in_character(&mut pane.character, item, 0, db).map(|_| ())
@@ -1520,34 +1516,34 @@ impl App {
                 let pane = self.relics.as_mut().ok_or("no relic bank loaded")?;
                 transfer::place_in_stash(&mut pane.stash, item, db)
             }
-            GridId::VaultTab(tab) | GridId::SearchDoc { tab, .. } => {
-                let (vault, _) = vault_source_mut(&mut self.right, &mut self.search.docs, grid)
-                    .ok_or("no vault loaded")?;
-                transfer::place_in_vault_tab(vault, item, tab, db)
-            }
-        };
-        match placed {
+        }
+        .map_err(|rejected| rejected.reason.to_string())
+    }
+
+    /// Shift+Click: clones the item — same seed, so an exact copy —
+    /// and auto-places it in its own container.
+    fn duplicate_item(&mut self, addr: ItemAddr) -> Result<String, String> {
+        let item = self.item_at(addr)?;
+        let label = self.caches.names.item_label(loaded_db(&self.game), &item);
+        match self.place_beside(addr, item) {
             Ok(()) => {
-                self.mark_dirty(grid);
+                self.mark_addr_dirty(addr);
                 Ok(format!("duplicated {label}"))
             }
-            Err(rejected) => Err(format!("cannot duplicate: {}", rejected.reason)),
+            Err(reason) => Err(format!("cannot duplicate: {reason}")),
         }
     }
 
-    /// Alt+Click: splits the socketed relic/charm out of the item at
-    /// `(grid, index)` — the cleaned item stays put and the
-    /// standalone piece (shard count and bonus preserved) is
-    /// auto-placed in the same container. Nothing is destroyed: the
-    /// app-side answer to the Enchanter's destroy-one-half recovery.
-    fn extract_socketed(&mut self, grid: GridId, index: usize) -> Result<String, String> {
-        let gear = self.item_at(grid, index)?;
+    /// Alt+Click: splits the socketed relic/charm out of the item —
+    /// the cleaned item stays put and the standalone piece (shard
+    /// count and bonus preserved) is auto-placed in the same
+    /// container. Nothing is destroyed: the app-side answer to the
+    /// Enchanter's destroy-one-half recovery.
+    fn extract_socketed(&mut self, addr: ItemAddr) -> Result<String, String> {
+        let gear = self.item_at(addr)?;
         let slot =
             transfer::socketed_slot(&gear).ok_or("no relic or charm socketed in that item")?;
-        let db = match &self.game {
-            GameStatus::Loaded(data) => Some(data),
-            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
-        };
+        let db = loaded_db(&self.game);
         let mut cleaned = gear;
         let piece =
             transfer::extract_relic(db, &mut cleaned, slot).map_err(|error| error.to_string())?;
@@ -1555,112 +1551,46 @@ impl App {
         let gear_label = self.caches.names.record_name(db, &cleaned.base);
         // Place the piece first; the gear is only committed once the
         // piece has a home, so a full container changes nothing.
-        let placed = match grid {
-            GridId::Sack(sack) => {
-                let pane = self.character.as_mut().ok_or("no character loaded")?;
-                transfer::place_in_character(&mut pane.character, piece, sack, db).map(|_| ())
-            }
-            // A piece pulled out of worn gear lands in the sacks;
-            // the gear itself stays equipped.
-            GridId::Equipment(_) => {
-                let pane = self.character.as_mut().ok_or("no character loaded")?;
-                transfer::place_in_character(&mut pane.character, piece, 0, db).map(|_| ())
-            }
-            GridId::Bank => {
-                let pane = self.bank.as_mut().ok_or("no bank loaded")?;
-                transfer::place_in_stash(&mut pane.stash, piece, db)
-            }
-            GridId::Shared => {
-                let pane = self.shared.as_mut().ok_or("no shared bank loaded")?;
-                transfer::place_in_stash(&mut pane.stash, piece, db)
-            }
-            GridId::Relic => {
-                let pane = self.relics.as_mut().ok_or("no relic bank loaded")?;
-                transfer::place_in_stash(&mut pane.stash, piece, db)
-            }
-            GridId::VaultTab(tab) | GridId::SearchDoc { tab, .. } => {
-                let (vault, _) = vault_source_mut(&mut self.right, &mut self.search.docs, grid)
-                    .ok_or("no vault loaded")?;
-                transfer::place_in_vault_tab(vault, piece, tab, db)
-            }
-        };
-        if let Err(rejected) = placed {
-            return Err(format!(
-                "cannot extract: {} (the item is unchanged)",
-                rejected.reason
-            ));
+        if let Err(reason) = self.place_beside(addr, piece) {
+            return Err(format!("cannot extract: {reason} (the item is unchanged)"));
         }
-        match self.grid_item_mut(grid, index) {
+        match self.item_mut(addr) {
             Some(slot_item) => *slot_item = cleaned,
             None => return Err("item moved under the click — extracted piece placed".to_string()),
         }
-        self.mark_dirty(grid);
+        self.mark_addr_dirty(addr);
         Ok(format!(
             "extracted {piece_label} from {gear_label} — both kept"
         ))
     }
 
     /// Shift+Right-click: places a copy of the item in the other
-    /// pane — the vault for left-side items, the active left tab
-    /// for vault items — leaving the original in place.
-    fn copy_across(&mut self, grid: GridId, index: usize) -> Result<String, String> {
-        let item = self.item_at(grid, index)?;
-        let db = match &self.game {
-            GameStatus::Loaded(data) => Some(data),
-            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
-        };
+    /// pane — the store for left-side items, the active left tab for
+    /// stored items — leaving the original in place.
+    fn copy_across(&mut self, addr: ItemAddr) -> Result<String, String> {
+        let item = self.item_at(addr)?;
+        let db = loaded_db(&self.game);
         let label = self.caches.names.item_label(db, &item);
-        match grid {
-            GridId::Sack(_)
-            | GridId::Equipment(_)
-            | GridId::Bank
-            | GridId::Shared
-            | GridId::Relic => {
-                let vault_pane = self.right.as_mut().ok_or("load a vault first")?;
-                let tab = vault_pane.open_tab;
-                match transfer::place_in_vault_tab(&mut vault_pane.vault, item, tab, db) {
-                    Ok(()) => {
-                        vault_pane.dirty = true;
-                        Ok(format!("copy of {label} → vault tab {}", tab + 1))
-                    }
-                    Err(rejected) => Err(format!("cannot copy: {}", rejected.reason)),
-                }
+        match addr {
+            ItemAddr::Grid { .. } => {
+                let bucket = univault_core::store::bucket_of(db, &item);
+                let pane = self.store.as_mut().ok_or("no item store open")?;
+                pane.store.add(item);
+                pane.dirty = true;
+                self.search.mark_data_changed();
+                Ok(format!("copy of {label} → {}", bucket.label()))
             }
-            GridId::VaultTab(_) | GridId::SearchDoc { .. } => {
+            ItemAddr::Stored(_) => {
                 let destination = self
                     .active_tab_grid()
                     .ok_or("the active left tab has nothing loaded")?;
-                let placed = match destination {
-                    GridId::Sack(preferred) => {
-                        let pane = self.character.as_mut().ok_or("no character loaded")?;
-                        transfer::place_in_character(&mut pane.character, item, preferred, db)
-                            .map(|sack| format!("copy of {label} → sack {}", sack + 1))
-                    }
-                    GridId::Bank => {
-                        let pane = self.bank.as_mut().ok_or("no bank loaded")?;
-                        transfer::place_in_stash(&mut pane.stash, item, db)
-                            .map(|()| format!("copy of {label} → bank"))
-                    }
-                    GridId::Shared => {
-                        let pane = self.shared.as_mut().ok_or("no shared bank loaded")?;
-                        transfer::place_in_stash(&mut pane.stash, item, db)
-                            .map(|()| format!("copy of {label} → shared bank"))
-                    }
-                    GridId::Relic => {
-                        let pane = self.relics.as_mut().ok_or("no relic bank loaded")?;
-                        transfer::place_in_stash(&mut pane.stash, item, db)
-                            .map(|()| format!("copy of {label} → relic bank"))
-                    }
-                    GridId::Equipment(_) | GridId::VaultTab(_) | GridId::SearchDoc { .. } => {
-                        return Err("the active left tab has nothing loaded".to_string());
-                    }
-                };
+                let placed = self.place_beside(ItemAddr::grid(destination, 0), item);
                 match placed {
-                    Ok(message) => {
-                        self.mark_dirty(destination);
-                        Ok(message)
+                    Ok(()) => {
+                        self.mark_left_dirty(destination);
+                        Ok(format!("copy of {label} → {}", left_label(destination)))
                     }
-                    Err(rejected) => Err(format!("cannot copy: {}", rejected.reason)),
+                    Err(reason) => Err(format!("cannot copy: {reason}")),
                 }
             }
         }
@@ -1705,12 +1635,12 @@ impl App {
         Ok(SaveOutcome::Saved)
     }
 
-    fn save_vault(&mut self) -> Result<SaveOutcome, String> {
-        let pane = self.right.as_mut().ok_or("nothing to save")?;
+    fn save_store(&mut self) -> Result<SaveOutcome, String> {
+        let pane = self.store.as_mut().ok_or("nothing to save")?;
         if stamp_of(&pane.path) != pane.disk_stamp {
             return Ok(SaveOutcome::Conflict);
         }
-        let json = pane.vault.to_json().map_err(|error| error.to_string())?;
+        let json = pane.store.to_json().map_err(|error| error.to_string())?;
         write_through(&mut self.backed_up, &pane.path, json.as_bytes())?;
         pane.dirty = false;
         pane.disk_stamp = stamp_of(&pane.path);
@@ -1722,8 +1652,7 @@ impl App {
             || self.bank.as_ref().is_some_and(|pane| pane.dirty)
             || self.shared.as_ref().is_some_and(|pane| pane.dirty)
             || self.relics.as_ref().is_some_and(|pane| pane.dirty)
-            || self.right.as_ref().is_some_and(|pane| pane.dirty)
-            || self.search.docs.iter().any(|doc| doc.dirty)
+            || self.store.as_ref().is_some_and(|pane| pane.dirty)
     }
 
     /// Saves everything dirty whose file is still as we left it; a
@@ -1746,31 +1675,12 @@ impl App {
                 self.push_conflict(DocId::Stash(slot));
             }
         }
-        if self.right.as_ref().is_some_and(|pane| pane.dirty)
-            && self.save_vault()? == SaveOutcome::Conflict
+        if self.store.as_ref().is_some_and(|pane| pane.dirty)
+            && self.save_store()? == SaveOutcome::Conflict
         {
-            self.push_conflict(DocId::Vault);
-        }
-        for index in 0..self.search.docs.len() {
-            if self.search.docs[index].dirty
-                && self.save_search_doc(index)? == SaveOutcome::Conflict
-            {
-                self.push_conflict(DocId::SearchVault(index));
-            }
+            self.push_conflict(DocId::Store);
         }
         Ok(())
-    }
-
-    fn save_search_doc(&mut self, index: usize) -> Result<SaveOutcome, String> {
-        let doc = self.search.docs.get_mut(index).ok_or("nothing to save")?;
-        if stamp_of(&doc.path) != doc.disk_stamp {
-            return Ok(SaveOutcome::Conflict);
-        }
-        let json = doc.vault.to_json().map_err(|error| error.to_string())?;
-        write_through(&mut self.backed_up, &doc.path, json.as_bytes())?;
-        doc.dirty = false;
-        doc.disk_stamp = stamp_of(&doc.path);
-        Ok(SaveOutcome::Saved)
     }
 
     fn push_conflict(&mut self, doc: DocId) {
@@ -1830,38 +1740,10 @@ impl App {
             }
             .as_ref()
             .map(|pane| (pane.path.clone(), pane.disk_stamp.clone(), pane.dirty)),
-            DocId::Vault => self
-                .right
+            DocId::Store => self
+                .store
                 .as_ref()
                 .map(|pane| (pane.path.clone(), pane.disk_stamp.clone(), pane.dirty)),
-            DocId::SearchVault(index) => self
-                .search
-                .docs
-                .get(index)
-                .map(|doc| (doc.path.clone(), doc.disk_stamp.clone(), doc.dirty)),
-        }
-    }
-
-    /// Every open document: the fixed panes plus the search view's
-    /// loaded vaults.
-    fn all_docs(&self) -> Vec<DocId> {
-        DocId::FIXED
-            .iter()
-            .copied()
-            .chain((0..self.search.docs.len()).map(DocId::SearchVault))
-            .collect()
-    }
-
-    /// Human name of a document for statuses and the conflict modal.
-    fn doc_label(&self, doc: DocId) -> String {
-        match doc {
-            DocId::Character => "the character".to_string(),
-            DocId::Stash(slot) => slot.label().to_string(),
-            DocId::Vault => "the vault".to_string(),
-            DocId::SearchVault(index) => self.search.docs.get(index).map_or_else(
-                || "a searched vault".to_string(),
-                |doc| format!("vault '{}'", search::vault_label(&doc.path)),
-            ),
         }
     }
 
@@ -1870,8 +1752,7 @@ impl App {
     /// clean panes reload silently, dirty ones raise the conflict
     /// modal. Never acts mid-interaction.
     fn drive_refresh(&mut self, ctx: &egui::Context) {
-        let watched: Vec<PathBuf> = self
-            .all_docs()
+        let watched: Vec<PathBuf> = DocId::FIXED
             .into_iter()
             .filter_map(|doc| self.doc_state(doc).map(|(path, _, _)| path))
             .collect();
@@ -1892,7 +1773,7 @@ impl App {
         }
         let mut reloaded = Vec::new();
         let mut failed = Vec::new();
-        for doc in self.all_docs() {
+        for doc in DocId::FIXED {
             let Some((path, ours, dirty)) = self.doc_state(doc) else {
                 continue;
             };
@@ -1909,8 +1790,8 @@ impl App {
                 self.push_conflict(doc);
             } else {
                 match self.reload_doc(doc) {
-                    Ok(()) => reloaded.push(self.doc_label(doc)),
-                    Err(error) => failed.push(format!("{}: {error}", self.doc_label(doc))),
+                    Ok(()) => reloaded.push(doc_label(doc)),
+                    Err(error) => failed.push(format!("{}: {error}", doc_label(doc))),
                 }
             }
         }
@@ -1944,19 +1825,11 @@ impl App {
                 }
                 self.open_stash(slot, &path).map(|_| ())
             }
-            DocId::Vault => {
-                if let Some(pane) = &mut self.right {
+            DocId::Store => {
+                if let Some(pane) = &mut self.store {
                     pane.dirty = false;
                 }
-                self.open_vault(&path).map(|_| ())
-            }
-            DocId::SearchVault(index) => {
-                let slot = self.search.docs.get_mut(index).ok_or("nothing loaded")?;
-                *slot = search::load_search_doc(&path)?;
-                self.backed_up.remove(&path);
-                self.refresh.forget(&path);
-                self.search.mark_data_changed();
-                Ok(())
+                self.open_store().map(|_| ())
             }
         }
     }
@@ -1968,8 +1841,8 @@ impl App {
         let mut failed = Vec::new();
         for doc in std::mem::take(&mut self.conflicts) {
             match self.reload_doc(doc) {
-                Ok(()) => done.push(self.doc_label(doc)),
-                Err(error) => failed.push(format!("{}: {error}", self.doc_label(doc))),
+                Ok(()) => done.push(doc_label(doc)),
+                Err(error) => failed.push(format!("{}: {error}", doc_label(doc))),
             }
         }
         self.status = Some(if failed.is_empty() {
@@ -2001,14 +1874,9 @@ impl App {
                         pane.disk_stamp = fresh;
                     }
                 }
-                DocId::Vault => {
-                    if let Some(pane) = &mut self.right {
+                DocId::Store => {
+                    if let Some(pane) = &mut self.store {
                         pane.disk_stamp = fresh;
-                    }
-                }
-                DocId::SearchVault(index) => {
-                    if let Some(doc) = self.search.docs.get_mut(index) {
-                        doc.disk_stamp = fresh;
                     }
                 }
             }
@@ -2024,11 +1892,7 @@ impl App {
         if self.conflicts.is_empty() {
             return;
         }
-        let labels: Vec<String> = self
-            .conflicts
-            .iter()
-            .map(|doc| self.doc_label(*doc))
-            .collect();
+        let labels: Vec<String> = self.conflicts.iter().map(|doc| doc_label(*doc)).collect();
         let mut reload = false;
         let mut keep = false;
         // Deliberately ignores Esc/outside-click: a conflict needs a
@@ -2097,6 +1961,106 @@ enum SaveOutcome {
     Conflict,
 }
 
+/// The loaded game cache; `None` while it is absent, importing, or
+/// failed. A free function over the one field so callers can keep
+/// other disjoint borrows of `App` alive.
+fn loaded_db(game: &GameStatus) -> Option<&GameCache> {
+    match game {
+        GameStatus::Loaded(data) => Some(data),
+        GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
+    }
+}
+
+/// Taking the dragged item out of a positional container shifts every
+/// later item in it down one; a target sitting after the taken slot
+/// has to be re-aimed. Store addresses are identities, so they never
+/// move.
+fn shift_after_take(target: ItemAddr, source: ItemAddr) -> ItemAddr {
+    let (
+        ItemAddr::Grid { grid, index },
+        ItemAddr::Grid {
+            grid: from,
+            index: taken,
+        },
+    ) = (target, source)
+    else {
+        return target;
+    };
+    if grid == from && taken < index {
+        ItemAddr::grid(grid, index - 1)
+    } else {
+        target
+    }
+}
+
+/// Human name of a document for statuses and the conflict modal.
+fn doc_label(doc: DocId) -> String {
+    match doc {
+        DocId::Character => "the character".to_string(),
+        DocId::Stash(slot) => slot.label().to_string(),
+        DocId::Store => "the item store".to_string(),
+    }
+}
+
+/// A game-side container's name for status messages.
+fn left_label(grid: GridId) -> String {
+    match grid {
+        GridId::Sack(sack) => format!("sack {}", sack + 1),
+        GridId::Equipment(slot) => slot.label().to_string(),
+        GridId::Bank => "bank".to_string(),
+        GridId::Shared => "shared bank".to_string(),
+        GridId::Relic => "relic bank".to_string(),
+    }
+}
+
+/// A bulk send's payload: a move drains the source, a copy clones it.
+fn drain_or_clone(items: &mut Vec<Item>, mode: BulkMode) -> Vec<Item> {
+    match mode {
+        BulkMode::Move => std::mem::take(items),
+        BulkMode::Copy => items.clone(),
+    }
+}
+
+/// Provenance key for an imported vault file: its file name, which is
+/// what makes a re-import recognizable across runs.
+fn import_source_name(path: &Path) -> Option<String> {
+    Some(path.file_name()?.to_string_lossy().into_owned())
+}
+
+fn import_record(path: &Path, source: String, count: usize) -> ImportRecord {
+    let stamp = stamp_of(path);
+    ImportRecord {
+        source,
+        size: stamp
+            .as_ref()
+            .and_then(|stamp| u64::try_from(stamp.size).ok())
+            .unwrap_or(0),
+        mtime: stamp.map_or(0, |stamp| stamp.mtime_seconds),
+        count,
+    }
+}
+
+/// The `TQVaultAE`-format vault files sitting in the vaults folder —
+/// migration input on first launch, never a store.
+fn vault_files_in_vaults_dir() -> Vec<PathBuf> {
+    let Some(dir) = vaults_dir() else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut files: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+        })
+        .collect();
+    files.sort();
+    files
+}
+
 /// The write path behind autosave: the first write since `path` was
 /// last loaded goes backup-first; later writes reuse that backup so
 /// per-edit saves don't churn the rotation.
@@ -2143,8 +2107,10 @@ fn vaults_dir() -> Option<PathBuf> {
     univault_core::platform::config_dir().map(|dir| dir.join("vaults"))
 }
 
-fn default_vault_path() -> Option<PathBuf> {
-    vaults_dir().map(|dir| dir.join("Main Vault.json"))
+/// The unified store's file — one per install, under the config
+/// directory beside the vaults folder it superseded.
+fn store_path() -> Option<PathBuf> {
+    univault_core::platform::config_dir().map(|dir| dir.join("vault-store.json"))
 }
 
 fn game_dir_file_path() -> Option<PathBuf> {
@@ -2342,58 +2308,67 @@ impl App {
         self.show_header(ui);
         ui.separator();
         let (action, drag_frame, search_frame) = self.show_panes(ui);
-        if let Some((grid, index)) = drag_frame.duplicate {
-            self.status = Some(self.duplicate_item(grid, index));
+        if let Some(addr) = drag_frame.duplicate {
+            self.status = Some(self.duplicate_item(addr));
         }
-        if let Some((grid, index)) = drag_frame.quick_move {
-            self.status = Some(self.quick_move(grid, index));
+        if let Some(addr) = drag_frame.quick_move {
+            self.status = Some(self.quick_move(addr));
         }
-        if let Some((grid, index)) = drag_frame.copy_across {
-            self.status = Some(self.copy_across(grid, index));
+        if let Some(addr) = drag_frame.copy_across {
+            self.status = Some(self.copy_across(addr));
         }
-        if let Some((grid, index)) = drag_frame.edit_bonus {
-            self.request_bonus_edit(grid, index);
+        if let Some(addr) = drag_frame.edit_bonus {
+            self.request_bonus_edit(addr);
         }
-        if let Some((grid, index)) = drag_frame.extract {
-            self.status = Some(self.extract_socketed(grid, index));
+        if let Some(addr) = drag_frame.extract {
+            self.status = Some(self.extract_socketed(addr));
         }
         self.update_drag(ui.ctx(), drag_frame);
         match action {
-            Some(PaneAction::MoveToVault) => self.status = Some(self.move_left_to_vault()),
-            Some(PaneAction::MoveAllToVault) => {
-                self.status = Some(self.bulk_left_to_vault(BulkMode::Move, None));
+            Some(PaneAction::MoveToStore) => self.status = Some(self.move_left_to_store()),
+            Some(PaneAction::MoveAllToStore) => {
+                self.status = Some(self.bulk_left_to_store(BulkMode::Move, None));
             }
-            Some(PaneAction::CopyAllToVault) => {
-                self.status = Some(self.bulk_left_to_vault(BulkMode::Copy, None));
+            Some(PaneAction::CopyAllToStore) => {
+                self.status = Some(self.bulk_left_to_store(BulkMode::Copy, None));
             }
-            Some(PaneAction::MoveSackToVault(sack)) => {
-                self.status = Some(self.bulk_left_to_vault(BulkMode::Move, Some(sack)));
+            Some(PaneAction::MoveSackToStore(sack)) => {
+                self.status = Some(self.bulk_left_to_store(BulkMode::Move, Some(sack)));
             }
-            Some(PaneAction::CopySackToVault(sack)) => {
-                self.status = Some(self.bulk_left_to_vault(BulkMode::Copy, Some(sack)));
+            Some(PaneAction::CopySackToStore(sack)) => {
+                self.status = Some(self.bulk_left_to_store(BulkMode::Copy, Some(sack)));
             }
-            Some(PaneAction::MoveToFile) => self.status = Some(self.move_vault_to_left()),
+            Some(PaneAction::MoveToFile) => self.status = Some(self.move_store_to_left()),
             Some(PaneAction::OpenSearch) => self.enter_search(),
             Some(PaneAction::PreviewRespec(kind)) => self.preview_respec(kind),
+            Some(PaneAction::ImportVault) => {
+                if let Some(path) = pick_file("Vault", &["json", "vault"], self.dialog_start_dir())
+                {
+                    self.status = Some(self.open(&path));
+                }
+            }
+            Some(action @ (PaneAction::ExportBucket | PaneAction::ExportAll)) => {
+                let whole = matches!(action, PaneAction::ExportAll);
+                if let Some(path) = save_file("Vault", "json", self.export_start_name(whole)) {
+                    self.status = Some(self.export_vault_file(&path, whole));
+                }
+            }
             None => {}
         }
-        if let Some((grid, index)) = search_frame.duplicate {
-            self.status = Some(self.duplicate_item(grid, index));
+        if let Some(addr) = search_frame.duplicate {
+            self.status = Some(self.duplicate_item(addr));
         }
-        if let Some((grid, index)) = search_frame.quick_move {
-            self.status = Some(self.quick_move(grid, index));
+        if let Some(addr) = search_frame.quick_move {
+            self.status = Some(self.quick_move(addr));
         }
-        if let Some((grid, index)) = search_frame.copy_across {
-            self.status = Some(self.copy_across(grid, index));
+        if let Some(addr) = search_frame.copy_across {
+            self.status = Some(self.copy_across(addr));
         }
-        if let Some((grid, index)) = search_frame.extract {
-            self.status = Some(self.extract_socketed(grid, index));
+        if let Some(addr) = search_frame.extract {
+            self.status = Some(self.extract_socketed(addr));
         }
-        if let Some((grid, index)) = search_frame.jump {
-            self.jump_to_search_row(grid, index);
-        }
-        if search_frame.rescan {
-            self.rescan_search_docs();
+        if let Some(addr) = search_frame.jump {
+            self.jump_to_stored(addr);
         }
         if search_frame.leave {
             self.view = MainView::Panes;
@@ -2419,14 +2394,17 @@ enum InventoryTab {
 }
 
 enum PaneAction {
-    MoveToVault,
-    MoveAllToVault,
-    CopyAllToVault,
-    MoveSackToVault(usize),
-    CopySackToVault(usize),
+    MoveToStore,
+    MoveAllToStore,
+    CopyAllToStore,
+    MoveSackToStore(usize),
+    CopySackToStore(usize),
     MoveToFile,
     PreviewRespec(RespecKind),
     OpenSearch,
+    ImportVault,
+    ExportBucket,
+    ExportAll,
 }
 
 /// Whether a bulk send drains the source or leaves it untouched.
@@ -2434,19 +2412,6 @@ enum PaneAction {
 enum BulkMode {
     Move,
     Copy,
-}
-
-fn bulk_into_vault(
-    items: &mut Vec<Item>,
-    vault: &mut Vault,
-    tab: usize,
-    db: Option<&GameCache>,
-    mode: BulkMode,
-) -> transfer::BulkOutcome {
-    match mode {
-        BulkMode::Move => transfer::move_all_into_vault(items, vault, tab, db),
-        BulkMode::Copy => transfer::copy_all_into_vault(items, vault, tab, db),
-    }
 }
 
 fn count_items(count: usize) -> String {
@@ -2470,8 +2435,7 @@ struct PendingRespec {
 
 /// A just-completed relic/charm awaiting its completion-bonus pick.
 struct PendingBonus {
-    grid: GridId,
-    index: usize,
+    addr: ItemAddr,
     base: RecordId,
     name: String,
     options: Vec<BonusOption>,
@@ -2564,17 +2528,23 @@ impl App {
             {
                 reload_requested = true;
             }
-            if plate_button(ui, pane_chrome, true, "Open vault…").clicked() {
+            if plate_button(ui, pane_chrome, true, "Import vault…")
+                .on_hover_text(
+                    "Read a TQVaultAE vault file into the store — the file itself \
+                     is never changed",
+                )
+                .clicked()
+            {
                 requested = pick_file("Vault", &["json", "vault"], self.dialog_start_dir());
             }
             if plate_button(
                 ui,
                 pane_chrome,
                 matches!(self.game, GameStatus::Loaded(_)),
-                "Search vaults…",
+                "Search store…",
             )
             .on_hover_text(
-                "One filterable table of every item in every vault (⌘F / Ctrl+F). \
+                "One filterable table of everything in the store (⌘F / Ctrl+F). \
                  Needs imported game data.",
             )
             .clicked()
@@ -2661,7 +2631,8 @@ impl App {
             ui.label(theme::heading("TQ UniVault"));
             ui.label(
                 "Open (or drop) a Player.chr to begin — its banks load beside it \
-                 as tabs, and the default vault is already open on the right.",
+                 as tabs, and your item store is already open on the right, \
+                 sorted into type tabs.",
             );
             ui.label("Every gesture and behavior is described under Help…");
         }
@@ -2761,10 +2732,7 @@ impl App {
             return;
         };
 
-        let db = match &self.game {
-            GameStatus::Loaded(data) => Some(data),
-            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
-        };
+        let db = loaded_db(&self.game);
         let footprint = self.caches.footprint(db, &state.item);
         if let Some(pointer) = ctx.pointer_latest_pos() {
             let rect = egui::Rect::from_min_size(
@@ -2789,16 +2757,23 @@ impl App {
 
         if ctx.input(|input| input.pointer.any_released()) {
             if let Some(candidate) = frame.candidate {
-                if let Some(target_index) = candidate.combine_with {
-                    self.status = Some(self.perform_combine(&state, candidate.grid, target_index));
-                } else if let Some(target_index) = candidate.socket_into {
-                    self.status = Some(self.perform_socket(&state, candidate.grid, target_index));
+                if let Some(target) = candidate.combine_with {
+                    self.status = Some(self.perform_combine(&state, target));
+                } else if let Some(target) = candidate.socket_into {
+                    self.status = Some(self.perform_socket(&state, target));
                 } else if candidate.equips {
-                    self.status = Some(self.perform_equip(&state, candidate.grid));
+                    self.status = Some(self.perform_equip(&state, candidate.target));
                 } else if candidate.fits {
-                    let same_spot =
-                        candidate.grid == state.source && candidate.cell == state.item.position;
-                    if !same_spot {
+                    let unmoved = match (candidate.target, state.source) {
+                        (DropTarget::Grid(grid), ItemAddr::Grid { grid: source, .. }) => {
+                            grid == source && candidate.cell == state.item.position
+                        }
+                        // The store has no cells: a stored item
+                        // dropped back into it would not move at all.
+                        (DropTarget::Store, ItemAddr::Stored(_)) => true,
+                        (DropTarget::Grid(_) | DropTarget::Store, _) => false,
+                    };
+                    if !unmoved {
                         self.status = Some(self.perform_drop(&state, candidate));
                     }
                 }
@@ -2808,26 +2783,26 @@ impl App {
         }
     }
 
-    /// Removes the item at `(grid, index)` from any container.
-    fn take_at(&mut self, grid: GridId, index: usize) -> Result<Item, String> {
-        match grid {
-            GridId::Sack(_)
-            | GridId::Equipment(_)
-            | GridId::Bank
-            | GridId::Shared
-            | GridId::Relic => self.take_from_left(grid, index),
-            GridId::VaultTab(tab) | GridId::SearchDoc { tab, .. } => {
-                let (vault, _) = vault_source_mut(&mut self.right, &mut self.search.docs, grid)
-                    .ok_or("no vault loaded")?;
-                transfer::take_from_vault(vault, tab, index)
-                    .map(|entry| entry.item)
-                    .ok_or_else(|| "item moved under the drag — drop ignored".to_string())
-            }
+    /// Removes the item at `addr` from whatever holds it.
+    fn take_at(&mut self, addr: ItemAddr) -> Result<Item, String> {
+        match addr {
+            ItemAddr::Grid { grid, index } => self.take_from_left(grid, index),
+            ItemAddr::Stored(id) => self
+                .store
+                .as_mut()
+                .ok_or("no item store open")?
+                .store
+                .remove(id)
+                .ok_or_else(|| "item moved under the drag — drop ignored".to_string()),
         }
     }
 
-    /// The item at `(grid, index)`, mutable in place.
-    fn grid_item_mut(&mut self, grid: GridId, index: usize) -> Option<&mut Item> {
+    /// The item at `addr`, mutable in place.
+    fn item_mut(&mut self, addr: ItemAddr) -> Option<&mut Item> {
+        let (grid, index) = match addr {
+            ItemAddr::Stored(id) => return self.store.as_mut()?.store.get_mut(id),
+            ItemAddr::Grid { grid, index } => (grid, index),
+        };
         match grid {
             GridId::Sack(sack) => self
                 .character
@@ -2847,48 +2822,28 @@ impl App {
             GridId::Bank => self.bank.as_mut()?.stash.items.get_mut(index),
             GridId::Shared => self.shared.as_mut()?.stash.items.get_mut(index),
             GridId::Relic => self.relics.as_mut()?.stash.items.get_mut(index),
-            GridId::VaultTab(tab) | GridId::SearchDoc { tab, .. } => {
-                let (vault, _) = vault_source_mut(&mut self.right, &mut self.search.docs, grid)?;
-                vault
-                    .sacks
-                    .get_mut(tab)?
-                    .items
-                    .get_mut(index)
-                    .map(|entry| &mut entry.item)
-            }
         }
     }
 
     /// Drops a partial relic/charm onto a matching partial: shards
     /// pour into the target up to completion, the remainder stays in
     /// the source, and a completed piece opens the bonus picker.
-    fn perform_combine(
-        &mut self,
-        state: &DragState,
-        grid: GridId,
-        target_index: usize,
-    ) -> Result<String, String> {
-        let needed = match &self.game {
-            GameStatus::Loaded(db) => db.completed_relic_level(&state.item.base),
-            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
-        }
-        .ok_or("no completion data for this item")?;
+    fn perform_combine(&mut self, state: &DragState, target: ItemAddr) -> Result<String, String> {
+        let needed = loaded_db(&self.game)
+            .and_then(|db| db.completed_relic_level(&state.item.base))
+            .ok_or("no completion data for this item")?;
 
-        let mut source = self.take_at(state.source, state.index)?;
+        let mut source = self.take_at(state.source)?;
         if source.base != state.item.base {
             let origin = state.item.position;
             self.restore_dropped(state.source, source, origin)?;
             return Err("item moved under the drag — drop ignored".to_string());
         }
         let origin = source.position;
-        let target_index = if state.source == grid && state.index < target_index {
-            target_index - 1
-        } else {
-            target_index
-        };
-        let outcome = match self.grid_item_mut(grid, target_index) {
-            Some(target) if target.base == source.base => {
-                transfer::combine_shards(target, &mut source, needed)
+        let target = shift_after_take(target, state.source);
+        let outcome = match self.item_mut(target) {
+            Some(held) if held.base == source.base => {
+                transfer::combine_shards(held, &mut source, needed)
             }
             Some(_) | None => {
                 self.restore_dropped(state.source, source, origin)?;
@@ -2898,19 +2853,15 @@ impl App {
         if !outcome.source_emptied {
             self.restore_dropped(state.source, source, origin)?;
         }
-        self.mark_dirty(state.source);
-        self.mark_dirty(grid);
-        self.left_selected = None;
-        if let Some(pane) = &mut self.right {
-            pane.selected = None;
-        }
-        let db = match &self.game {
-            GameStatus::Loaded(data) => Some(data),
-            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
-        };
-        let label = self.caches.names.record_name(db, &state.item.base);
+        self.mark_addr_dirty(state.source);
+        self.mark_addr_dirty(target);
+        self.clear_selections();
+        let label = self
+            .caches
+            .names
+            .record_name(loaded_db(&self.game), &state.item.base);
         if outcome.target_completed {
-            self.begin_bonus_pick(grid, target_index, state.item.base.clone(), None);
+            self.begin_bonus_pick(target, state.item.base.clone(), None);
             Ok(format!(
                 "{label} completed ({needed}/{needed}) — choose its bonus"
             ))
@@ -2926,75 +2877,52 @@ impl App {
     /// moves into the item's socket — record, shard count, and bonus
     /// — honoring the game's type rules but not its rarity gate, so
     /// epics, legendaries, and set pieces all accept it.
-    fn perform_socket(
-        &mut self,
-        state: &DragState,
-        grid: GridId,
-        target_index: usize,
-    ) -> Result<String, String> {
-        let piece = self.take_at(state.source, state.index)?;
+    fn perform_socket(&mut self, state: &DragState, target: ItemAddr) -> Result<String, String> {
+        let piece = self.take_at(state.source)?;
         if piece.base != state.item.base {
             let origin = state.item.position;
             self.restore_dropped(state.source, piece, origin)?;
             return Err("item moved under the drag — drop ignored".to_string());
         }
         let origin = piece.position;
-        let target_index = if state.source == grid && state.index < target_index {
-            target_index - 1
-        } else {
-            target_index
-        };
-        let allowed = {
-            let db = match &self.game {
-                GameStatus::Loaded(data) => Some(data),
-                GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
-            };
-            self.item_at(grid, target_index)
-                .is_ok_and(|target| transfer::can_socket(db, &piece, &target))
-        };
+        let target = shift_after_take(target, state.source);
+        let db = loaded_db(&self.game);
+        let allowed = self
+            .item_at(target)
+            .is_ok_and(|held| transfer::can_socket(db, &piece, &held));
         if !allowed {
             self.restore_dropped(state.source, piece, origin)?;
             return Err("socket target moved — drop ignored".to_string());
         }
-        let db = match &self.game {
-            GameStatus::Loaded(data) => Some(data),
-            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
-        };
         let piece_label = self.caches.names.record_name(db, &piece.base);
-        let target_label = self.item_at(grid, target_index).map_or_else(
+        let target_label = self.item_at(target).map_or_else(
             |_| "item".to_string(),
-            |t| self.caches.names.record_name(db, &t.base),
+            |held| self.caches.names.record_name(db, &held.base),
         );
-        match self.grid_item_mut(grid, target_index) {
-            Some(target) => transfer::socket_relic(target, piece),
+        match self.item_mut(target) {
+            Some(held) => transfer::socket_relic(held, piece),
             None => return Err("socket target moved — drop ignored".to_string()),
         }
-        self.mark_dirty(state.source);
-        self.mark_dirty(grid);
-        self.left_selected = None;
-        if let Some(pane) = &mut self.right {
-            pane.selected = None;
-        }
+        self.mark_addr_dirty(state.source);
+        self.mark_addr_dirty(target);
+        self.clear_selections();
         Ok(format!("socketed {piece_label} into {target_label}"))
     }
 
     /// Drops the dragged item into an empty, type-matching paper-doll
     /// slot: it comes off its container and onto the character.
-    fn perform_equip(&mut self, state: &DragState, grid: GridId) -> Result<String, String> {
-        let GridId::Equipment(slot) = grid else {
+    fn perform_equip(&mut self, state: &DragState, target: DropTarget) -> Result<String, String> {
+        let DropTarget::Grid(GridId::Equipment(slot)) = target else {
             return Err("not an equipment slot".to_string());
         };
-        let item = self.take_at(state.source, state.index)?;
+        let item = self.take_at(state.source)?;
         if item.base != state.item.base {
             let origin = state.item.position;
             self.restore_dropped(state.source, item, origin)?;
             return Err("item moved under the drag — drop ignored".to_string());
         }
         let origin = item.position;
-        let db = match &self.game {
-            GameStatus::Loaded(data) => Some(data),
-            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
-        };
+        let db = loaded_db(&self.game);
         if !transfer::can_equip(db, &item, slot) {
             self.restore_dropped(state.source, item, origin)?;
             return Err("that item cannot be worn there".to_string());
@@ -3003,12 +2931,9 @@ impl App {
         let pane = self.character.as_mut().ok_or("no character loaded")?;
         match transfer::equip(&mut pane.character, item, slot) {
             Ok(()) => {
-                self.mark_dirty(state.source);
-                self.mark_dirty(grid);
-                self.left_selected = None;
-                if let Some(pane) = &mut self.right {
-                    pane.selected = None;
-                }
+                self.mark_addr_dirty(state.source);
+                self.mark_left_dirty(GridId::Equipment(slot));
+                self.clear_selections();
                 Ok(format!("{label} equipped — {}", slot.label()))
             }
             Err(rejected) => {
@@ -3174,13 +3099,7 @@ impl App {
     /// bonus table (the piece simply completes bonus-less).
     /// `current` marks the bonus already on the piece when
     /// re-picking.
-    fn begin_bonus_pick(
-        &mut self,
-        grid: GridId,
-        index: usize,
-        base: RecordId,
-        current: Option<RecordId>,
-    ) {
+    fn begin_bonus_pick(&mut self, addr: ItemAddr, base: RecordId, current: Option<RecordId>) {
         let GameStatus::Loaded(db) = &self.game else {
             return;
         };
@@ -3205,8 +3124,7 @@ impl App {
         }
         let name = self.caches.names.record_name(Some(db), &base);
         self.pending_bonus = Some(PendingBonus {
-            grid,
-            index,
+            addr,
             base,
             name,
             options,
@@ -3218,8 +3136,8 @@ impl App {
     /// Double-click on a completed relic/charm or an artifact:
     /// re-open the bonus picker for it. Other items are ignored; a
     /// partial relic piece gets a hint instead.
-    fn request_bonus_edit(&mut self, grid: GridId, index: usize) {
-        let Ok(item) = self.item_at(grid, index) else {
+    fn request_bonus_edit(&mut self, addr: ItemAddr) {
+        let Ok(item) = self.item_at(addr) else {
             return;
         };
         let (needed, has_table) = match &self.game {
@@ -3244,7 +3162,7 @@ impl App {
             }
             return;
         }
-        self.begin_bonus_pick(grid, index, item.base.clone(), item.relic_bonus.clone());
+        self.begin_bonus_pick(addr, item.base.clone(), item.relic_bonus.clone());
     }
 
     /// Writes the chosen completion bonus (or none) onto the
@@ -3252,17 +3170,14 @@ impl App {
     fn apply_bonus(&mut self, choice: Option<RecordId>) -> Result<String, String> {
         let pending = self.pending_bonus.take().ok_or("no bonus pending")?;
         let stale = "the completed piece moved — bonus not applied";
-        match self.grid_item_mut(pending.grid, pending.index) {
+        match self.item_mut(pending.addr) {
             Some(item) if item.base == pending.base => {
                 item.relic_bonus.clone_from(&choice);
             }
             Some(_) | None => return Err(stale.to_string()),
         }
-        self.mark_dirty(pending.grid);
-        let db = match &self.game {
-            GameStatus::Loaded(data) => Some(data),
-            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
-        };
+        self.mark_addr_dirty(pending.addr);
+        let db = loaded_db(&self.game);
         Ok(match choice {
             Some(record) => {
                 let bonus = self.caches.names.record_name(db, &record);
@@ -3342,13 +3257,10 @@ impl App {
     /// Moves the dragged item to the drop cell; on a failed placement
     /// the item goes back where it came from.
     fn perform_drop(&mut self, state: &DragState, target: DropCandidate) -> Result<String, String> {
-        let db = match &self.game {
-            GameStatus::Loaded(data) => Some(data),
-            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
-        };
+        let db = loaded_db(&self.game);
         let label = self.caches.names.item_label(db, &state.item);
 
-        let taken = self.take_at(state.source, state.index)?;
+        let taken = self.take_at(state.source)?;
 
         if taken.base != state.item.base {
             let origin = state.item.position;
@@ -3357,11 +3269,25 @@ impl App {
         }
         let origin = taken.position;
 
-        let db = match &self.game {
-            GameStatus::Loaded(data) => Some(data),
-            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
+        let db = loaded_db(&self.game);
+        let grid = match target.target {
+            // The store has no cells: a dropped item is simply filed
+            // by its own type, wherever the pointer let go.
+            DropTarget::Store => {
+                let bucket = univault_core::store::bucket_of(db, &taken);
+                let Some(pane) = self.store.as_mut() else {
+                    return Err("no item store open".to_string());
+                };
+                pane.store.add(taken);
+                pane.dirty = true;
+                self.mark_addr_dirty(state.source);
+                self.clear_selections();
+                self.search.mark_data_changed();
+                return Ok(format!("{label} → {}", bucket.label()));
+            }
+            DropTarget::Grid(grid) => grid,
         };
-        let placed = match target.grid {
+        let placed = match grid {
             GridId::Sack(sack) => {
                 let Some(pane) = self.character.as_mut() else {
                     return Err("no character loaded".to_string());
@@ -3391,37 +3317,18 @@ impl App {
                 };
                 transfer::place_in_stash_at(&mut pane.stash, taken, target.cell, db)
             }
-            GridId::VaultTab(tab) | GridId::SearchDoc { tab, .. } => {
-                let Some((vault, _)) =
-                    vault_source_mut(&mut self.right, &mut self.search.docs, target.grid)
-                else {
-                    return Err("no vault loaded".to_string());
-                };
-                transfer::place_in_vault_at(vault, taken, tab, target.cell, db)
-            }
         };
 
         match placed {
             Ok(()) => {
-                self.mark_dirty(state.source);
-                self.mark_dirty(target.grid);
-                self.left_selected = None;
-                if let Some(pane) = &mut self.right {
-                    pane.selected = None;
-                }
-                let destination = match target.grid {
-                    GridId::Sack(sack) => format!("sack {}", sack + 1),
-                    GridId::Equipment(slot) => slot.label().to_string(),
-                    GridId::Bank => "bank".to_string(),
-                    GridId::Shared => "shared bank".to_string(),
-                    GridId::Relic => "relic bank".to_string(),
-                    GridId::VaultTab(tab) | GridId::SearchDoc { tab, .. } => {
-                        format!("vault tab {}", tab + 1)
-                    }
-                };
+                self.mark_addr_dirty(state.source);
+                self.mark_left_dirty(grid);
+                self.clear_selections();
                 Ok(format!(
-                    "{label} → {destination} ({}, {})",
-                    target.cell.x, target.cell.y
+                    "{label} → {} ({}, {})",
+                    left_label(grid),
+                    target.cell.x,
+                    target.cell.y
                 ))
             }
             Err(rejected) => {
@@ -3432,19 +3339,25 @@ impl App {
         }
     }
 
-    /// Puts a taken item back at its original cell (guaranteed free),
-    /// falling back to any open spot.
+    /// Puts a taken item back where it came from: its original cell
+    /// (guaranteed free) for a grid, falling back to any open spot —
+    /// or straight back into the store, which always has room.
     fn restore_dropped(
         &mut self,
-        source: GridId,
+        source: ItemAddr,
         item: Item,
         position: univault_core::chr::GridPos,
     ) -> Result<(), String> {
-        let db = match &self.game {
-            GameStatus::Loaded(data) => Some(data),
-            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => None,
-        };
+        let db = loaded_db(&self.game);
         let lost = "item could not be returned — reload without saving".to_string();
+        let source = match source {
+            ItemAddr::Stored(_) => {
+                let pane = self.store.as_mut().ok_or(lost)?;
+                pane.store.add(item);
+                return Ok(());
+            }
+            ItemAddr::Grid { grid, .. } => grid,
+        };
         match source {
             GridId::Sack(sack) => {
                 let pane = self.character.as_mut().ok_or_else(|| lost.clone())?;
@@ -3488,19 +3401,18 @@ impl App {
                     })
                     .map_err(|_| lost)
             }
-            GridId::VaultTab(tab) | GridId::SearchDoc { tab, .. } => {
-                let (vault, _) = vault_source_mut(&mut self.right, &mut self.search.docs, source)
-                    .ok_or_else(|| lost.clone())?;
-                transfer::place_in_vault_at(vault, item, tab, position, db)
-                    .or_else(|rejected| {
-                        transfer::place_in_vault(vault, *rejected.item, tab, db).map(|_| ())
-                    })
-                    .map_err(|_| lost)
-            }
         }
     }
 
-    fn mark_dirty(&mut self, grid: GridId) {
+    /// Marks whichever document `addr` belongs to as needing a save.
+    fn mark_addr_dirty(&mut self, addr: ItemAddr) {
+        match addr {
+            ItemAddr::Grid { grid, .. } => self.mark_left_dirty(grid),
+            ItemAddr::Stored(_) => self.mark_store_dirty(),
+        }
+    }
+
+    fn mark_left_dirty(&mut self, grid: GridId) {
         // Any mutation can move rows the search table points at.
         self.search.mark_data_changed();
         let dirty = match grid {
@@ -3510,13 +3422,25 @@ impl App {
             GridId::Bank => self.bank.as_mut().map(|pane| &mut pane.dirty),
             GridId::Shared => self.shared.as_mut().map(|pane| &mut pane.dirty),
             GridId::Relic => self.relics.as_mut().map(|pane| &mut pane.dirty),
-            GridId::VaultTab(_) => self.right.as_mut().map(|pane| &mut pane.dirty),
-            GridId::SearchDoc { doc, .. } => {
-                self.search.docs.get_mut(doc).map(|doc| &mut doc.dirty)
-            }
         };
         if let Some(dirty) = dirty {
             *dirty = true;
+        }
+    }
+
+    fn mark_store_dirty(&mut self) {
+        self.search.mark_data_changed();
+        if let Some(pane) = self.store.as_mut() {
+            pane.dirty = true;
+        }
+    }
+
+    /// Drops both panes' selections — what every completed move does,
+    /// since the moved item is no longer where either pointed.
+    fn clear_selections(&mut self) {
+        self.left_selected = None;
+        if let Some(pane) = self.store.as_mut() {
+            pane.selected = None;
         }
     }
 
@@ -3614,6 +3538,35 @@ impl App {
         })
     }
 
+    /// Default file name for an export: the bucket's own name, or the
+    /// whole store's.
+    fn export_start_name(&self, whole_store: bool) -> String {
+        if whole_store {
+            return "UniVault Export.json".to_string();
+        }
+        self.store.as_ref().map_or_else(
+            || "Export.json".to_string(),
+            |pane| format!("{}.json", pane.bucket.label()),
+        )
+    }
+
+    /// Shows a stored item at home in the store pane, switching to
+    /// its family and type first.
+    fn jump_to_stored(&mut self, addr: ItemAddr) {
+        let Some(id) = addr.stored_id() else { return };
+        let db = loaded_db(&self.game);
+        let Some(pane) = self.store.as_mut() else {
+            return;
+        };
+        if let Some(item) = pane.store.get(id) {
+            let bucket = univault_core::store::bucket_of(db, item);
+            pane.family = bucket.family();
+            pane.bucket = bucket;
+            pane.selected = Some(addr);
+        }
+        self.view = MainView::Panes;
+    }
+
     /// Where file dialogs start: near what the user last touched.
     fn dialog_start_dir(&self) -> Option<PathBuf> {
         self.character
@@ -3644,7 +3597,7 @@ impl App {
             || self.bank.is_some()
             || self.shared.is_some()
             || self.relics.is_some();
-        let can_move = has_left && self.right.is_some();
+        let can_move = has_left && self.store.is_some();
         let panel = self.tabbed_panel.clone();
         ui.columns(2, |columns| {
             if has_left {
@@ -3691,21 +3644,21 @@ impl App {
                 columns[0].weak("No game file loaded.");
             }
             if self.view == MainView::Search {
-                let tabs = [tabbed_panel::Tab::new("Search all vaults")];
+                let tabs = [tabbed_panel::Tab::new("Search the store")];
                 panel.show(&mut columns[1], &tabs, 0, |ui| {
                     ui.set_min_width(ui.available_width());
                     ui.set_min_height(ui.available_height());
                     search_frame = search::show_search_pane(
                         ui,
                         &mut self.search,
-                        self.right.as_ref(),
+                        self.store.as_ref(),
                         db,
                         caches,
                         dirty,
                     );
                 });
-            } else if let Some(pane) = &mut self.right {
-                if let Some(chosen) = show_vault_column(
+            } else if let Some(pane) = &mut self.store {
+                if let Some(chosen) = show_store_column(
                     &mut columns[1],
                     pane,
                     &panel,
@@ -3718,7 +3671,7 @@ impl App {
                     action = Some(chosen);
                 }
             } else {
-                columns[1].weak("No vault loaded.");
+                columns[1].weak("No item store open.");
             }
         });
         (action, frame, search_frame)
@@ -3857,56 +3810,48 @@ fn cells_to_points(cells: i32) -> f32 {
     cells as f32 * CELL_SIZE
 }
 
-/// Which on-screen grid an item lives in — the address space of
-/// selection and drag-and-drop. Equipment carries its slot in the
-/// id (the paper doll has no cell grid); the index half of an
-/// `(GridId, usize)` address is 0 there.
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// Which game-side container an item lives in — all of them
+/// positional, so `(GridId, index)` addresses a slot in one. Equipment
+/// carries its slot in the id (the paper doll has no cell grid); the
+/// index half is 0 there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GridId {
     Sack(usize),
     Equipment(EquipSlot),
     Bank,
     Shared,
     Relic,
-    VaultTab(usize),
-    /// A tab of one of the search view's loaded vaults (never the
-    /// open vault pane — its tabs stay `VaultTab`).
-    SearchDoc {
-        doc: usize,
-        tab: usize,
-    },
 }
 
-/// The tab a vault-side grid addresses; `None` for left-side grids.
-fn vault_tab_of(grid: GridId) -> Option<usize> {
-    match grid {
-        GridId::VaultTab(tab) | GridId::SearchDoc { tab, .. } => Some(tab),
-        GridId::Sack(_) | GridId::Equipment(_) | GridId::Bank | GridId::Shared | GridId::Relic => {
-            None
+/// Where an item is, addressably: a cell in a game-owned container,
+/// or the unified store — which is identity-addressed, never
+/// positional, so an address stays valid however the view reorders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ItemAddr {
+    Grid { grid: GridId, index: usize },
+    Stored(StoredItemId),
+}
+
+impl ItemAddr {
+    fn grid(grid: GridId, index: usize) -> Self {
+        Self::Grid { grid, index }
+    }
+
+    fn stored_id(self) -> Option<StoredItemId> {
+        match self {
+            Self::Stored(id) => Some(id),
+            Self::Grid { .. } => None,
         }
     }
 }
 
-/// The vault model (and dirty flag) a vault-side grid addresses: the
-/// open pane for `VaultTab`, a search-loaded vault for `SearchDoc`.
-/// A free function over the two fields so callers can keep other
-/// disjoint borrows of `App` alive.
-fn vault_source_mut<'a>(
-    right: &'a mut Option<VaultPane>,
-    docs: &'a mut [search::SearchDoc],
-    grid: GridId,
-) -> Option<(&'a mut Vault, &'a mut bool)> {
-    match grid {
-        GridId::VaultTab(_) => right
-            .as_mut()
-            .map(|pane| (&mut pane.vault, &mut pane.dirty)),
-        GridId::SearchDoc { doc, .. } => docs
-            .get_mut(doc)
-            .map(|doc| (&mut doc.vault, &mut doc.dirty)),
-        GridId::Sack(_) | GridId::Equipment(_) | GridId::Bank | GridId::Shared | GridId::Relic => {
-            None
-        }
-    }
+/// What a drop lands in: a cell of a game-side container, or the
+/// store — which has no cells, so an item dropped there is simply
+/// filed by type.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DropTarget {
+    Grid(GridId),
+    Store,
 }
 
 /// An in-flight drag: where the item came from and how it was
@@ -3914,29 +3859,29 @@ fn vault_source_mut<'a>(
 /// the drop commits.
 #[derive(Clone)]
 struct DragState {
-    source: GridId,
-    index: usize,
+    source: ItemAddr,
     item: Item,
     /// Pointer offset from the item's top-left, in points, so the
     /// item hangs where it was grabbed.
     grab: egui::Vec2,
 }
 
-/// The cell a drop would land in, computed by whichever grid the
-/// pointer is over this frame.
+/// Where a drop would land, computed by whichever surface the pointer
+/// is over this frame. `cell` is meaningless for the store, which
+/// files by type rather than position.
 #[derive(Clone, Copy)]
 struct DropCandidate {
-    grid: GridId,
+    target: DropTarget,
     cell: univault_core::chr::GridPos,
     fits: bool,
     /// A matching partial relic/charm under the pointer: dropping
-    /// combines into the item at this index instead of placing.
-    combine_with: Option<usize>,
+    /// combines into that item instead of placing.
+    combine_with: Option<ItemAddr>,
     /// Socketable gear under the pointer: dropping sockets the
-    /// dragged relic/charm into the item at this index.
-    socket_into: Option<usize>,
+    /// dragged relic/charm into that item.
+    socket_into: Option<ItemAddr>,
     /// An empty paper-doll slot the dragged item may be worn in
-    /// (`grid` is the `Equipment` slot): dropping equips.
+    /// (`target` is that `Equipment` slot): dropping equips.
     equips: bool,
 }
 
@@ -3945,21 +3890,21 @@ struct DropCandidate {
 struct DragFrame {
     begin: Option<DragState>,
     candidate: Option<DropCandidate>,
-    /// A Shift+Click asking for the item at `(grid, index)` to be
-    /// duplicated into its own container.
-    duplicate: Option<(GridId, usize)>,
-    /// A right-click asking for the item at `(grid, index)` to be
-    /// sent straight to the other pane.
-    quick_move: Option<(GridId, usize)>,
-    /// A Shift+Right-click asking for a copy of the item at
-    /// `(grid, index)` to be placed in the other pane.
-    copy_across: Option<(GridId, usize)>,
-    /// A double-click asking to (re)pick the completion bonus of the
-    /// completed relic/charm at `(grid, index)`.
-    edit_bonus: Option<(GridId, usize)>,
+    /// A Shift+Click asking for the item to be duplicated into its
+    /// own container.
+    duplicate: Option<ItemAddr>,
+    /// A right-click asking for the item to be sent straight to the
+    /// other pane.
+    quick_move: Option<ItemAddr>,
+    /// A Shift+Right-click asking for a copy of the item to be placed
+    /// in the other pane.
+    copy_across: Option<ItemAddr>,
+    /// A double-click asking to (re)pick the completion bonus of a
+    /// completed relic/charm.
+    edit_bonus: Option<ItemAddr>,
     /// An Alt+Click asking to split the socketed relic/charm out of
-    /// the item at `(grid, index)` — both survive.
-    extract: Option<(GridId, usize)>,
+    /// the item — both survive.
+    extract: Option<ItemAddr>,
 }
 
 /// Paints a container as its actual cell grid, with items at their
@@ -3970,9 +3915,9 @@ struct DragFrame {
 fn grid_view(
     ui: &mut egui::Ui,
     dims: (i32, i32),
-    entries: &[(usize, &Item)],
+    entries: &[(ItemAddr, &Item)],
     grid: GridId,
-    selected: &mut Option<(GridId, usize)>,
+    selected: &mut Option<ItemAddr>,
     db: Option<&GameCache>,
     caches: &mut Caches,
     drag: Option<&DragState>,
@@ -4000,7 +3945,7 @@ fn grid_view(
     let press_origin = ui.ctx().input(|input| input.pointer.press_origin());
 
     let mut hovered: Option<&Item> = None;
-    for (index, item) in entries {
+    for (addr, item) in entries {
         let (width, height) = caches.footprint(db, item);
         let item_rect = egui::Rect::from_min_size(
             rect.min
@@ -4011,7 +3956,7 @@ fn grid_view(
             egui::vec2(cells_at(width, cell), cells_at(height, cell)),
         )
         .shrink(1.0);
-        let is_selected = *selected == Some((grid, *index));
+        let is_selected = *selected == Some(*addr);
         paint_item_tile(
             ui,
             &painter,
@@ -4024,7 +3969,7 @@ fn grid_view(
         );
 
         // The lifted item stays put but fades until the drop lands.
-        if drag.is_some_and(|state| state.source == grid && state.index == *index) {
+        if drag.is_some_and(|state| state.source == *addr) {
             painter.rect_filled(item_rect, 2.0, egui::Color32::from_black_alpha(140));
         }
 
@@ -4034,8 +3979,7 @@ fn grid_view(
             && press_origin.is_some_and(|origin| item_rect.contains(origin))
         {
             frame.begin = Some(DragState {
-                source: grid,
-                index: *index,
+                source: *addr,
                 item: (*item).clone(),
                 grab: press_origin.map_or(egui::Vec2::ZERO, |origin| origin - item_rect.min),
             });
@@ -4046,7 +3990,7 @@ fn grid_view(
             && item_rect.contains(pointer)
         {
             hovered = Some(item);
-            item_gestures(ui, &response, (grid, *index), selected, frame);
+            item_gestures(ui, &response, *addr, selected, frame);
         }
     }
     if let Some(item) = hovered {
@@ -4060,7 +4004,16 @@ fn grid_view(
         && rect.contains(pointer)
     {
         frame.candidate = Some(paint_drop_preview(
-            &painter, rect, cell, dims, entries, grid, state, pointer, db, caches,
+            &painter,
+            rect,
+            cell,
+            dims,
+            entries,
+            DropTarget::Grid(grid),
+            state,
+            pointer,
+            db,
+            caches,
         ));
     }
 }
@@ -4191,8 +4144,8 @@ fn paint_drop_preview(
     rect: egui::Rect,
     cell_size: f32,
     dims: (i32, i32),
-    entries: &[(usize, &Item)],
-    grid: GridId,
+    entries: &[(ItemAddr, &Item)],
+    target: DropTarget,
     state: &DragState,
     cursor: egui::Pos2,
     db: Option<&GameCache>,
@@ -4207,8 +4160,8 @@ fn paint_drop_preview(
     // A matching partial relic/charm under the pointer offers a
     // combine instead of a placement (gold); gear whose family the
     // dragged relic/charm allows offers a socket instead (violet).
-    for (index, item) in entries {
-        if state.source == grid && state.index == *index {
+    for (addr, item) in entries {
+        if state.source == *addr {
             continue;
         }
         let combine = transfer::can_combine(db, &state.item, item);
@@ -4244,19 +4197,30 @@ fn paint_drop_preview(
                 egui::StrokeKind::Inside,
             );
             return DropCandidate {
-                grid,
+                target,
                 cell,
                 fits: false,
-                combine_with: combine.then_some(*index),
-                socket_into: socket.then_some(*index),
+                combine_with: combine.then_some(*addr),
+                socket_into: socket.then_some(*addr),
                 equips: false,
             };
         }
     }
-    let skip = (state.source == grid).then_some(state.index);
+    // The store has no cells to collide in: anywhere in the pane is a
+    // valid drop, and the item files itself by type.
+    if target == DropTarget::Store {
+        return DropCandidate {
+            target,
+            cell,
+            fits: true,
+            combine_with: None,
+            socket_into: None,
+            equips: false,
+        };
+    }
     let occupied: Vec<univault_core::grid::CellRect> = entries
         .iter()
-        .filter(|(index, _)| Some(*index) != skip)
+        .filter(|(addr, _)| *addr != state.source)
         .map(|(_, item)| {
             let (width, height) = caches.footprint(db, item);
             univault_core::grid::CellRect {
@@ -4278,7 +4242,7 @@ fn paint_drop_preview(
     .shrink(1.0);
     paint_fit_preview(painter, preview, fits);
     DropCandidate {
-        grid,
+        target,
         cell,
         fits,
         combine_with: None,
@@ -4445,8 +4409,8 @@ fn doll_item_rect(box_rect: egui::Rect, cell: f32, footprint: (i32, i32)) -> egu
 fn item_gestures(
     ui: &egui::Ui,
     response: &egui::Response,
-    address: (GridId, usize),
-    selected: &mut Option<(GridId, usize)>,
+    address: ItemAddr,
+    selected: &mut Option<ItemAddr>,
     frame: &mut DragFrame,
 ) {
     if response.double_clicked() {
@@ -4518,11 +4482,11 @@ fn doll_drop_feedback(
     );
     if sockets || can_wear {
         frame.candidate = Some(DropCandidate {
-            grid: GridId::Equipment(slot),
+            target: DropTarget::Grid(GridId::Equipment(slot)),
             cell: univault_core::chr::GridPos { x: 0, y: 0 },
             fits: false,
             combine_with: None,
-            socket_into: sockets.then_some(0),
+            socket_into: sockets.then(|| ItemAddr::grid(GridId::Equipment(slot), 0)),
             equips: !sockets,
         });
     }
@@ -4539,7 +4503,7 @@ fn doll_drop_feedback(
 fn show_equipment_doll(
     ui: &mut egui::Ui,
     equipment: &univault_core::chr::Equipment,
-    selected: &mut Option<(GridId, usize)>,
+    selected: &mut Option<ItemAddr>,
     db: Option<&GameCache>,
     caches: &mut Caches,
     drag: Option<&DragState>,
@@ -4566,7 +4530,7 @@ fn show_equipment_doll(
             egui::vec2(cells_at(w, cell), cells_at(h, cell)),
         )
         .shrink(1.0);
-        let grid = GridId::Equipment(slot);
+        let addr = ItemAddr::grid(GridId::Equipment(slot), 0);
         paint_slot_inset(&painter, doll_chrome.as_ref(), slot, box_rect);
         if doll_chrome.is_none() {
             painter.rect_stroke(
@@ -4580,7 +4544,7 @@ fn show_equipment_doll(
         match equipment.get(slot) {
             Some(item) => {
                 let item_rect = doll_item_rect(box_rect, cell, caches.footprint(db, item));
-                let is_selected = *selected == Some((grid, 0));
+                let is_selected = *selected == Some(addr);
                 paint_item_tile(
                     ui,
                     &painter,
@@ -4591,7 +4555,7 @@ fn show_equipment_doll(
                     db,
                     caches,
                 );
-                if drag.is_some_and(|state| state.source == grid) {
+                if drag.is_some_and(|state| state.source == addr) {
                     painter.rect_filled(item_rect, 2.0, egui::Color32::from_black_alpha(140));
                 }
                 if response.drag_started()
@@ -4600,8 +4564,7 @@ fn show_equipment_doll(
                     && press_origin.is_some_and(|origin| box_rect.contains(origin))
                 {
                     frame.begin = Some(DragState {
-                        source: grid,
-                        index: 0,
+                        source: addr,
                         item: item.clone(),
                         grab: press_origin
                             .map_or(egui::Vec2::ZERO, |origin| origin - item_rect.min),
@@ -4612,7 +4575,7 @@ fn show_equipment_doll(
                     && box_rect.contains(cursor)
                 {
                     hovered = Some(item);
-                    item_gestures(ui, &response, (grid, 0), selected, frame);
+                    item_gestures(ui, &response, addr, selected, frame);
                 }
             }
             None => {
@@ -4627,7 +4590,7 @@ fn show_equipment_doll(
         }
 
         if let Some(state) = drag
-            && state.source != grid
+            && state.source != addr
         {
             doll_drop_feedback(
                 &painter,
@@ -4657,7 +4620,7 @@ fn show_character_section(
     caches: &mut Caches,
     can_move: bool,
     inventory_tab: &mut InventoryTab,
-    selected: &mut Option<(GridId, usize)>,
+    selected: &mut Option<ItemAddr>,
     drag: Option<&DragState>,
     frame: &mut DragFrame,
 ) -> Option<PaneAction> {
@@ -4682,9 +4645,15 @@ fn show_character_section(
         if gold.changed() {
             pane.dirty = true;
         }
-        let selection_here = matches!(*selected, Some((GridId::Sack(_) | GridId::Equipment(_), _)));
-        if plate_button(ui, pane_chrome, can_move && selection_here, "→ Vault").clicked() {
-            action = Some(PaneAction::MoveToVault);
+        let selection_here = matches!(
+            *selected,
+            Some(ItemAddr::Grid {
+                grid: GridId::Sack(_) | GridId::Equipment(_),
+                ..
+            })
+        );
+        if plate_button(ui, pane_chrome, can_move && selection_here, "→ Store").clicked() {
+            action = Some(PaneAction::MoveToStore);
         }
         if plate_button(ui, pane_chrome, true, "Respec attributes").clicked() {
             action = Some(PaneAction::PreviewRespec(RespecKind::Attributes));
@@ -4770,7 +4739,7 @@ fn show_inventory_body(
     caches: &mut Caches,
     inventory_tab: InventoryTab,
     can_move: bool,
-    selected: &mut Option<(GridId, usize)>,
+    selected: &mut Option<ItemAddr>,
     drag: Option<&DragState>,
     frame: &mut DragFrame,
 ) -> Option<PaneAction> {
@@ -4795,23 +4764,30 @@ fn show_inventory_body(
                 let pane_chrome = pane_chrome.as_ref();
                 let has_items = !sack.items.is_empty();
                 ui.horizontal(|ui| {
-                    if plate_button(ui, pane_chrome, can_move && has_items, "Move all → Vault")
+                    if plate_button(ui, pane_chrome, can_move && has_items, "Move all → Store")
                         .on_hover_text(
-                            "Move every item from this sack into the open vault tab, \
-                             spilling into the other tabs as it fills",
+                            "Move every item from this sack into the store, \
+                             each filed under its own type",
                         )
                         .clicked()
                     {
-                        action = Some(PaneAction::MoveSackToVault(index));
+                        action = Some(PaneAction::MoveSackToStore(index));
                     }
-                    if plate_button(ui, pane_chrome, can_move && has_items, "Copy all → Vault")
+                    if plate_button(ui, pane_chrome, can_move && has_items, "Copy all → Store")
                         .on_hover_text("The same, as copies — every item stays in this sack")
                         .clicked()
                     {
-                        action = Some(PaneAction::CopySackToVault(index));
+                        action = Some(PaneAction::CopySackToStore(index));
                     }
                 });
-                let entries: Vec<(usize, &Item)> = sack.items.iter().enumerate().collect();
+                let entries: Vec<(ItemAddr, &Item)> = sack
+                    .items
+                    .iter()
+                    .enumerate()
+                    .map(|(index_in_sack, item)| {
+                        (ItemAddr::grid(GridId::Sack(index), index_in_sack), item)
+                    })
+                    .collect();
                 grid_view(
                     ui,
                     chr::sack_dimensions(index),
@@ -4838,7 +4814,7 @@ struct LeftView<'a> {
     relics: &'a mut Option<StashPane>,
     active_tab: &'a mut LeftTab,
     inventory_tab: &'a mut InventoryTab,
-    selected: &'a mut Option<(GridId, usize)>,
+    selected: &'a mut Option<ItemAddr>,
 }
 
 impl LeftView<'_> {
@@ -4872,21 +4848,66 @@ fn left_tabs(view: &LeftView<'_>) -> (Vec<tabbed_panel::Tab>, usize) {
     (tabs, selected)
 }
 
-/// Tab strip inputs for the vault pane: sack number, with the item
-/// count when the sack has any.
-fn vault_tabs(pane: &VaultPane) -> Vec<tabbed_panel::Tab> {
-    pane.vault
-        .sacks
+/// How many of the store's items fall in each bucket — the counts
+/// the family and sub-type tabs wear. One pass over the store, since
+/// classification is a lookup per item.
+fn bucket_counts(store: &VaultStore, db: Option<&GameCache>) -> HashMap<Bucket, usize> {
+    let mut counts = HashMap::new();
+    for entry in store.entries() {
+        *counts
+            .entry(univault_core::store::bucket_of(db, &entry.item))
+            .or_insert(0) += 1;
+    }
+    counts
+}
+
+/// Tab strip inputs for the store's family plates. Names only: the
+/// strip lays out on one unwrapped row, and six labelled counts
+/// overflow the half-width column (silently — the plates just run off
+/// the pane, taking Misc with them). Counts live one level down, on
+/// the sub-type strip, with the store's total in the header.
+fn family_tabs() -> Vec<tabbed_panel::Tab> {
+    Family::ALL
+        .into_iter()
+        .map(|family| tabbed_panel::Tab::new(family.label()))
+        .collect()
+}
+
+/// Sub-type strip inputs for the open family: one plate per bucket,
+/// with its item count.
+fn bucket_tabs(family: Family, counts: &HashMap<Bucket, usize>) -> Vec<tabbed_panel::Tab> {
+    family
+        .buckets()
         .iter()
-        .enumerate()
-        .map(|(tab, sack)| {
-            tabbed_panel::Tab::new(if sack.items.is_empty() {
-                format!("{}", tab + 1)
+        .map(|bucket| {
+            let count = counts.get(bucket).copied().unwrap_or(0);
+            tabbed_panel::Tab::new(if count == 0 {
+                bucket.label().to_string()
             } else {
-                format!("{} ({})", tab + 1, sack.items.len())
+                format!("{} ({count})", bucket.label())
             })
         })
         .collect()
+}
+
+/// Lays a bucket's items out in reading order — left to right,
+/// wrapping into shelves as tall as their tallest item — and returns
+/// the rows used. The store keeps no positions, so this scratch
+/// layout is recomputed each frame and never serialized.
+fn shelve_items(footprints: &[(i32, i32)], width: i32) -> (Vec<univault_core::chr::GridPos>, i32) {
+    let mut positions = Vec::with_capacity(footprints.len());
+    let (mut x, mut y, mut shelf) = (0, 0, 0);
+    for (item_width, item_height) in footprints {
+        if x + item_width > width && x > 0 {
+            y += shelf;
+            x = 0;
+            shelf = 0;
+        }
+        positions.push(univault_core::chr::GridPos { x, y });
+        x += item_width;
+        shelf = shelf.max(*item_height);
+    }
+    (positions, y + shelf)
 }
 
 /// The left column: the active document's section (the strip above
@@ -4967,7 +4988,7 @@ fn show_stash_section(
     db: Option<&GameCache>,
     caches: &mut Caches,
     can_move: bool,
-    selected: &mut Option<(GridId, usize)>,
+    selected: &mut Option<ItemAddr>,
     drag: Option<&DragState>,
     frame: &mut DragFrame,
 ) -> Option<PaneAction> {
@@ -4985,29 +5006,36 @@ fn show_stash_section(
             pane_chrome,
             &format!("{title} {}×{}", pane.stash.width, pane.stash.height),
         );
-        let selection_here = matches!(*selected, Some((current, _)) if current == grid);
-        if plate_button(ui, pane_chrome, can_move && selection_here, "→ Vault").clicked() {
-            action = Some(PaneAction::MoveToVault);
+        let selection_here =
+            matches!(*selected, Some(ItemAddr::Grid { grid: current, .. }) if current == grid);
+        if plate_button(ui, pane_chrome, can_move && selection_here, "→ Store").clicked() {
+            action = Some(PaneAction::MoveToStore);
         }
         let has_items = !pane.stash.items.is_empty();
-        if plate_button(ui, pane_chrome, can_move && has_items, "Move all → Vault")
+        if plate_button(ui, pane_chrome, can_move && has_items, "Move all → Store")
             .on_hover_text(
-                "Move every item in this bank into the open vault tab, \
-                 spilling into the other tabs as it fills",
+                "Move every item in this bank into the store, \
+                 each filed under its own type",
             )
             .clicked()
         {
-            action = Some(PaneAction::MoveAllToVault);
+            action = Some(PaneAction::MoveAllToStore);
         }
-        if plate_button(ui, pane_chrome, can_move && has_items, "Copy all → Vault")
+        if plate_button(ui, pane_chrome, can_move && has_items, "Copy all → Store")
             .on_hover_text("The same, as copies — every item stays in the bank")
             .clicked()
         {
-            action = Some(PaneAction::CopyAllToVault);
+            action = Some(PaneAction::CopyAllToStore);
         }
     });
     ui.label(theme::path_text(pane.path.display().to_string()));
-    let entries: Vec<(usize, &Item)> = pane.stash.items.iter().enumerate().collect();
+    let entries: Vec<(ItemAddr, &Item)> = pane
+        .stash
+        .items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| (ItemAddr::grid(grid, index), item))
+        .collect();
     grid_view(
         ui,
         (pane.stash.width, pane.stash.height),
@@ -5022,12 +5050,13 @@ fn show_stash_section(
     action
 }
 
-/// The vault column when a vault is open: the sack tab strip around
-/// the open sack's grid, tabs switching on click or mid-drag hover.
+/// The store column: family plates over a sub-type strip over the
+/// open bucket's grid. Both strips switch on click or mid-drag hover,
+/// so a dragged item can be carried to any type without dropping it.
 #[allow(clippy::too_many_arguments)] // one call surface, shell-internal
-fn show_vault_column(
+fn show_store_column(
     ui: &mut egui::Ui,
-    pane: &mut VaultPane,
+    pane: &mut StorePane,
     panel: &TabbedPanel,
     db: Option<&GameCache>,
     caches: &mut Caches,
@@ -5035,34 +5064,39 @@ fn show_vault_column(
     drag: Option<&DragState>,
     frame: &mut DragFrame,
 ) -> Option<PaneAction> {
-    if pane.open_tab >= pane.vault.sacks.len() {
-        pane.open_tab = 0;
-    }
-    let tabs = vault_tabs(pane);
-    let selected = pane.open_tab;
+    let counts = bucket_counts(&pane.store, db);
+    let tabs = family_tabs();
+    let selected = Family::ALL
+        .iter()
+        .position(|family| *family == pane.family)
+        .unwrap_or(0);
     let response = panel.show(ui, &tabs, selected, |ui| {
         ui.set_min_width(ui.available_width());
         ui.set_min_height(ui.available_height());
-        show_vault_pane(ui, pane, db, caches, can_move, drag, frame)
+        show_store_pane(ui, pane, panel, &counts, db, caches, can_move, drag, frame)
     });
     let target = response.clicked.or(if drag.is_some() {
         response.hovered
     } else {
         None
     });
-    if let Some(tab) = target
-        && pane.open_tab != tab
+    if let Some(index) = target
+        && let Some(family) = Family::ALL.get(index).copied()
+        && family != pane.family
     {
-        pane.open_tab = tab;
+        pane.family = family;
+        pane.bucket = family.buckets()[0];
         pane.selected = None;
     }
     response.inner
 }
 
 #[allow(clippy::too_many_arguments)] // one call surface, shell-internal
-fn show_vault_pane(
+fn show_store_pane(
     ui: &mut egui::Ui,
-    pane: &mut VaultPane,
+    pane: &mut StorePane,
+    panel: &TabbedPanel,
+    counts: &HashMap<Bucket, usize>,
     db: Option<&GameCache>,
     caches: &mut Caches,
     can_move: bool,
@@ -5072,8 +5106,9 @@ fn show_vault_pane(
     let mut action = None;
     let pane_chrome = caches.chrome(ui.ctx(), db);
     let pane_chrome = pane_chrome.as_ref();
-    ui.horizontal(|ui| {
-        pane_heading(ui, pane_chrome, "Vault");
+    let total = pane.store.len();
+    ui.horizontal_wrapped(|ui| {
+        pane_heading(ui, pane_chrome, "Item store");
         if plate_button(
             ui,
             pane_chrome,
@@ -5085,38 +5120,290 @@ fn show_vault_pane(
             action = Some(PaneAction::MoveToFile);
         }
         if plate_button(ui, pane_chrome, db.is_some(), "Filter…")
-            .on_hover_text("Search and filter every vault file (⌘F / Ctrl+F)")
+            .on_hover_text("Search and filter the whole store (⌘F / Ctrl+F)")
             .clicked()
         {
             action = Some(PaneAction::OpenSearch);
         }
+        let sort = egui::ComboBox::from_id_salt("store-sort")
+            .selected_text(pane.sort.label())
+            .width(110.0);
+        sort.show_ui(ui, |ui| {
+            for option in StoreSort::ALL {
+                ui.selectable_value(&mut pane.sort, option, option.label());
+            }
+        });
     });
-    ui.label(theme::path_text(pane.path.display().to_string()));
-    let Some(sack) = pane.vault.sacks.get(pane.open_tab) else {
-        ui.weak("This vault file has no tabs.");
-        return action;
-    };
-    let entries: Vec<(usize, &Item)> = sack
-        .items
+    ui.horizontal_wrapped(|ui| {
+        if plate_button(ui, pane_chrome, true, "Import vault…")
+            .on_hover_text("Read a TQVaultAE vault file into the store; the file is never changed")
+            .clicked()
+        {
+            action = Some(PaneAction::ImportVault);
+        }
+        if plate_button(ui, pane_chrome, total > 0, "Export type…")
+            .on_hover_text("Write this type's items out as a TQVaultAE-readable vault")
+            .clicked()
+        {
+            action = Some(PaneAction::ExportBucket);
+        }
+        if plate_button(ui, pane_chrome, total > 0, "Export all…")
+            .on_hover_text("Write the whole store out as a TQVaultAE-readable vault")
+            .clicked()
+        {
+            action = Some(PaneAction::ExportAll);
+        }
+        ui.weak(format!("{} stored", count_items(total)));
+    });
+
+    let buckets = pane.family.buckets();
+    let sub_tabs = bucket_tabs(pane.family, counts);
+    let selected = buckets
         .iter()
-        .enumerate()
-        .map(|(index, entry)| (index, &entry.item))
-        .collect();
-    grid_view(
-        ui,
-        (
-            univault_core::vault::TAB_WIDTH,
-            univault_core::vault::TAB_HEIGHT,
-        ),
-        &entries,
-        GridId::VaultTab(pane.open_tab),
-        &mut pane.selected,
-        db,
-        caches,
-        drag,
-        frame,
-    );
+        .position(|bucket| *bucket == pane.bucket)
+        .unwrap_or(0);
+    let response = panel.show(ui, &sub_tabs, selected, |ui| {
+        ui.set_min_width(ui.available_width());
+        ui.set_min_height(ui.available_height());
+        show_bucket_grid(ui, pane, db, caches, drag, frame);
+    });
+    let target = response.clicked.or(if drag.is_some() {
+        response.hovered
+    } else {
+        None
+    });
+    if let Some(index) = target
+        && let Some(bucket) = buckets.get(index).copied()
+        && bucket != pane.bucket
+    {
+        pane.bucket = bucket;
+        pane.selected = None;
+    }
     action
+}
+
+/// The open bucket's items, sorted and shelf-packed into a scrolling
+/// grid. Positions here are scratch: the store files by type, so a
+/// bucket is a list, and this layout is only how it is read.
+fn show_bucket_grid(
+    ui: &mut egui::Ui,
+    pane: &mut StorePane,
+    db: Option<&GameCache>,
+    caches: &mut Caches,
+    drag: Option<&DragState>,
+    frame: &mut DragFrame,
+) {
+    let bucket = pane.bucket;
+    let sort = pane.sort;
+    let mut ids: Vec<StoredItemId> = pane
+        .store
+        .entries()
+        .filter(|entry| univault_core::store::bucket_of(db, &entry.item) == bucket)
+        .map(univault_core::store::StoredEntry::id)
+        .collect();
+    sort_stored(&mut ids, &pane.store, db, sort, &mut caches.names);
+
+    let footprints: Vec<(i32, i32)> = ids
+        .iter()
+        .filter_map(|id| pane.store.get(*id))
+        .map(|item| caches.footprint(db, item))
+        .collect();
+    let (positions, rows) = shelve_items(&footprints, STORE_COLUMNS);
+    for (id, position) in ids.iter().zip(&positions) {
+        if let Some(item) = pane.store.get_mut(*id) {
+            item.position = *position;
+        }
+    }
+    let entries: Vec<(ItemAddr, &Item)> = ids
+        .iter()
+        .filter_map(|id| {
+            pane.store
+                .get(*id)
+                .map(|item| (ItemAddr::Stored(*id), item))
+        })
+        .collect();
+
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            grid_view_store(
+                ui,
+                (STORE_COLUMNS, rows.max(STORE_MIN_ROWS)),
+                &entries,
+                &mut pane.selected,
+                db,
+                caches,
+                drag,
+                frame,
+            );
+        });
+}
+
+/// The bucket grid keeps the game vault tab's own footprint as its
+/// minimum, so a thinly stocked type still paints a full grid instead
+/// of a few tiles stranded on bare panel — and an empty one is a
+/// plain empty grid that takes drops like any other. A well-stocked
+/// type grows past the minimum and scrolls.
+const STORE_COLUMNS: i32 = univault_core::vault::TAB_WIDTH;
+const STORE_MIN_ROWS: i32 = univault_core::vault::TAB_HEIGHT;
+
+/// Orders a bucket's ids for display. Name is the tiebreak
+/// everywhere, so the order is total and stable frame to frame.
+fn sort_stored(
+    ids: &mut [StoredItemId],
+    store: &VaultStore,
+    db: Option<&GameCache>,
+    sort: StoreSort,
+    names: &mut NameCache,
+) {
+    let mut keyed: Vec<((i32, String), StoredItemId)> = Vec::with_capacity(ids.len());
+    for id in ids.iter() {
+        let Some(item) = store.get(*id) else {
+            keyed.push(((0, String::new()), *id));
+            continue;
+        };
+        let name = names.item_label(db, item).to_lowercase();
+        let rank = match sort {
+            StoreSort::Name => 0,
+            StoreSort::Rarity => db.map_or(0, |db| {
+                -i32::from(style_rank(style::item_style(Some(db), item)))
+            }),
+            StoreSort::Level => db.map_or(0, |db| {
+                stats::item_requirements(db, item)
+                    .into_iter()
+                    .find(|(key, _)| *key == stats::Requirement::Level)
+                    .map_or(0, |(_, value)| value)
+            }),
+        };
+        keyed.push(((rank, name), *id));
+    }
+    keyed.sort_by(|a, b| a.0.cmp(&b.0));
+    for (slot, (_, id)) in ids.iter_mut().zip(keyed) {
+        *slot = id;
+    }
+}
+
+/// Rarity order for the store's sort, highest first.
+fn style_rank(item_style: style::ItemStyle) -> u8 {
+    match item_style {
+        style::ItemStyle::Broken => 0,
+        style::ItemStyle::Mundane => 1,
+        style::ItemStyle::Common => 2,
+        style::ItemStyle::Potion => 3,
+        style::ItemStyle::Scroll => 4,
+        style::ItemStyle::Parchment => 5,
+        style::ItemStyle::Quest => 6,
+        style::ItemStyle::Relic => 7,
+        style::ItemStyle::Formulae => 8,
+        style::ItemStyle::Artifact => 9,
+        style::ItemStyle::Rare => 10,
+        style::ItemStyle::Epic => 11,
+        style::ItemStyle::Legendary => 12,
+    }
+}
+
+/// The store's grid: the same painting and gestures as a container
+/// grid, but every drop lands in the store rather than a cell.
+#[allow(clippy::too_many_arguments)] // one call surface, shell-internal
+fn grid_view_store(
+    ui: &mut egui::Ui,
+    dims: (i32, i32),
+    entries: &[(ItemAddr, &Item)],
+    selected: &mut Option<ItemAddr>,
+    db: Option<&GameCache>,
+    caches: &mut Caches,
+    drag: Option<&DragState>,
+    frame: &mut DragFrame,
+) {
+    // Sized off the *minimum* grid, so the cell stays put whether the
+    // bucket is half empty or scrolling well past the fold; a taller
+    // bucket grows downward at the same scale instead of shrinking to
+    // fit. Centered like every other grid — hugging the top-left
+    // reads as a layout slip.
+    let cell = fit_cell_size(ui.available_size(), (dims.0, STORE_MIN_ROWS));
+    let size = egui::vec2(cells_at(dims.0, cell), cells_at(dims.1, cell));
+    let pad = ((ui.available_width() - size.x) / 2.0).max(0.0);
+    let (rect, response) = ui
+        .horizontal(|ui| {
+            ui.add_space(pad);
+            ui.allocate_exact_size(size, egui::Sense::click_and_drag())
+        })
+        .inner;
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let painter = ui.painter_at(rect);
+    let visuals = ui.visuals().clone();
+    let grid_chrome = caches.chrome(ui.ctx(), db);
+    paint_grid_background(&painter, grid_chrome.as_ref(), rect, dims, cell);
+
+    let press_origin = ui.ctx().input(|input| input.pointer.press_origin());
+    let mut hovered: Option<&Item> = None;
+    for (addr, item) in entries {
+        let (width, height) = caches.footprint(db, item);
+        let item_rect = egui::Rect::from_min_size(
+            rect.min
+                + egui::vec2(
+                    cells_at(item.position.x, cell),
+                    cells_at(item.position.y, cell),
+                ),
+            egui::vec2(cells_at(width, cell), cells_at(height, cell)),
+        )
+        .shrink(1.0);
+        paint_item_tile(
+            ui,
+            &painter,
+            item_rect,
+            item,
+            *selected == Some(*addr),
+            &visuals,
+            db,
+            caches,
+        );
+        if drag.is_some_and(|state| state.source == *addr) {
+            painter.rect_filled(item_rect, 2.0, egui::Color32::from_black_alpha(140));
+        }
+        if response.drag_started()
+            && drag.is_none()
+            && frame.begin.is_none()
+            && press_origin.is_some_and(|origin| item_rect.contains(origin))
+        {
+            frame.begin = Some(DragState {
+                source: *addr,
+                item: (*item).clone(),
+                grab: press_origin.map_or(egui::Vec2::ZERO, |origin| origin - item_rect.min),
+            });
+        }
+        if drag.is_none()
+            && let Some(pointer) = response.hover_pos()
+            && item_rect.contains(pointer)
+        {
+            hovered = Some(item);
+            item_gestures(ui, &response, *addr, selected, frame);
+        }
+    }
+    if let Some(item) = hovered {
+        egui::Tooltip::for_widget(&response)
+            .at_pointer()
+            .show(|ui| item_tooltip(ui, item, db, caches));
+    }
+    if let Some(state) = drag
+        && let Some(pointer) = ui.ctx().pointer_latest_pos()
+        && rect.contains(pointer)
+    {
+        frame.candidate = Some(paint_drop_preview(
+            &painter,
+            rect,
+            cell,
+            dims,
+            entries,
+            DropTarget::Store,
+            state,
+            pointer,
+            db,
+            caches,
+        ));
+    }
 }
 
 fn pick_file(description: &str, extensions: &[&str], start: Option<PathBuf>) -> Option<PathBuf> {
@@ -5125,6 +5412,18 @@ fn pick_file(description: &str, extensions: &[&str], start: Option<PathBuf>) -> 
         dialog = dialog.set_directory(start);
     }
     dialog.pick_file()
+}
+
+/// Where an export is written — the save dialog, pre-named.
+fn save_file(description: &str, extension: &str, suggested: String) -> Option<PathBuf> {
+    let mut dialog = rfd::FileDialog::new()
+        .add_filter(description, &[extension])
+        .set_file_name(suggested);
+    if let Some(dir) = vaults_dir() {
+        let _ = std::fs::create_dir_all(&dir);
+        dialog = dialog.set_directory(dir);
+    }
+    dialog.save_file()
 }
 
 fn first_dropped_path(ctx: &egui::Context) -> Option<PathBuf> {
@@ -5254,13 +5553,62 @@ mod tests {
     }
 
     #[test]
-    fn default_vault_lives_under_the_config_dir() {
-        let path = default_vault_path().expect("a config dir on a supported platform");
-        assert!(path.ends_with("vaults/Main Vault.json"), "{path:?}");
+    fn the_store_lives_under_the_config_dir() {
+        let path = store_path().expect("a config dir on a supported platform");
+        assert!(path.ends_with("vault-store.json"), "{path:?}");
         assert!(
             path.starts_with(univault_core::platform::config_dir().unwrap()),
             "{path:?}"
         );
+    }
+
+    #[test]
+    fn shelves_wrap_in_reading_order_and_report_their_rows() {
+        // Two 2×5 swords then a 1×1 potion across 4 columns: the
+        // third item shares the first shelf, the fourth wraps.
+        let (positions, rows) = shelve_items(&[(2, 5), (2, 5), (1, 1), (3, 2)], 4);
+        assert_eq!(
+            positions,
+            [
+                univault_core::chr::GridPos { x: 0, y: 0 },
+                univault_core::chr::GridPos { x: 2, y: 0 },
+                univault_core::chr::GridPos { x: 0, y: 5 },
+                univault_core::chr::GridPos { x: 1, y: 5 },
+            ]
+        );
+        assert_eq!(rows, 7);
+    }
+
+    #[test]
+    fn an_oversized_item_still_gets_its_own_shelf() {
+        let (positions, rows) = shelve_items(&[(9, 3)], 4);
+        assert_eq!(positions, [univault_core::chr::GridPos { x: 0, y: 0 }]);
+        assert_eq!(rows, 3);
+    }
+
+    #[test]
+    fn taking_an_item_re_aims_only_later_targets_in_the_same_grid() {
+        let grid = GridId::Bank;
+        let source = ItemAddr::grid(grid, 2);
+        // Later in the same container: shifts down one.
+        assert_eq!(
+            shift_after_take(ItemAddr::grid(grid, 5), source),
+            ItemAddr::grid(grid, 4)
+        );
+        // Earlier, another container, and the store: untouched.
+        assert_eq!(
+            shift_after_take(ItemAddr::grid(grid, 1), source),
+            ItemAddr::grid(grid, 1)
+        );
+        assert_eq!(
+            shift_after_take(ItemAddr::grid(GridId::Shared, 5), source),
+            ItemAddr::grid(GridId::Shared, 5)
+        );
+        let stored = ItemAddr::Stored(VaultStore::new().add(Item::bare(
+            RecordId::parse("records\\a.dbr".to_string()).unwrap(),
+            univault_core::chr::ItemSeed::new(1),
+        )));
+        assert_eq!(shift_after_take(stored, source), stored);
     }
 
     #[test]

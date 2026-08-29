@@ -134,15 +134,11 @@ pub fn equip(character: &mut PlayerCharacter, item: Item, slot: EquipSlot) -> Re
     Ok(())
 }
 
-/// Removes an item from a vault tab. `None` on a stale index.
-pub fn take_from_vault(vault: &mut Vault, tab: usize, index: usize) -> Option<VaultItem> {
-    let sack = vault.sacks.get_mut(tab)?;
-    (index < sack.items.len()).then(|| sack.items.remove(index))
-}
-
 /// Places an item into the vault, trying `preferred_tab` first and
 /// then every other tab. Returns the tab it landed in, or hands the
-/// item back on failure.
+/// item back on failure. The app's own storage is the unified store
+/// ([`crate::store`]); this packs items into the `TQVaultAE`
+/// interchange format on export.
 ///
 /// # Errors
 /// [`TransferError::NoRoom`] when no tab can fit the footprint.
@@ -156,7 +152,7 @@ pub fn place_in_vault(
     let tab_count = vault.sacks.len();
     let order = (0..tab_count).cycle().skip(preferred_tab).take(tab_count);
     for tab in order {
-        let taken = vault_occupancy(&vault.sacks[tab].items, None, db);
+        let taken = vault_occupancy(&vault.sacks[tab].items, db);
         if let Some(position) = find_open_cells(&taken, width, height, TAB_WIDTH, TAB_HEIGHT) {
             let mut item = item;
             item.position = position;
@@ -167,112 +163,6 @@ pub fn place_in_vault(
         }
     }
     Err(Rejected::no_room(item))
-}
-
-/// Places an item somewhere in one vault tab, never spilling into
-/// other tabs — the shell sends items to the tab the user has open,
-/// and a full tab is the user's problem to see, not silently
-/// worked around.
-///
-/// # Errors
-/// [`TransferError::BadIndex`] for an unknown tab;
-/// [`TransferError::NoRoom`] when that tab cannot fit the footprint.
-pub fn place_in_vault_tab(
-    vault: &mut Vault,
-    item: Item,
-    tab: usize,
-    db: Option<&GameCache>,
-) -> Result<(), Rejected> {
-    let (width, height) = footprint(db, &item);
-    let Some(sack) = vault.sacks.get_mut(tab) else {
-        return Err(Rejected::because(item, TransferError::BadIndex));
-    };
-    let taken = vault_occupancy(&sack.items, None, db);
-    match find_open_cells(&taken, width, height, TAB_WIDTH, TAB_HEIGHT) {
-        Some(position) => {
-            let mut item = item;
-            item.position = position;
-            sack.items.push(VaultItem::new(item, 0, 0));
-            Ok(())
-        }
-        None => Err(Rejected::no_room(item)),
-    }
-}
-
-/// Counts from a bulk transfer into a vault: how many items landed,
-/// how many fit in no tab, and how many of the placed landed outside
-/// the tab the caller asked for first.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct BulkOutcome {
-    pub placed: usize,
-    pub left_behind: usize,
-    pub spilled: usize,
-}
-
-impl BulkOutcome {
-    #[must_use]
-    pub fn merge(self, other: Self) -> Self {
-        Self {
-            placed: self.placed + other.placed,
-            left_behind: self.left_behind + other.left_behind,
-            spilled: self.spilled + other.spilled,
-        }
-    }
-
-    fn placed_in(tab: usize, start_tab: usize) -> Self {
-        Self {
-            placed: 1,
-            left_behind: 0,
-            spilled: usize::from(tab != start_tab),
-        }
-    }
-}
-
-/// Moves every item out of `items` into the vault via
-/// [`place_in_vault`] — `start_tab` first, spilling into the other
-/// tabs as each fills. Items are placed in source order; an item no
-/// tab can fit stays in `items` at its original index and position
-/// while the rest keep moving.
-pub fn move_all_into_vault(
-    items: &mut Vec<Item>,
-    vault: &mut Vault,
-    start_tab: usize,
-    db: Option<&GameCache>,
-) -> BulkOutcome {
-    let mut outcome = BulkOutcome::default();
-    let mut index = 0;
-    while index < items.len() {
-        let item = items.remove(index);
-        match place_in_vault(vault, item, start_tab, db) {
-            Ok(tab) => outcome = outcome.merge(BulkOutcome::placed_in(tab, start_tab)),
-            Err(rejected) => {
-                items.insert(index, *rejected.item);
-                outcome.left_behind += 1;
-                index += 1;
-            }
-        }
-    }
-    outcome
-}
-
-/// Copies every item in `items` into the vault via
-/// [`place_in_vault`] — `start_tab` first, spilling into the other
-/// tabs as each fills — leaving the source untouched. An item no tab
-/// can fit is counted, not copied.
-pub fn copy_all_into_vault(
-    items: &[Item],
-    vault: &mut Vault,
-    start_tab: usize,
-    db: Option<&GameCache>,
-) -> BulkOutcome {
-    let mut outcome = BulkOutcome::default();
-    for item in items {
-        match place_in_vault(vault, item.clone(), start_tab, db) {
-            Ok(tab) => outcome = outcome.merge(BulkOutcome::placed_in(tab, start_tab)),
-            Err(_) => outcome.left_behind += 1,
-        }
-    }
-    outcome
 }
 
 /// Places an item into a character's inventory, trying
@@ -379,18 +269,11 @@ pub fn occupancy(items: &[Item], skip: Option<usize>, db: Option<&GameCache>) ->
         .collect()
 }
 
-/// Occupancy rectangles of a vault tab, optionally skipping one index.
-#[must_use]
-pub fn vault_occupancy(
-    items: &[VaultItem],
-    skip: Option<usize>,
-    db: Option<&GameCache>,
-) -> Vec<CellRect> {
+/// Occupancy rectangles of a vault tab.
+fn vault_occupancy(items: &[VaultItem], db: Option<&GameCache>) -> Vec<CellRect> {
     items
         .iter()
-        .enumerate()
-        .filter(|(index, _)| Some(*index) != skip)
-        .map(|(_, entry)| {
+        .map(|entry| {
             let (width, height) = if entry.width > 0 && entry.height > 0 {
                 (entry.width, entry.height)
             } else {
@@ -459,36 +342,6 @@ pub fn place_in_stash_at(
     let mut item = item;
     item.position = position;
     stash.items.push(item);
-    Ok(())
-}
-
-/// Places an item at an exact cell in a vault tab, or hands it back.
-///
-/// # Errors
-/// [`TransferError::BadIndex`] for an unknown tab;
-/// [`TransferError::Occupied`] when the footprint does not fit there.
-pub fn place_in_vault_at(
-    vault: &mut Vault,
-    item: Item,
-    tab: usize,
-    position: GridPos,
-    db: Option<&GameCache>,
-) -> Result<(), Rejected> {
-    let Some(target) = vault.sacks.get_mut(tab) else {
-        return Err(Rejected::because(item, TransferError::BadIndex));
-    };
-    let taken = vault_occupancy(&target.items, None, db);
-    if !fits_at(
-        &taken,
-        footprint(db, &item),
-        position,
-        (TAB_WIDTH, TAB_HEIGHT),
-    ) {
-        return Err(Rejected::because(item, TransferError::Occupied));
-    }
-    let mut item = item;
-    item.position = position;
-    target.items.push(VaultItem::new(item, 0, 0));
     Ok(())
 }
 
@@ -987,146 +840,6 @@ mod tests {
     }
 
     #[test]
-    fn place_in_vault_tab_never_spills_into_other_tabs() {
-        let mut vault = Vault::new(2);
-        place_in_vault_tab(
-            &mut vault,
-            item(r"records\item\equipmentweapon\sword_01.dbr"),
-            1,
-            None,
-        )
-        .unwrap();
-        assert!(vault.sacks[0].items.is_empty());
-        assert_eq!(vault.sacks[1].items.len(), 1);
-
-        // Fill tab 1 to the brim; the next placement reports NoRoom
-        // instead of drifting into the empty tab 0.
-        let mut placed = 1;
-        loop {
-            let overflow = place_in_vault_tab(
-                &mut vault,
-                item(r"records\item\equipmentweapon\sword_01.dbr"),
-                1,
-                None,
-            );
-            match overflow {
-                Ok(()) => placed += 1,
-                Err(rejected) => {
-                    assert_eq!(rejected.reason, TransferError::NoRoom);
-                    break;
-                }
-            }
-            assert!(placed < 1000, "tab never filled");
-        }
-        assert!(vault.sacks[0].items.is_empty());
-        assert_eq!(vault.sacks[1].items.len(), placed);
-
-        let rejected = place_in_vault_tab(
-            &mut vault,
-            item(r"records\item\equipmentweapon\sword_01.dbr"),
-            5,
-            None,
-        )
-        .unwrap_err();
-        assert_eq!(rejected.reason, TransferError::BadIndex);
-    }
-
-    #[test]
-    fn move_all_prefers_the_start_tab_and_spills_into_the_next() {
-        // 18×20 tab, 2×5 fallback footprint → 36 items fill a tab.
-        let mut vault = Vault::new(3);
-        let mut items: Vec<Item> = (0..40)
-            .map(|_| item(r"records\item\equipmentweapon\sword_01.dbr"))
-            .collect();
-        let outcome = move_all_into_vault(&mut items, &mut vault, 1, None);
-        assert_eq!(
-            outcome,
-            BulkOutcome {
-                placed: 40,
-                left_behind: 0,
-                spilled: 4,
-            }
-        );
-        assert!(items.is_empty());
-        assert_eq!(vault.sacks[1].items.len(), 36);
-        assert_eq!(vault.sacks[2].items.len(), 4);
-        assert!(vault.sacks[0].items.is_empty());
-    }
-
-    #[test]
-    fn move_all_wraps_to_earlier_tabs_and_leaves_the_overflow_in_place() {
-        let mut vault = Vault::new(2);
-        let mut items: Vec<Item> = (0..80)
-            .map(|_| item(r"records\item\equipmentweapon\sword_01.dbr"))
-            .collect();
-        let outcome = move_all_into_vault(&mut items, &mut vault, 1, None);
-        assert_eq!(
-            outcome,
-            BulkOutcome {
-                placed: 72,
-                left_behind: 8,
-                spilled: 36,
-            }
-        );
-        assert_eq!(items.len(), 8);
-        assert_eq!(vault.sacks[0].items.len(), 36);
-        assert_eq!(vault.sacks[1].items.len(), 36);
-    }
-
-    #[test]
-    fn copy_all_fills_the_vault_without_touching_the_source() {
-        let mut vault = Vault::new(1);
-        let items: Vec<Item> = (0..40)
-            .map(|_| item(r"records\item\equipmentweapon\sword_01.dbr"))
-            .collect();
-        let outcome = copy_all_into_vault(&items, &mut vault, 0, None);
-        assert_eq!(
-            outcome,
-            BulkOutcome {
-                placed: 36,
-                left_behind: 4,
-                spilled: 0,
-            }
-        );
-        assert_eq!(items.len(), 40);
-        assert_eq!(vault.sacks[0].items.len(), 36);
-    }
-
-    #[test]
-    fn bulk_transfers_of_an_empty_source_report_nothing() {
-        let mut vault = Vault::new(1);
-        let mut none: Vec<Item> = Vec::new();
-        assert_eq!(
-            move_all_into_vault(&mut none, &mut vault, 0, None),
-            BulkOutcome::default()
-        );
-        assert_eq!(
-            copy_all_into_vault(&none, &mut vault, 0, None),
-            BulkOutcome::default()
-        );
-        assert!(vault.sacks[0].items.is_empty());
-    }
-
-    #[test]
-    fn character_to_vault_round_trip_preserves_the_item() {
-        let bytes = player_bytes();
-        let mut character = parse_player(&bytes).unwrap();
-        let mut vault = Vault::new(2);
-
-        let taken = take_from_character(&mut character, 0, 0).unwrap();
-        let original = taken.clone();
-        let tab = place_in_vault(&mut vault, taken, 0, None).unwrap();
-        assert_eq!(tab, 0);
-        assert!(character.sacks[0].items.is_empty());
-
-        let back = take_from_vault(&mut vault, 0, 0).unwrap();
-        assert_eq!(back.item.base, original.base);
-        let sack = place_in_character(&mut character, back.item, 0, None).unwrap();
-        assert_eq!(sack, 0);
-        assert_eq!(character.sacks[0].items[0].base, original.base);
-    }
-
-    #[test]
     fn placement_avoids_existing_vault_items() {
         let mut vault = Vault::new(1);
         place_in_vault(&mut vault, item("records\\a.dbr"), 0, None).unwrap();
@@ -1182,46 +895,43 @@ mod tests {
 
     #[test]
     fn exact_placement_honors_position_and_rejects_overlap() {
-        let mut vault = Vault::new(1);
-        place_in_vault_at(
-            &mut vault,
-            item("records\\a.dbr"),
-            0,
-            GridPos { x: 3, y: 4 },
-            None,
-        )
-        .unwrap();
-        assert_eq!(
-            vault.sacks[0].items[0].item.position,
-            GridPos { x: 3, y: 4 }
-        );
-
-        // Fallback footprint is 2x5: overlapping cells are refused…
-        let rejected = place_in_vault_at(
-            &mut vault,
+        let bytes = player_bytes();
+        let mut character = parse_player(&bytes).unwrap();
+        // The main sack starts with one item at the origin; the
+        // fallback footprint is 2×5, so those cells are taken.
+        let rejected = place_in_character_at(
+            &mut character,
             item("records\\b.dbr"),
             0,
-            GridPos { x: 4, y: 8 },
+            GridPos { x: 1, y: 0 },
             None,
         )
         .unwrap_err();
         assert_eq!(rejected.reason, TransferError::Occupied);
-        // …and the item comes back intact.
+        // The item comes back intact.
         assert_eq!(rejected.item.base.file_stem(), "b");
 
         // Just clear of the first item is fine.
-        place_in_vault_at(&mut vault, *rejected.item, 0, GridPos { x: 5, y: 0 }, None).unwrap();
-        assert_eq!(vault.sacks[0].items.len(), 2);
+        place_in_character_at(
+            &mut character,
+            *rejected.item,
+            0,
+            GridPos { x: 5, y: 0 },
+            None,
+        )
+        .unwrap();
+        assert_eq!(character.sacks[0].items.len(), 2);
+        assert_eq!(character.sacks[0].items[1].position, GridPos { x: 5, y: 0 });
 
-        let bad_tab = place_in_vault_at(
-            &mut vault,
+        let bad_sack = place_in_character_at(
+            &mut character,
             item("records\\c.dbr"),
             7,
             GridPos { x: 0, y: 0 },
             None,
         )
         .unwrap_err();
-        assert_eq!(bad_tab.reason, TransferError::BadIndex);
+        assert_eq!(bad_sack.reason, TransferError::BadIndex);
     }
 
     #[test]
@@ -1291,21 +1001,24 @@ mod tests {
 
     #[test]
     fn occupancy_skip_frees_the_dragged_items_cells() {
-        let mut vault = Vault::new(1);
-        place_in_vault_at(
-            &mut vault,
+        let mut stash = Stash {
+            version: 2,
+            width: 18,
+            height: 20,
+            items: Vec::new(),
+        };
+        place_in_stash_at(
+            &mut stash,
             item("records\\a.dbr"),
-            0,
             GridPos { x: 0, y: 0 },
             None,
         )
         .unwrap();
-        let items = &vault.sacks[0].items;
         // With the item excluded, its own cells count as free — the
         // preview a drag shows over the item's original spot.
-        let without = vault_occupancy(items, Some(0), None);
+        let without = occupancy(&stash.items, Some(0), None);
         assert!(fits_at(&without, (2, 5), GridPos { x: 0, y: 0 }, (18, 20)));
-        let with = vault_occupancy(items, None, None);
+        let with = occupancy(&stash.items, None, None);
         assert!(!fits_at(&with, (2, 5), GridPos { x: 0, y: 0 }, (18, 20)));
         // Out of bounds is never a fit.
         assert!(!fits_at(
