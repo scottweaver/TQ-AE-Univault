@@ -158,7 +158,7 @@ only). No issue tracker is bound yet (deliberately deferred).
 | Branch | Purpose | Status |
 |---|---|---|
 | `main` | trunk | PRs #1–#52 all merged; all gates green |
-| `fix/projectile-speeds-ae` | mod: player projectile speed vs AE movement | composed + verified against the real database; **not installed** |
+| `fix/projectile-speeds-ae` | mod: player projectile speed vs AE movement | both bundles installed 2026-08-29; **awaiting the user's in-game pass** |
 
 ## Next up
 
@@ -229,10 +229,15 @@ buttons shipped in PR #44):
   from the composed bundle. Ruled out first that velocity drives
   range (`projectileDistance` is an independent cap; ballistic
   range and `dist` are uncorrelated across every `launchAngle`
-  record). 255 tests, both bundles compose and self-check. Risk:
-  no in-game pass — the percentages are reasoned from the data,
-  not felt, and 150% is a judgment call about what "fast enough"
-  means; bundles are built to scratch and **not installed**.
+  record). 255 tests, both bundles compose and self-check. Both
+  were recomposed onto the live CustomMaps on 2026-08-29 and
+  verified in place (Volcanic Orb 150, Thunderball 66, monster
+  venombolt untouched, earlier pet tunes intact — Core Dweller mana
+  875, Wildfire 3s). Risk: no in-game pass yet — the percentages
+  are reasoned from the data, not felt, and 150% is a judgment call
+  about what "fast enough" means. Backing it out is a recompose
+  with the two projectile rules dropped from
+  `mods/xmax3-tuned.json`.
 - **2026-08-29 — Every sort reads both ways (PR #52, merged).**
   User ask, one line: all sorting operations should offer
   ascending/descending. Two surfaces existed — the search table
