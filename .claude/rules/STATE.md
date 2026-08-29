@@ -239,7 +239,22 @@ buttons shipped in PR #44):
   the deliberate exception at velocity 28 (1.18s, from 3.00s); its
   projectile is shared only with Colossal Fire Elemental's meteor.
   Landing for the user's Earth/Nature build: the orb, Flame Surge
-  (19.92), and the Sylvan Nymph's arrow (33.2).
+  (19.92), and the Sylvan Nymph's arrow (33.2). Tuned by feel across
+  three rounds to velocity **55** (0.60s) once 28 still read slow.
+  **Cast speed, same session:** the user asked for a pass over every
+  skill's cast speed. There is none to make — no player skill carries
+  a cast-timing variable, and `characterSpellCastSpeedModifier` lives
+  only on buff/passive records as a character stat. It is set to
+  **66%** on the two `records\creature\pc\*pc01.dbr` records instead,
+  beside `characterRunSpeed`; that is the one home applying exactly
+  once, since a mastery grant would stack on a dual-mastery
+  character. Cap is `playerSpellCastSpeedCapMax = 300`. Unlike
+  projectile speed it is also a caster DPS multiplier. Unverified in
+  game, but **checkable without guessing**: the character sheet shows
+  Casting Speed as a percent.
+  `scripts/install-mods.sh` now rebuilds and installs both bundles
+  from the spec with path preflight and read-back — the tuning loop
+  is edit a number, run it, restart.
   Also established: velocity does not drive range
   (`projectileDistance` is an independent cap, uncorrelated with
   ballistic range across every `launchAngle` record). 255 tests;
