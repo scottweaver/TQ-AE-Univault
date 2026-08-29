@@ -229,11 +229,17 @@ buttons shipped in PR #44):
   player-side skills, follow `skillProjectileName` and fragment
   chains, scale `projectileVelocity` by 1.66 (anchored to
   `playerRunSpeedCapMax = 166` in `records\game\gameengine.dbr`).
-  It **refuses any projectile an enemy also fires** — 60 of the 82
-  reachable records, since velocity belongs to the projectile, not
-  the shooter — leaving 22 player-exclusive ones. Volcanic Orb is
+  It **refuses any projectile an enemy also fires**, since velocity
+  belongs to the projectile and not the shooter, and it decides per
+  *skill family* rather than per record: a skill names one
+  projectile per level (Low/Medium/full art tiers) and those tiers
+  are not shared alike, so speeding only the unshared ones made
+  Thunderball get *slower* as it levelled. 94 skills stay vanilla
+  under that rule; 16 projectiles take the 1.66x. Volcanic Orb is
   the deliberate exception at velocity 28 (1.18s, from 3.00s); its
   projectile is shared only with Colossal Fire Elemental's meteor.
+  Landing for the user's Earth/Nature build: the orb, Flame Surge
+  (19.92), and the Sylvan Nymph's arrow (33.2).
   Also established: velocity does not drive range
   (`projectileDistance` is an independent cap, uncorrelated with
   ballistic range across every `launchAngle` record). 255 tests;
