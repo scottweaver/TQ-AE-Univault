@@ -5,23 +5,24 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-29 (PR #52 merged — sorts read both ways)
+Last updated: 2026-08-29 (PR #54 merged — the duplicate-skip box)
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** PR #52 (every sort reads both ways) merged as
-`b67c8da`. The interactive acceptance pass over the store is still
-the first thing next session, and PR #52 adds to its checklist:
+**Resume here:** PR #54 (the duplicate-skip box) merged as
+`edc5f28`. The interactive acceptance pass over the store is still
+the first thing next session, and it has grown a three-item tail:
 **drag/drop into a bucket, bulk sends, ⌘F search, an export opened
-in TQVaultAE**, plus the new **▲/▼ direction toggle** beside the
-store's sort combo and the search table's column headers. None of
-those have been clicked (synthetic input is banned here). PR #50's
-own risk note still stands: it was merged on the user's explicit
-call without that pass; a regression there is fixed forward or
-reverted (`git revert da227aa`), not re-branched. First launch on
-the user's real config will create `vault-store.json` and migrate
-their vaults folder once, leaving the vault files untouched.
+in TQVaultAE**, the **▲/▼ sort-direction toggle** (store combo +
+search headers, PR #52), and the **Skip duplicates box** (PR #54 —
+bulk sends only). None of those have been clicked (synthetic input
+is banned here). PR #50's own risk note still stands: it was merged
+on the user's explicit call without that pass; a regression there
+is fixed forward or reverted (`git revert da227aa`), not
+re-branched. First launch on the user's real config will create
+`vault-store.json` and migrate their vaults folder once, leaving
+the vault files untouched.
 Older threads still open: the release-build pass over the
 component chrome (PRs #43/#44), then the UIX queue. Remaining
 game-art chrome surfaces (candidates for future components):
@@ -157,7 +158,7 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#52 all merged; all gates green |
+| `main` | trunk | PRs #1–#54 all merged; all gates green |
 
 ## Next up
 
@@ -183,8 +184,9 @@ that's better") and merged as PR #7.
 
 0. **The store's interactive acceptance pass** (merged, unverified):
    drops into a bucket, bulk sends, ⌘F search, an export opened in
-   TQVaultAE, and the ▲/▼ sort-direction toggle (store combo +
-   search headers, PR #52) — on the user's own config.
+   TQVaultAE, the ▲/▼ sort-direction toggle (store combo + search
+   headers, PR #52), and the Skip duplicates box (PR #54) — on the
+   user's own config.
 0b. **Component-ize remaining chrome surfaces as the user directs:**
    nameplates, plate buttons, grid cells, stone backdrop, tooltip
    frame — each through the preview + review loop first, from new
@@ -210,6 +212,22 @@ buttons shipped in PR #44):
 
 ## Most recent meaningful progress
 
+- **2026-08-29 — Skip duplicates: a bulk-send filter on the item
+  seed (PR #54, merged).** User ask: a checkbox that keeps a
+  move/copy from landing an item already stored — explicitly *not* a
+  uniqueness rule on the store, which may still hold duplicates that
+  arrived by other routes. Design-dialogued: "item ID" means the
+  **item seed** (the user's own clarification), matched within the
+  item's type bucket, and the box gates **bulk sends only** (the
+  user's pick) — single sends, right-click sends, and drops always
+  land. Core gains `ItemIdentity` + `DuplicateGuard`, an accumulator
+  so one batch can neither re-add what is stored nor duplicate
+  within itself; the guard admits *before* `drain_or_clone` takes
+  anything, so a skipped duplicate is never drained out of its sack
+  and its save-file bytes stay untouched. An all-skipped send
+  returns early without dirtying the source. 255 tests. Risk: the
+  box sits in the store pane while the buttons it governs are on
+  the left pane's headers, and nothing has been clicked yet.
 - **2026-08-29 — Every sort reads both ways (PR #52, merged).**
   User ask, one line: all sorting operations should offer
   ascending/descending. Two surfaces existed — the search table
@@ -336,18 +354,7 @@ buttons shipped in PR #44):
   fully-occluded windows freeze repaints, making imports look
   hung. Risk: look acceptance pending (first reaction positive);
   tooltip/search/modal surfaces still phase-1 styled.
-- **2026-08-27 — TQ AE look, phase 1 (PR #38, merged).** User
-  ask: the app is feature-rich but looks stock — retheme toward the
-  game (reference screenshots in `/Volumes/scott-games/
-  tq-ae-designs`). New `theme.rs`: bronze-and-gold palette over dark
-  leather/olive surfaces (gold-rimmed plaque buttons, olive sack
-  grids, near-black gold-ruled tooltips) and bundled OFL classical
-  serifs — Cinzel (headings, gold) + Alegreya (body) under
-  `assets/fonts/`; headings route through `theme::heading`. Decided
-  in-dialog: phase 2 will pull the game's real border/parchment art
-  through the cache for true TQ chrome — the egui restyle is the
-  foundation, not the end state. 223 tests. Risk: look acceptance is
-  wholly in the user's eyes; expect palette iteration.
+
 ## Blocked / waiting
 
 - *(nothing)*
