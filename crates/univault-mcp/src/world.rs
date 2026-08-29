@@ -10,16 +10,16 @@ use univault_core::gamedata::GameData;
 use univault_core::platform;
 use univault_core::respec::{self, Progression};
 use univault_core::stash::{self, Stash};
-use univault_core::vault::Vault;
+use univault_core::store::VaultStore;
 
 /// Where the server looks for everything. Environment variables
 /// override; defaults come from the same config directory the GUI
-/// writes (`game-dir.txt`, `recent-files.txt`, `vaults/`,
+/// writes (`game-dir.txt`, `recent-files.txt`, `vault-store.json`,
 /// `gamedata.cache`).
 #[derive(Debug, Clone)]
 pub struct Paths {
     pub save_roots: Vec<PathBuf>,
-    pub vaults_dir: Option<PathBuf>,
+    pub store_file: Option<PathBuf>,
     pub cache_file: Option<PathBuf>,
     pub game_dir: Option<PathBuf>,
     pub custom_maps: Option<PathBuf>,
@@ -32,9 +32,9 @@ impl Paths {
             Some(root) => vec![PathBuf::from(root)],
             None => recent_save_roots(config.as_deref()),
         };
-        let vaults_dir = std::env::var_os("UNIVAULT_VAULTS_DIR")
+        let store_file = std::env::var_os("UNIVAULT_STORE")
             .map(PathBuf::from)
-            .or_else(|| config.as_ref().map(|dir| dir.join("vaults")));
+            .or_else(|| config.as_ref().map(|dir| dir.join("vault-store.json")));
         let cache_file = config.as_ref().map(|dir| dir.join("gamedata.cache"));
         let game_dir = std::env::var_os("UNIVAULT_GAME_DIR")
             .map(PathBuf::from)
@@ -44,7 +44,7 @@ impl Paths {
             .or_else(|| custom_maps_near(&save_roots));
         Self {
             save_roots,
-            vaults_dir,
+            store_file,
             cache_file,
             game_dir,
             custom_maps,
@@ -235,41 +235,16 @@ pub fn load_stash(path: &Path) -> Result<Stash, String> {
     }
 }
 
-/// One vault file: the file stem and full path.
-#[derive(Debug, Clone)]
-pub struct VaultEntry {
-    pub name: String,
-    pub path: PathBuf,
-}
-
-pub fn list_vaults(dir: &Path) -> Vec<VaultEntry> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut vaults: Vec<VaultEntry> = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.is_file()
-                && path
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
-        })
-        .map(|path| VaultEntry {
-            name: path
-                .file_stem()
-                .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned()),
-            path,
-        })
-        .collect();
-    vaults.sort_by(|a, b| a.name.cmp(&b.name));
-    vaults
-}
-
-pub fn load_vault(path: &Path) -> Result<Vault, String> {
+/// Reads the unified item store. A store file that does not exist
+/// yet is an empty store, not an error — the GUI creates it on its
+/// first launch.
+pub fn load_store(path: &Path) -> Result<VaultStore, String> {
+    if !path.exists() {
+        return Ok(VaultStore::new());
+    }
     let text =
         std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
-    Vault::from_json(&text).map_err(|e| format!("parse {}: {e}", path.display()))
+    VaultStore::from_json(&text).map_err(|e| format!("parse {}: {e}", path.display()))
 }
 
 pub fn load_cache(path: &Path) -> Option<GameCache> {
@@ -309,15 +284,14 @@ mod tests {
     }
 
     #[test]
-    fn lists_vaults_sorted_by_stem() {
-        let base = std::env::temp_dir().join(format!("univault-mcp-vaults-{}", std::process::id()));
+    fn a_missing_store_reads_as_empty_and_a_bad_one_errors() {
+        let base = std::env::temp_dir().join(format!("univault-mcp-store-{}", std::process::id()));
         std::fs::create_dir_all(&base).unwrap();
-        std::fs::write(base.join("Zeta.json"), b"{}").unwrap();
-        std::fs::write(base.join("Main Vault.json"), b"{}").unwrap();
-        std::fs::write(base.join("notes.txt"), b"x").unwrap();
+        let missing = base.join("vault-store.json");
+        assert!(load_store(&missing).unwrap().is_empty());
 
-        let names: Vec<String> = list_vaults(&base).into_iter().map(|v| v.name).collect();
-        assert_eq!(names, ["Main Vault", "Zeta"]);
+        std::fs::write(&missing, b"{\"sacks\":[]}").unwrap();
+        assert!(load_store(&missing).is_err());
 
         std::fs::remove_dir_all(&base).unwrap();
     }

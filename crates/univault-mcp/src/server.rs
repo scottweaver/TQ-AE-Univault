@@ -16,7 +16,8 @@ use univault_core::cache::GameCache;
 use univault_core::chr::{self, AtlantisRelic, Item, ItemSeed, RecordId};
 use univault_core::gamedata::GameData;
 use univault_core::respec::Progression;
-use univault_core::{skilltree, stats, style, vault};
+use univault_core::store::{Bucket, Family, VaultStore};
+use univault_core::{skilltree, stats, store, style, vault};
 
 use crate::gamedb::{self, IndexEntry, Provenance};
 use crate::view;
@@ -170,33 +171,13 @@ impl Univault {
             })
     }
 
-    fn resolve_vault(&self, wanted: &str) -> Result<world::VaultEntry, String> {
-        let as_path = Path::new(wanted);
-        if as_path.is_file() {
-            return Ok(world::VaultEntry {
-                name: as_path.file_stem().map_or_else(
-                    || wanted.to_string(),
-                    |stem| stem.to_string_lossy().into_owned(),
-                ),
-                path: as_path.to_path_buf(),
-            });
-        }
-        let vaults = self.vaults();
-        vaults
-            .iter()
-            .find(|entry| entry.name.eq_ignore_ascii_case(wanted))
-            .cloned()
-            .ok_or_else(|| {
-                let names: Vec<&str> = vaults.iter().map(|entry| entry.name.as_str()).collect();
-                format!("no vault named '{wanted}' (known: {})", names.join(", "))
-            })
-    }
-
-    fn vaults(&self) -> Vec<world::VaultEntry> {
-        self.paths
-            .vaults_dir
-            .as_deref()
-            .map_or_else(Vec::new, world::list_vaults)
+    /// Reads the unified item store from disk each time it is asked
+    /// for: the GUI autosaves it, so caching would serve stale items.
+    fn store(&self) -> Result<VaultStore, String> {
+        let path = self.paths.store_file.as_deref().ok_or_else(|| {
+            "no item store configured: set UNIVAULT_STORE or run the GUI once".to_string()
+        })?;
+        world::load_store(path)
     }
 
     fn game_data(&self) -> Result<Arc<GameData>, String> {
@@ -318,6 +299,22 @@ fn or_fail<T: serde::Serialize>(result: Result<T, String>) -> CallToolResult {
     }
 }
 
+/// Matches a caller's type name against the store's buckets, listing
+/// the valid ones when it misses.
+fn resolve_bucket(wanted: &str) -> Result<Bucket, String> {
+    let all: Vec<Bucket> = Family::ALL
+        .into_iter()
+        .flat_map(|family| family.buckets().iter().copied())
+        .collect();
+    all.iter()
+        .find(|bucket| bucket.label().eq_ignore_ascii_case(wanted))
+        .copied()
+        .ok_or_else(|| {
+            let names: Vec<&str> = all.iter().map(|bucket| bucket.label()).collect();
+            format!("no item type '{wanted}' (known: {})", names.join(", "))
+        })
+}
+
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct CharacterParams {
     /// Character name (case-insensitive, substrings accepted) or a
@@ -353,10 +350,11 @@ impl From<BankKindParam> for BankKind {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
-pub struct VaultParams {
-    /// Vault name (file stem, case-insensitive) or a full path to a
-    /// vault .json file.
-    pub vault: String,
+pub struct StoreParams {
+    /// A type bucket's name, case-insensitive (e.g. "Ring", "Sword",
+    /// "Torso armor"). Omit for the whole store.
+    #[serde(default)]
+    pub bucket: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -458,11 +456,10 @@ const DEFAULT_DIFF_LIMIT: usize = 100;
 #[tool_router]
 impl Univault {
     #[tool(
-        description = "What this server can see right now: game cache state, save roots, characters, banks, vaults, and the game install. Call this first to orient."
+        description = "What this server can see right now: game cache state, save roots, characters, banks, the item store, and the game install. Call this first to orient."
     )]
     fn overview(&self) -> CallToolResult {
         let characters = self.characters();
-        let vaults = self.vaults();
         ok_json(&json!({
             "cache": self.cache.as_ref().map_or_else(
                 || json!({"loaded": false, "note": "item names/stats degrade to record stems; run the GUI import once to build it"}),
@@ -472,7 +469,13 @@ impl Univault {
             "characters": characters.iter().map(|c| c.name.clone()).collect::<Vec<_>>(),
             "shared_banks": self.unique_bank_paths(BankKind::Shared).len(),
             "relic_banks": self.unique_bank_paths(BankKind::Relic).len(),
-            "vaults": vaults.iter().map(|v| v.name.clone()).collect::<Vec<_>>(),
+            "store": match self.store() {
+                Ok(store) => json!({
+                    "path": self.paths.store_file.as_ref().map(|p| p.display().to_string()),
+                    "items": store.len(),
+                }),
+                Err(error) => json!({"error": error}),
+            },
             "game_dir": self.paths.game_dir.as_ref().map(|p| p.display().to_string()),
             "mods": self
                 .mod_entries()
@@ -544,51 +547,72 @@ impl Univault {
         or_fail(result)
     }
 
-    #[tool(description = "List the vault files (external item storage) this server can see.")]
-    fn list_vaults(&self) -> CallToolResult {
-        ok_json(
-            &self
-                .vaults()
-                .iter()
-                .map(|entry| {
-                    json!({
-                        "name": entry.name,
-                        "path": entry.path.display().to_string(),
-                    })
-                })
-                .collect::<Vec<_>>(),
-        )
-    }
-
-    #[tool(description = "Every item in one vault, tab by tab.")]
-    fn get_vault(&self, Parameters(params): Parameters<VaultParams>) -> CallToolResult {
-        let result = self.resolve_vault(&params.vault).and_then(|entry| {
-            let loaded = world::load_vault(&entry.path)?;
-            Ok(json!({
-                "name": entry.name,
-                "path": entry.path.display().to_string(),
-                "tab_width": vault::TAB_WIDTH,
-                "tab_height": vault::TAB_HEIGHT,
-                "tabs": loaded
-                    .sacks
-                    .iter()
-                    .enumerate()
-                    .map(|(index, sack)| json!({
-                        "tab": index,
-                        "items": sack
-                            .items
+    #[tool(
+        description = "The item store's type buckets and how many items each holds. Buckets are computed from each item's own record — nothing is filed by hand — so they are always accurate."
+    )]
+    fn list_buckets(&self) -> CallToolResult {
+        let result = self.store().map(|store| {
+            let db = self.db();
+            let mut counts: HashMap<Bucket, usize> = HashMap::new();
+            for entry in store.entries() {
+                *counts.entry(store::bucket_of(db, &entry.item)).or_insert(0) += 1;
+            }
+            json!({
+                "path": self.paths.store_file.as_ref().map(|p| p.display().to_string()),
+                "total_items": store.len(),
+                "families": Family::ALL
+                    .into_iter()
+                    .map(|family| json!({
+                        "family": family.label(),
+                        "buckets": family
+                            .buckets()
                             .iter()
-                            .map(|entry| view::item_view(self.db(), &entry.item))
+                            .map(|bucket| json!({
+                                "type": bucket.label(),
+                                "items": counts.get(bucket).copied().unwrap_or(0),
+                            }))
                             .collect::<Vec<_>>(),
                     }))
                     .collect::<Vec<_>>(),
+            })
+        });
+        or_fail(result)
+    }
+
+    #[tool(
+        description = "Items in the store. With no 'bucket', returns everything; with one (a type name like 'Ring' or 'Sword', case-insensitive), only that type."
+    )]
+    fn get_store(&self, Parameters(params): Parameters<StoreParams>) -> CallToolResult {
+        let result = self.store().and_then(|store| {
+            let db = self.db();
+            let wanted = match params.bucket.as_deref() {
+                None => None,
+                Some(name) => Some(resolve_bucket(name)?),
+            };
+            let items: Vec<Value> = store
+                .entries()
+                .filter(|entry| {
+                    wanted.is_none_or(|bucket| store::bucket_of(db, &entry.item) == bucket)
+                })
+                .map(|entry| {
+                    let mut item = json!(view::item_view(db, &entry.item));
+                    item["type"] = json!(store::bucket_of(db, &entry.item).label());
+                    item
+                })
+                .collect();
+            Ok(json!({
+                "path": self.paths.store_file.as_ref().map(|p| p.display().to_string()),
+                "bucket": wanted.map(Bucket::label),
+                "total_items": store.len(),
+                "shown": items.len(),
+                "items": items,
             }))
         });
         or_fail(result)
     }
 
     #[tool(
-        description = "Search every possession — all characters' equipment, inventories and personal banks, the shared and relic banks, and every vault — by item name or record path. Each hit carries its exact location."
+        description = "Search every possession — all characters' equipment, inventories and personal banks, the shared and relic banks, and the item store — by item name or record path. Each hit carries its exact location."
     )]
     fn search_items(&self, Parameters(params): Parameters<SearchParams>) -> CallToolResult {
         let wanted = params.query.to_lowercase();
@@ -651,17 +675,12 @@ impl Univault {
                 }
             }
         }
-        for entry in self.vaults() {
-            let Ok(loaded) = world::load_vault(&entry.path) else {
-                continue;
-            };
-            for (index, sack) in loaded.sacks.iter().enumerate() {
-                for vault_item in &sack.items {
-                    consider(
-                        format!("vault '{}' › tab {index}", entry.name),
-                        &vault_item.item,
-                    );
-                }
+        if let Ok(store) = self.store() {
+            for entry in store.entries() {
+                consider(
+                    format!("store › {}", store::bucket_of(db, &entry.item).label()),
+                    &entry.item,
+                );
             }
         }
 
@@ -1017,13 +1036,14 @@ impl ServerHandler for Univault {
         info.instructions = Some(
             "Read-only access to a Titan Quest Anniversary Edition install: \
              characters (stats, builds, equipment, inventory), the personal/shared/relic \
-             banks, TQVaultAE-compatible vault files, item stat sheets, mastery skill \
-             trees, and the entire game database — every record (monsters, skills, loot \
-             tables, equations) via search_records/get_record, with the installed \
-             CustomMaps mod bundle overlaid by default and diffable against vanilla \
-             (diff_record/diff_mod). Nothing is ever written. Call `overview` first to \
-             see what is configured; paths come from the tq-univault GUI's config and \
-             the UNIVAULT_SAVE_ROOT / UNIVAULT_VAULTS_DIR / UNIVAULT_GAME_DIR / \
+             banks, the app's unified item store (list_buckets/get_store — items are \
+             filed into type buckets computed from their own records), item stat sheets, \
+             mastery skill trees, and the entire game database — every record (monsters, \
+             skills, loot tables, equations) via search_records/get_record, with the \
+             installed CustomMaps mod bundle overlaid by default and diffable against \
+             vanilla (diff_record/diff_mod). Nothing is ever written. Call `overview` \
+             first to see what is configured; paths come from the tq-univault GUI's \
+             config and the UNIVAULT_SAVE_ROOT / UNIVAULT_STORE / UNIVAULT_GAME_DIR / \
              UNIVAULT_CUSTOMMAPS environment variables."
                 .into(),
         );
