@@ -7,7 +7,7 @@
   "notes": [
     "Projectile speed: AE lets a player reach 166% movement (playerRunSpeedCapMax in records\\game\\gameengine.dbr) while projectile velocities stayed at their 2006 values, so every cast trails the pace of the fight. multiply_player_projectiles 1.66 restores that ratio.",
     "skillProjectileSpeedModifier on the casting skill was tried first and measured inert in game — Volcanic Orb still took its vanilla 3.0s at 150. It is a character stat granted by passives and gear (Marksmanship, quivers), not a per-skill override. Only projectileVelocity moves flight time.",
-    "Volcanic Orb is the outlier: velocity 11 over range 33 is a 3.00s flight, the slowest of any player skill against a 1.3-1.6s norm. 1.66x leaves it at 1.81s, still worst in class, so its projectile is set to 28 for a 1.18s flight. VolcanicOrbLobbed01 is also fired by Colossal Fire Elemental's meteor, which speeds up with it."
+    "Volcanic Orb is the outlier: velocity 11 over range 33 is a 3.00s flight, the slowest of any player skill against a 1.3-1.6s norm. Tuned by feel against the user's own casts — 28 (1.18s) read as 'noticeably faster but still slow', so it sits at 55 for a 0.60s flight at full range. Flight time at full range is 33/velocity; the engine ships ProjectileExploding records up to 100, so there is headroom either way. VolcanicOrbLobbed01 is also fired by Colossal Fire Elemental's meteor, which speeds up with it."
   ],
   "rules": [
     {
@@ -50,7 +50,7 @@
         "records\\effects\\earth\\volcanicorblobbed01_low.dbr"
       ],
       "set": {
-        "projectileVelocity": 28.0
+        "projectileVelocity": 55.0
       }
     },
     {
