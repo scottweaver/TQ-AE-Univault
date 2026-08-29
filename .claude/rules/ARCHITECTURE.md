@@ -40,7 +40,10 @@ bootstrap Q&A).
   base record), never stored membership — so an item cannot be
   misfiled, and moving or copying its bytes cannot change what it is.
   Buckets are unbounded: the store has no capacity, and no grid
-  positions are persisted. Renegotiated 2026-08-29 (virtual-tabs
+  positions are persisted. An embedded DBMS (redb, SQLite)
+  was weighed and declined in the same dialog: at ~10⁴ items the
+  whole store loads and filters in memory, and SQLite is exactly the
+  native dependency the "pure-Rust preferred" rule below gates. Renegotiated 2026-08-29 (virtual-tabs
   design dialog) from "vault files in this app's own native format",
   which made a tab an arbitrary bucket the user had to fill by hand.
   (2026-08-29)

@@ -26,6 +26,7 @@ decide which file is authoritative for a given decision.
 | Workflow: branching, PRs, refactors, post-merge cleanup | `METHODOLOGIES.md`       |
 | Binding architecture constraints                        | `ARCHITECTURE.md`        |
 | Current project state, in-flight work, what's next      | `STATE.md`               |
+| Framework landmines, dev loop, machine/CI quirks         | `WORKING_NOTES.md`       |
 
 `STATE.md` is the rehydration document: every agent session starts by
 reading it. Stable architecture docs win over `STATE.md` on questions
