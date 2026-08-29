@@ -217,27 +217,31 @@ buttons shipped in PR #44):
   that prompted it was Volcanic Orb's travel time. The database
   agreed — Volcanic Orb fires at velocity 11 over range 33, a 3.00s
   flight, the slowest of any player skill against a 1.3–1.6s norm.
-  New modforge rule `set_player_projectile_speed` writes the
-  engine's own per-skill `skillProjectileSpeedModifier` (66%,
-  anchored to `playerRunSpeedCapMax = 166` in
-  `records\game\gameengine.dbr`) onto the 127 player-side skills
-  that fire a projectile, with Volcanic Orb's four variants set to
-  150% for a 1.20s flight. The modifier goes on the **casting
-  skill**, never the projectile record: 48 of the 69 projectiles a
-  player skill can reach are also fired by monsters, so editing
-  those would have handed enemies the same buff — verified absent
-  from the composed bundle. Ruled out first that velocity drives
-  range (`projectileDistance` is an independent cap; ballistic
-  range and `dist` are uncorrelated across every `launchAngle`
-  record). 255 tests, both bundles compose and self-check. Both
-  were recomposed onto the live CustomMaps on 2026-08-29 and
-  verified in place (Volcanic Orb 150, Thunderball 66, monster
-  venombolt untouched, earlier pet tunes intact — Core Dweller mana
-  875, Wildfire 3s). Risk: no in-game pass yet — the percentages
-  are reasoned from the data, not felt, and 150% is a judgment call
-  about what "fast enough" means. Backing it out is a recompose
-  with the two projectile rules dropped from
-  `mods/xmax3-tuned.json`.
+  **A dead end worth recording:** the first build wrote
+  `skillProjectileSpeedModifier` on the casting skill, reasoning
+  from the vanilla monster records that carry it. The user timed it
+  in game — still 3.0s at 150, completely inert. That variable is a
+  **character stat** granted by passives and gear (Marksmanship,
+  quivers); it is not a per-skill override, and no amount of it on
+  an attack skill moves a projectile. Only `projectileVelocity` on
+  the projectile record does.
+  The shipped rule is `multiply_player_projectiles`: walk
+  player-side skills, follow `skillProjectileName` and fragment
+  chains, scale `projectileVelocity` by 1.66 (anchored to
+  `playerRunSpeedCapMax = 166` in `records\game\gameengine.dbr`).
+  It **refuses any projectile an enemy also fires** — 60 of the 82
+  reachable records, since velocity belongs to the projectile, not
+  the shooter — leaving 22 player-exclusive ones. Volcanic Orb is
+  the deliberate exception at velocity 28 (1.18s, from 3.00s); its
+  projectile is shared only with Colossal Fire Elemental's meteor.
+  Also established: velocity does not drive range
+  (`projectileDistance` is an independent cap, uncorrelated with
+  ballistic range across every `launchAngle` record). 255 tests;
+  both bundles installed 2026-08-29 and verified in place (orb
+  projectile 28, shared `Staff_Ice_04` absent, Core Dweller mana
+  875). Risk: the 1.66 sweep is still unfelt — only the orb has
+  been timed. Backing out is a recompose with the two projectile
+  rules dropped from `mods/xmax3-tuned.json`.
 - **2026-08-29 — Every sort reads both ways (PR #52, merged).**
   User ask, one line: all sorting operations should offer
   ascending/descending. Two surfaces existed — the search table
