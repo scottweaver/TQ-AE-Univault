@@ -5,7 +5,7 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-30 (PR #81 open — blanket cooldown tune, bundles installed)
+Last updated: 2026-08-30 (PR #83 open — Normal pet durability, bundles installed)
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
@@ -70,12 +70,15 @@ great!"): `LootPlus1MAXTuned` (PR #65) — vanilla density, XP ×3 —
 plays at the pace it was built for, so the XP factor is settled.
 **Do not re-tune the `* 3`** in `mods/1max.json` without a fresh
 complaint; the feared hero-pack hot spot (×3 spawns × ×3 XP = nine
-times vanilla hero XP) did not bite. Three mod
-tunes are still live and **unplayed**: the blanket cooldown tune
+times vanilla hero XP) did not bite. Four mod
+tunes are still live and **unplayed**: Normal pet durability
+(PR #83, 2026-08-30 — every Pet-class summon gets half of Epic's
+defensive scaling in Normal via `petgamebalanceattributes.dbr`;
+all three bundles rebuilt + installed), the blanket cooldown tune
 (PR #81, 2026-08-30 — every investable skill's cooldown now falls
-per point, >10s baselines cut 20%, >60s halved; all three bundles
-rebuilt + installed), Phantom Strike `characterRunSpeedModifier`
-0→500 (PR #58), and Psionic Burn `skillTargetRadius` 3.5→6.0
+per point, >10s baselines cut 20%, >60s halved), Phantom Strike
+`characterRunSpeedModifier` 0→500 (PR #58), and Psionic Burn
+`skillTargetRadius` 3.5→6.0
 (PR #61). All need only an in-game pass after a session restart. If the blink still
 feels slow, the next suspect is `playerRunSpeedCapMax` (166) clamping
 the 500 — a global affecting all player run speed, so **ask before
@@ -127,9 +130,10 @@ forward or reverted (`git revert da227aa`), not re-branched.
 - **Known gap, unfixed:** `get_mastery` / `list_masteries` call
   `game_data()` directly, so MCP skill trees are always vanilla while
   the record tools overlay the installed bundle. Listed under "Next up".
-- User in-game checks outstanding (mod acceptance): **the blanket
-  cooldown tune (PR #81), Phantom Strike blink speed (PR #58), and
-  Psionic Burn radius (PR #61) — the freshest three**; pet Energy ×2.5 / regen ×1.75 on Core Dweller (875 /
+- User in-game checks outstanding (mod acceptance): **Normal pet
+  durability (PR #83), the blanket cooldown tune (PR #81), Phantom
+  Strike blink speed (PR #58), and Psionic Burn radius (PR #61) —
+  the freshest four**; pet Energy ×2.5 / regen ×1.75 on Core Dweller (875 /
   5.25 at level 20) and Call of the Wild wolves (255 / 3.5); vanilla
   XP restored (even-level trash mob on Normal ≈ level×15); target
   caps ×3 in dense packs; 2026-08-26 Core Dweller tune. Older
@@ -170,7 +174,8 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#80 all merged; all gates green |
+| `main` | trunk | PRs #1–#82 all merged; all gates green |
+| `mod-pet-normal-durability` | Normal-difficulty pet durability tune (spec + docs) | PR #83 open; bundles already rebuilt + installed |
 | `worktree-fix+projectile-speeds-ae` | a parallel session's cast-speed / DPS docs work | pushed, no PR; locked worktree under `.claude/worktrees/` — not the main session's to touch |
 | `worktree-mcp-overlay-and-coverage` | a parallel session's MCP mod-overlay / coverage work | pushed, no PR; checked out in its own worktree — not this session's to touch |
 
@@ -236,6 +241,28 @@ buttons shipped in PR #44):
    the whole store loads and filters in memory.
 
 ## Most recent meaningful progress
+
+- **2026-08-30 — Mod: Normal-difficulty pets get half of Epic's
+  defenses (PR #83).** User observation, confirmed in data: pets are
+  fragile in Normal because the game's own difficulty scaling gives
+  them almost nothing there. The engine feeds every Pet-class summon
+  through `records\game\petgamebalanceattributes.dbr` (named by
+  `gameengine.dbr`'s `petAttributePak`), whose arrays are 3
+  difficulties × 6 acts: Normal grants life +0→85% and zero
+  DA/resists/armor (plus a −10% attack-speed penalty) while Epic
+  opens at +100% life, +350 DA, +12–15% resists, +80 armor. One
+  `record`/`set` rule in `xmax3-tuned.json` (no code change)
+  rewrites only the Normal segment to half of Epic's opening
+  values — life +50→100% meeting Epic's start, DA +175, regen +25%,
+  resists 6–8% (physical 2.5), armor +40, attack-speed penalty
+  removed (both user picks from presented options). Epic/Legendary
+  byte-identical; offense arrays untouched. All three bundles
+  rebuilt + installed; composed x3 dump-verified. 212 tests, clippy
+  clean. Risks stated to the user: enemy-owned summons (dark-obelisk
+  raises, broodmother spawns) share the Pet class and get the same
+  Normal-only bump; scroll pets (`PetNonScaling`) don't scale; +175
+  DA in early Normal may make pets nearly unhittable for a few acts
+  — the curve is theirs to bless in game.
 
 - **2026-08-30 — Mod: blanket cooldown tune, all bundles (PR #81).**
   User ask, three rules: every invested point shortens a skill's
@@ -432,22 +459,6 @@ buttons shipped in PR #44):
   installed bundles make `mod`-less record calls error). Risk: none,
   nothing changed.
 
-- **2026-08-29 — Skip duplicates: a bulk-send filter on the item
-  seed (PR #54, merged).** User ask: a checkbox that keeps a
-  move/copy from landing an item already stored — explicitly *not* a
-  uniqueness rule on the store, which may still hold duplicates that
-  arrived by other routes. Design-dialogued: "item ID" means the
-  **item seed** (the user's own clarification), matched within the
-  item's type bucket, and the box gates **bulk sends only** (the
-  user's pick) — single sends, right-click sends, and drops always
-  land. Core gains `ItemIdentity` + `DuplicateGuard`, an accumulator
-  so one batch can neither re-add what is stored nor duplicate
-  within itself; the guard admits *before* `drain_or_clone` takes
-  anything, so a skipped duplicate is never drained out of its sack
-  and its save-file bytes stay untouched. An all-skipped send
-  returns early without dirtying the source. 255 tests. Risk: the
-  box sits in the store pane while the buttons it governs are on
-  the left pane's headers, and nothing has been clicked yet.
 ## Blocked / waiting
 
 - *(nothing)*
