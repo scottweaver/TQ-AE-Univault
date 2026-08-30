@@ -9,7 +9,7 @@
 //! placement returns the item to the caller instead of dropping it.
 
 use crate::cache::GameCache;
-use crate::chr::{EquipSlot, GridPos, Item, PlayerCharacter, sack_dimensions};
+use crate::chr::{EquipSlot, GridPos, Item, PlayerCharacter, RecordId, sack_dimensions};
 use crate::gamedata::FALLBACK_FOOTPRINT;
 use crate::grid::{CellRect, find_open_cells, fits as grid_fits};
 use crate::stash::Stash;
@@ -414,17 +414,24 @@ pub enum ExtractError {
     NoRelic,
 }
 
+/// Every socket of `item` currently holding a relic/charm, paired
+/// with the record it holds, in extraction order. Keeps where each
+/// socket lives in the item model a core concern.
+pub fn socketed_slots(item: &Item) -> impl Iterator<Item = (RelicSlot, &RecordId)> {
+    let first = item.relic.as_ref().map(|record| (RelicSlot::First, record));
+    let second = item
+        .atlantis
+        .as_ref()
+        .and_then(|extra| extra.relic.as_ref())
+        .map(|record| (RelicSlot::Second, record));
+    first.into_iter().chain(second)
+}
+
 /// The socket an extraction would take from, first socket first;
 /// `None` when nothing is socketed.
 #[must_use]
 pub fn socketed_slot(item: &Item) -> Option<RelicSlot> {
-    if item.relic.is_some() {
-        return Some(RelicSlot::First);
-    }
-    item.atlantis
-        .as_ref()
-        .and_then(|extra| extra.relic.as_ref())
-        .map(|_| RelicSlot::Second)
+    socketed_slots(item).next().map(|(slot, _)| slot)
 }
 
 /// Splits the socketed relic/charm out of `gear` without destroying
@@ -492,6 +499,93 @@ pub fn socket_relic(target: &mut Item, piece: Item) {
     target.var1 = shard_count(&piece);
     target.relic_bonus = piece.relic_bonus;
     target.relic = Some(piece.base);
+}
+
+/// Whether an item's completion bonus can be (re)picked, and when it
+/// cannot, why — the shell both gates the gesture and explains the
+/// refusal from this one answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BonusPick {
+    Ready,
+    /// A relic/charm still short of completion; a bonus only exists
+    /// once the piece is whole.
+    Incomplete {
+        have: i32,
+        needed: i32,
+    },
+    /// A relic, charm, or artifact whose record carries no bonus
+    /// table — it completes bonus-less.
+    NoTable,
+    /// Anything that never rolls a completion bonus.
+    NotAPiece,
+}
+
+/// Classifies `item` for the completion-bonus picker. Artifacts
+/// qualify without a shard count (they inherit their formula's
+/// table); gear carrying a socketed piece does not — the bonus on
+/// the gear belongs to the socket, and is re-picked by extracting
+/// the piece first.
+#[must_use]
+pub fn bonus_pick(db: Option<&GameCache>, item: &Item) -> BonusPick {
+    let Some(db) = db else {
+        return BonusPick::NotAPiece;
+    };
+    let needed = db.completed_relic_level(&item.base);
+    if needed.is_none() && !db.is_artifact(&item.base) {
+        return BonusPick::NotAPiece;
+    }
+    if let Some(needed) = needed
+        && item.var1 < needed
+    {
+        return BonusPick::Incomplete {
+            have: item.var1,
+            needed,
+        };
+    }
+    if db.relic_bonuses(&item.base).is_empty() {
+        return BonusPick::NoTable;
+    }
+    BonusPick::Ready
+}
+
+/// A relic/charm operation an item affords right now. The shell owns
+/// how each is reached — these name the operation, not the gesture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Affordance<'a> {
+    /// Gear holding `piece`: it can be split back out
+    /// ([`extract_relic`]). Carrying the record means a shell that
+    /// names the piece cannot reach for one that isn't there.
+    ExtractSocketed { piece: &'a RecordId },
+    /// A standalone relic/charm: it can go into gear its type rules
+    /// allow ([`socket_relic`]).
+    SocketIntoGear,
+    /// A partial piece: its shards can pour into a matching partial
+    /// ([`combine_shards`]).
+    CombineShards,
+    /// A completed piece or an artifact: its completion bonus can be
+    /// (re)picked.
+    PickBonus,
+}
+
+/// Every relic/charm operation `item` affords, in the order a shell
+/// should list them. Empty for ordinary items — most tooltips say
+/// nothing.
+#[must_use]
+pub fn affordances<'a>(db: Option<&GameCache>, item: &'a Item) -> Vec<Affordance<'a>> {
+    let mut found = Vec::new();
+    if let Some((_, piece)) = socketed_slots(item).next() {
+        found.push(Affordance::ExtractSocketed { piece });
+    }
+    let is_piece = db.is_some_and(|db| db.completed_relic_level(&item.base).is_some());
+    if is_piece {
+        found.push(Affordance::SocketIntoGear);
+    }
+    if db.is_some_and(|db| db.is_incomplete_relic(item)) {
+        found.push(Affordance::CombineShards);
+    } else if bonus_pick(db, item) == BonusPick::Ready {
+        found.push(Affordance::PickBonus);
+    }
+    found
 }
 
 #[cfg(test)]
@@ -594,6 +688,30 @@ mod tests {
                 ("helmet", Values::Bools(&[true])),
                 ("bodyArmor", Values::Bools(&[true])),
                 ("sword", Values::Bools(&[false])),
+                (
+                    "bonusTableName",
+                    Values::Strings(&["records\\item\\bonus\\table.dbr"]),
+                ),
+            ],
+        );
+        builder.record(
+            "records\\item\\bonus\\table.dbr",
+            "LootRandomizerTable",
+            &[
+                (
+                    "randomizerName1",
+                    Values::Strings(&["records\\item\\bonus\\ofthebear.dbr"]),
+                ),
+                ("randomizerWeight1", Values::Ints(&[10])),
+            ],
+        );
+        // A relic that completes bonus-less — no table to pick from.
+        builder.record(
+            "records\\item\\relics\\plain.dbr",
+            "ItemRelic",
+            &[
+                ("completedRelicLevel", Values::Ints(&[2])),
+                ("helmet", Values::Bools(&[true])),
             ],
         );
         builder.record(
@@ -620,6 +738,21 @@ mod tests {
             "records\\xpack\\item\\artifacts\\fool.dbr",
             "ItemArtifact",
             &[],
+        );
+        // An artifact's bonus table hangs off its formula record.
+        builder.record(
+            "records\\xpack\\item\\artifacts\\foolformula.dbr",
+            "ItemArtifactFormula",
+            &[
+                (
+                    "artifactName",
+                    Values::Strings(&["records\\xpack\\item\\artifacts\\fool.dbr"]),
+                ),
+                (
+                    "artifactBonusTableName",
+                    Values::Strings(&["records\\item\\bonus\\table.dbr"]),
+                ),
+            ],
         );
         let data = GameData::from_parts(ArzFile::parse(builder.build()).unwrap(), TextDb::new());
         data.build_cache(Vec::new())
@@ -699,6 +832,105 @@ mod tests {
         // The sentinel means "completed", not a count of two million.
         assert_eq!(piece.var1, 3);
         assert!(gear.atlantis.is_none());
+    }
+
+    #[test]
+    fn socketed_slots_pairs_every_filled_socket_with_its_record() {
+        let mut gear = shard(r"records\item\equipmenthelm\bronzehelm.dbr", 0);
+        assert_eq!(socketed_slots(&gear).count(), 0);
+
+        gear.relic = RecordId::parse(r"records\item\animalrelics\boarhide.dbr".to_string());
+        gear.atlantis = Some(crate::chr::AtlantisRelic {
+            relic: RecordId::parse(r"records\item\relics\plain.dbr".to_string()),
+            bonus: None,
+            var2: 0,
+        });
+        let filled: Vec<(RelicSlot, &str)> = socketed_slots(&gear)
+            .map(|(slot, record)| (slot, record.as_str()))
+            .collect();
+        assert_eq!(
+            filled,
+            vec![
+                (RelicSlot::First, r"records\item\animalrelics\boarhide.dbr"),
+                (RelicSlot::Second, r"records\item\relics\plain.dbr"),
+            ]
+        );
+    }
+
+    #[test]
+    fn bonus_pick_names_why_a_pick_is_unavailable() {
+        let db = charm_db();
+        let partial = shard(r"records\item\animalrelics\boarhide.dbr", 1);
+        assert_eq!(
+            bonus_pick(Some(&db), &partial),
+            BonusPick::Incomplete { have: 1, needed: 3 }
+        );
+        assert_eq!(
+            bonus_pick(
+                Some(&db),
+                &shard(r"records\item\animalrelics\boarhide.dbr", 3)
+            ),
+            BonusPick::Ready
+        );
+        // A completed piece whose record carries no table.
+        assert_eq!(
+            bonus_pick(Some(&db), &shard(r"records\item\relics\plain.dbr", 2)),
+            BonusPick::NoTable
+        );
+        // Artifacts qualify without a shard count, from their formula.
+        assert_eq!(
+            bonus_pick(
+                Some(&db),
+                &shard(r"records\xpack\item\artifacts\fool.dbr", 0)
+            ),
+            BonusPick::Ready
+        );
+        // Gear never rolls one — the bonus it shows belongs to a socket.
+        let mut socketed = shard(r"records\item\equipmenthelm\bronzehelm.dbr", 3);
+        socketed.relic = RecordId::parse(r"records\item\animalrelics\boarhide.dbr".to_string());
+        assert_eq!(bonus_pick(Some(&db), &socketed), BonusPick::NotAPiece);
+        assert_eq!(bonus_pick(None, &partial), BonusPick::NotAPiece);
+    }
+
+    #[test]
+    fn affordances_name_the_operations_each_item_offers() {
+        let db = charm_db();
+        let db = Some(&db);
+        assert_eq!(
+            affordances(db, &shard(r"records\item\animalrelics\boarhide.dbr", 1)),
+            vec![Affordance::SocketIntoGear, Affordance::CombineShards]
+        );
+        assert_eq!(
+            affordances(db, &shard(r"records\item\animalrelics\boarhide.dbr", 3)),
+            vec![Affordance::SocketIntoGear, Affordance::PickBonus]
+        );
+        // A completed piece with no table still sockets; nothing to pick.
+        assert_eq!(
+            affordances(db, &shard(r"records\item\relics\plain.dbr", 2)),
+            vec![Affordance::SocketIntoGear]
+        );
+        let bare_helm = shard(r"records\item\equipmenthelm\bronzehelm.dbr", 0);
+        assert_eq!(affordances(db, &bare_helm), Vec::new());
+
+        let boarhide =
+            RecordId::parse(r"records\item\animalrelics\boarhide.dbr".to_string()).unwrap();
+        let mut socketed = bare_helm.clone();
+        socketed.relic = Some(boarhide.clone());
+        // The affordance carries the piece the shell has to name.
+        assert_eq!(
+            affordances(db, &socketed),
+            vec![Affordance::ExtractSocketed { piece: &boarhide }]
+        );
+        assert_eq!(
+            affordances(db, &shard(r"records\xpack\item\artifacts\fool.dbr", 0)),
+            vec![Affordance::PickBonus]
+        );
+        // Without game data only the socket the item itself records shows.
+        assert_eq!(
+            affordances(None, &socketed),
+            vec![Affordance::ExtractSocketed { piece: &boarhide }]
+        );
+        assert_eq!(affordances(None, &bare_helm), Vec::new());
     }
 
     #[test]

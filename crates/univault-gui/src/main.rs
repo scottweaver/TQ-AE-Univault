@@ -1613,8 +1613,13 @@ impl App {
                          socket it — any rarity, epics and legendaries included.",
                             "Alt+Click an item with a socketed relic/charm to extract \
                          it — both kept.",
+                            "Drag a partial piece onto another of the same record to \
+                         pour its shards in; the remainder stays behind.",
                             "Double-click a completed relic, charm, or artifact to \
                          (re)pick its completion bonus.",
+                            "Gear holding a piece shows an orange pip in its lower-left \
+                         corner — one per filled socket. Hovering any item lists the \
+                         gestures it accepts.",
                         ],
                     );
                     help_section(
@@ -3432,29 +3437,20 @@ impl App {
         let Ok(item) = self.item_at(addr) else {
             return;
         };
-        let (needed, has_table) = match &self.game {
-            GameStatus::Loaded(db) => (
-                db.completed_relic_level(&item.base),
-                !db.relic_bonuses(&item.base).is_empty(),
-            ),
-            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => (None, false),
-        };
-        if let Some(needed) = needed
-            && item.var1 < needed
-        {
-            self.status = Some(Err(format!(
-                "complete the piece first ({}/{needed} shards)",
-                item.var1
-            )));
-            return;
-        }
-        if !has_table {
-            if needed.is_some() {
-                self.status = Some(Err("this piece has no bonus table".to_string()));
+        match transfer::bonus_pick(loaded_db(&self.game), &item) {
+            transfer::BonusPick::Ready => {
+                self.begin_bonus_pick(addr, item.base.clone(), item.relic_bonus.clone());
             }
-            return;
+            transfer::BonusPick::Incomplete { have, needed } => {
+                self.status = Some(Err(format!(
+                    "complete the piece first ({have}/{needed} shards)"
+                )));
+            }
+            transfer::BonusPick::NoTable => {
+                self.status = Some(Err("this item has no bonus table".to_string()));
+            }
+            transfer::BonusPick::NotAPiece => {}
         }
-        self.begin_bonus_pick(addr, item.base.clone(), item.relic_bonus.clone());
     }
 
     /// Writes the chosen completion bonus (or none) onto the
@@ -4415,6 +4411,7 @@ fn paint_item_tile(
         egui::Stroke::new(1.0, theme::TILE_EDGE)
     };
     painter.rect_stroke(item_rect, 2.0, outline, egui::StrokeKind::Inside);
+    paint_socket_pips(painter, item_rect, item);
     if item.stack_size > 1 {
         painter.text(
             item_rect.right_bottom() - egui::vec2(2.0, 1.0),
@@ -4423,6 +4420,24 @@ fn paint_item_tile(
             egui::FontId::proportional(10.0),
             visuals.strong_text_color(),
         );
+    }
+}
+
+/// One relic-orange pip per filled socket, bottom-left — the only
+/// sign on the grid that gear carries a relic or charm. Sits clear of
+/// the stack count in the opposite corner.
+fn paint_socket_pips(painter: &egui::Painter, item_rect: egui::Rect, item: &Item) {
+    const RADIUS: f32 = 2.5;
+    let pip = game_color(style::style_color(style::ItemStyle::Relic));
+    let mut center = item_rect.left_bottom() + egui::vec2(RADIUS + 2.0, -(RADIUS + 2.0));
+    for _ in transfer::socketed_slots(item) {
+        painter.circle(
+            center,
+            RADIUS,
+            pip,
+            egui::Stroke::new(1.0, egui::Color32::from_black_alpha(200)),
+        );
+        center.x += 2.0f32.mul_add(RADIUS, 2.0);
     }
 }
 
@@ -4608,24 +4623,60 @@ fn item_tooltip(ui: &mut egui::Ui, item: &Item, db: Option<&GameCache>, caches: 
                     .color(theme::TEXT_WEAK)
                     .size(11.0),
             );
-            let Some(details) = details else { return };
-            for block in &details.blocks {
-                ui.add(egui::Separator::default().spacing(6.0));
-                for line in block {
-                    if line.text.trim().is_empty() {
-                        ui.add_space(4.0);
-                    } else {
-                        ui.label(
-                            egui::RichText::new(&line.text)
-                                .color(game_color(stats::palette_color(line.color)))
-                                .size(12.0),
-                        );
+            if let Some(details) = &details {
+                for block in &details.blocks {
+                    ui.add(egui::Separator::default().spacing(6.0));
+                    for line in block {
+                        if line.text.trim().is_empty() {
+                            ui.add_space(4.0);
+                        } else {
+                            ui.label(
+                                egui::RichText::new(&line.text)
+                                    .color(game_color(stats::palette_color(line.color)))
+                                    .size(12.0),
+                            );
+                        }
                     }
                 }
             }
+            tooltip_gestures(ui, item, db, caches);
         });
     if let Some(pane_chrome) = pane_chrome {
         pane_chrome.tooltip_frame(ui.painter(), response.response.rect);
+    }
+}
+
+/// The footer naming what the hovered item can do beyond being
+/// moved, and the gesture that reaches it — the app's socket
+/// operations are otherwise invisible. Silent for ordinary items.
+fn tooltip_gestures(ui: &mut egui::Ui, item: &Item, db: Option<&GameCache>, caches: &mut Caches) {
+    let affordances = transfer::affordances(db, item);
+    if affordances.is_empty() {
+        return;
+    }
+    ui.add(egui::Separator::default().spacing(6.0));
+    for affordance in affordances {
+        let hint = match affordance {
+            transfer::Affordance::ExtractSocketed { piece } => {
+                let piece = caches.names.record_name(db, piece);
+                format!("Alt+Click to remove {piece} — both are kept")
+            }
+            transfer::Affordance::SocketIntoGear => {
+                "Drag onto gear its type allows to socket it".to_string()
+            }
+            transfer::Affordance::CombineShards => {
+                "Drag onto a matching partial to pour in its shards".to_string()
+            }
+            transfer::Affordance::PickBonus => {
+                "Double-click to pick its completion bonus".to_string()
+            }
+        };
+        ui.label(
+            egui::RichText::new(hint)
+                .color(theme::TEXT_WEAK)
+                .size(11.0)
+                .italics(),
+        );
     }
 }
 

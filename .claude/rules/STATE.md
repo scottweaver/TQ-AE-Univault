@@ -5,43 +5,35 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-30 (PR #69 merged and pruned — testing from main)
+Last updated: 2026-08-30 (socket affordances branch open — tooltip
+hints + socket pips)
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** PR #69 **merged to main (7bd87a5) on the user's
-"just merge all PRs so we can test from main"** — the 2026-08-30
-three-feature round (restart-persistent view state in
-`ui-state.json`, the "Fits into:" slot-filter chip row on the
-Relic/Charm buckets, the Iron Great Helm (Corinthian) as the app
-icon) plus the transfer-stash auto-reload fix. Merged **unclicked**:
-the restore path and chips were seen live under a scratch `HOME`,
-the dock icon was never captured, and the reload fix is reasoned
-from the code, not reproduced. The user's pass from `main` decides,
-and regressions are fixed forward. What that pass should answer:
-the dock shows the crested helm; chips combine as OR (Helmet + Ring
-= fits either — flip to AND if that reads wrong); `Export type…`
-exporting the whole bucket rather than the narrowed view is
-acceptable; quitting and relaunching brings tabs, sort, Skip
-duplicates, and the search bar back; editing the stash in-game with
-the app open now ends in "auto-reloaded Shared bank" rather than the
-"unexpected end of data at 0xEFD8: wanted 4 more bytes" toast (the
-fix: `RefreshTracker` keeps the first two failed reloads silent,
-`RELOAD_PATIENCE` 3 ≈ 12 s, reports once if persisting; `reload_doc`
-restores `dirty` on a failed read). The #69 branch is pruned local
-and remote; only this session's `mod-phantom-strike` worktree
-remains, detached, and goes when the session ends. **Standing
-instruction recorded 2026-08-30** (METHODOLOGIES.md "After a PR
-merges"): a merged PR's branch is deleted without asking. The user
-tests from their own checkout. **Standing instruction 2026-08-30
-(METHODOLOGIES.md step 1): that checkout's `main` is always kept
-current — pulling by hand is not their job.** This session is
-worktree-isolated and the harness refuses git against the shared
-checkout, so it could not fast-forward it; the user pulled (they
-confirmed "ok, that's better" once the changes showed). A
-non-isolated session does the pull itself as wrap-up step 1. The
-chips and dock icon were confirmed present after the pull.
+**Resume here:** branch `feat/socket-affordances` is open with the
+socket-discoverability round — **the user asked to "add the ability
+to slot/unslot charms and relics from gear" and the answer was that
+it already shipped** (drag a piece onto gear to socket; Alt+Click
+gear to extract, PRs #25/#26), invisibly. Their call after seeing
+that: keep every gesture exactly as it is, make it announce itself.
+So: a tooltip footer listing every relic/charm gesture the hovered
+item accepts, and one relic-orange pip per filled socket at a tile's
+lower-left. Core gained `Affordance` + `affordances()` and a typed
+`BonusPick` (which also de-duplicates the double-click gate that
+`request_bonus_edit` had inlined). 268 tests, clippy clean; the
+footer and pips were **seen live** under a scratch `HOME` — the
+tooltip by temporarily forcing `hovered` (synthetic input stays
+banned), a scratch patch that was reverted before commit. What the
+user's own pass decides: whether the pip is findable without being
+loud, and whether the footer earns its two lines on partial pieces.
+**Deliberately not built, and worth a decision:** the second
+(Atlantis) socket can still only be *emptied*, never filled —
+`can_socket` refuses any target whose first socket is full. A scan
+of both characters and all banks found 15 socketed items and **zero**
+using `relicName2`, so nothing in the user's save exercises it and
+the game's acceptance of an app-made two-relic item is unverified.
+Also unbuilt by their choice: any right-click/menu affordance.
 **1MAX ACCEPTED in game 2026-08-30** ("1Max seems to working
 great!"): `LootPlus1MAXTuned` (PR #65) — vanilla density, XP ×3 —
 plays at the pace it was built for, so the XP factor is settled.
@@ -145,13 +137,12 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#69 all merged; all gates green |
+| `main` | trunk | PRs #1–#73 all merged; all gates green |
+| `feat/socket-affordances` | tooltip gesture footer + socket pips | this session's work; branched from `main`, PR open |
 | `worktree-fix+projectile-speeds-ae` | a parallel session's cast-speed / DPS docs work | pushed, no PR; locked worktree under `.claude/worktrees/` — not the main session's to touch |
 
-The remote is just these two. Everything merged through #70 has
-been pruned local and remote (2026-08-30). The only leftover is this
-session's `mod-phantom-strike` worktree, detached at `main` and safe
-to remove whenever its session ends.
+Everything merged through #73 has been pruned local and remote
+(2026-08-30).
 
 ## Next up
 
@@ -178,8 +169,10 @@ that's better") and merged as PR #7.
 0. **The store's interactive acceptance pass** (merged, unverified):
    drops into a bucket, bulk sends, ⌘F search, an export opened in
    TQVaultAE, the ▲/▼ sort-direction toggle (store combo + search
-   headers, PR #52), and the Skip duplicates box (PR #54) — on the
-   user's own config.
+   headers, PR #52), the Skip duplicates box (PR #54), and now the
+   socket pip + tooltip gesture footer — on the user's own config.
+   The socketing gestures the footer advertises (drag a piece onto
+   gear, Alt+Click to pull it back) have never been clicked either.
 0b. **Component-ize remaining chrome surfaces as the user directs:**
    nameplates, plate buttons, grid cells, stone backdrop, tooltip
    frame — each through the preview + review loop first, from new
@@ -209,6 +202,29 @@ buttons shipped in PR #44):
    the whole store loads and filters in memory.
 
 ## Most recent meaningful progress
+
+- **2026-08-30 — Socketing announces itself: tooltip gesture footer +
+  socket pips (`feat/socket-affordances`).** The ask was "add the
+  ability to slot/unslot charms and relics from gear"; the honest
+  finding was that both have shipped since PRs #25/#26 — drag a piece
+  onto gear, Alt+Click gear to pull it back out, on every surface —
+  and that nothing in the app ever said so. Scope the user chose after
+  seeing that: change no gesture, make them visible. Every item
+  tooltip now ends with the relic/charm gestures that item actually
+  accepts ("Alt+Click to remove Essence of the Golden Fleece — both
+  are kept", socket, pour shards, pick bonus), and gear wears one
+  relic-orange pip per filled socket at its lower-left, so a socketed
+  piece is findable while scanning a bank. Core owns the rules, the
+  shell owns the phrasing: new `Affordance` (carrying the socketed
+  record, so the shell cannot name a piece that isn't there) and a
+  typed `BonusPick`, which also collapses the double-click gate
+  `request_bonus_edit` had inlined. 268 tests, clippy clean; both
+  surfaces seen live under a scratch `HOME`. Risk: no pointer has
+  touched either — the tooltip was captured by temporarily forcing
+  `hovered` (reverted before commit), since synthetic input stays
+  banned, so pip legibility and footer length are the user's call.
+  The second (Atlantis) socket is still fill-proof by design, and no
+  right-click menu was added — both the user's explicit choices.
 
 - **2026-08-30 — Persisted view state, relic/charm slot filter, helm
   app icon (PR #69, merged).** Three asks in one round. (1) A
@@ -389,19 +405,6 @@ buttons shipped in PR #44):
   table feel (stats column starts narrow; columns are draggable)
   awaits the user's in-app pass; full-window mode is gone by
   design.
-- **2026-08-27 — Components into the app + live-fix round (PR #44,
-  merged).** Both panes and the inventory sub-tabs now render
-  through `TabbedPanel` (per-tab disabled hints, mid-drag hover
-  switching, per-instance widget ids); the gilded border frames
-  the window; the caravan/leather game chrome is deleted (net
-  −600 lines). Five user-hit fixes in the same round: cross-pane
-  tab id collision, the search-view tooltip storm (egui 0.36
-  `Tooltip::for_widget` is unconditionally open), unreadable
-  disabled plate buttons, `cargo run` default-run, plus UIX:
-  auto-open last character, bulk sends moved into each sack's
-  pane and scoped per-sack ("Move all → Vault"). Risk: accepted
-  live in debug builds; the release-build full pass is still the
-  user's to run, and the search view got only a spot check.
 ## Blocked / waiting
 
 - *(nothing)*
