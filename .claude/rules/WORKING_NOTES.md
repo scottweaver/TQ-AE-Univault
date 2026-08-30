@@ -48,6 +48,16 @@ annotated.
   synthetic-input test once interleaved with the user's real typing
   and garbled their annotation. Interactive acceptance is the user's
   to perform, always.
+- **Worktree sessions run under a shell guard** that refuses
+  compound commands it cannot prove stay inside the worktree —
+  `while`/`for` loops, `$(…)` substitutions, and any `HOME=…` prefix
+  (so the scratch-`HOME` launch is refused inline). Put the launch
+  in a script file (`zsh launch.sh` that exports `HOME` itself) and
+  do loops in Python or a throwaway core example. Cost a dozen
+  refused commands on 2026-08-30.
+- **Screen capture only shows the display it hits.** The Dock
+  auto-hides here and owns no on-screen window, so the dock icon
+  cannot be captured; ask the user to look.
 - **The user often runs their own release build.** Only ever
   `pkill -f target/debug/…`. Each debug relaunch steals focus, so the
   user's in-flight clicks can land in the test instance.
@@ -72,7 +82,18 @@ annotated.
   `UNIVAULT_REAL_VAULT=<vault.json> UNIVAULT_REAL_CACHE=<gamedata.cache>
   cargo test -p univault-core --test real_vault_migration -- --nocapture`
 - **The MCP server** is exercised by piping JSON-RPC into
-  `./target/debug/univault-mcp` with `UNIVAULT_STORE` set.
+  `./target/debug/univault-mcp` with `UNIVAULT_STORE` set. The
+  session's own `univault` MCP connection points at
+  `target/release/univault-mcp`, which a fresh worktree does not
+  have — build it (`cargo build --release -p univault-mcp`) before
+  expecting the record tools, or the server "fails to connect".
+- **Finding a record from a display name is a tag hunt.** The name
+  the app shows ("Iron Great Helm Corinthian") is assembled from
+  `itemQualityTag` + `itemNameTag` + `itemStyleTag`; record ids are
+  opaque (`c04_helm06.dbr`) and `strings database.arz | grep` only
+  finds referencing loot tables. Filter records by class prefix and
+  those tag values (a scratch example over `ArzFile::record_ids`
+  does it in seconds against the local `db/` copies).
 - **Three mod bundles are installed on this machine** —
   `LootPlusXMAX3Tuned`, `LootPlusXMAX3Tuned1xBoss`, and
   `LootPlus1MAXTuned`, all under the save root's `CustomMaps`.

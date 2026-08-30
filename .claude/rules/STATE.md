@@ -5,12 +5,36 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-30 (1MAX accepted in game)
+Last updated: 2026-08-30 (PR #69 open — persisted view state, slot filter, app icon)
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** nothing is in flight — tree clean, no open PRs.
+**Resume here:** PR #69 (draft, branch
+`feat/persist-ui-state-slot-filter-app-icon`) delivers the 2026-08-30
+three-feature ask — restart-persistent view state (`ui-state.json`),
+a "Fits into:" slot-filter chip row on the Relic/Charm buckets, and
+the Iron Great Helm (Corinthian) as the app icon. Gates green; the
+restore path and chips were seen live under a scratch `HOME`, but
+**nothing has been clicked** and the dock icon was not captured —
+the user's in-app pass decides. Two assumptions to confirm there:
+chips combine as OR, and `Export type…` still exports the whole
+bucket, not the narrowed view. **Open bug report, unfixed (user's
+call whether to fix):** auto-reload of the transfer stash sometimes
+fails with "unexpected end of data at 0xEFD8: wanted 4 more bytes"
+after the user edits the stash in-game. Assessment: the two-poll
+stability check (`RefreshTracker::settled`, 2 s polls) passed yet
+the `.dxb` read back short, so the game's write over SMB was still
+landing (or the SMB client served a mixed stale/fresh read); the
+`.dxg` twin fallback in `open_stash` ran and failed too, so the
+direct error surfaced. The pane keeps its last good state and the
+tracker re-arms, so it self-heals on a later settle — the defect is
+the alarming toast for a transient condition (and a fresh toast per
+failed retry). Proposed fix: count consecutive failed reloads per
+path in `drive_refresh` and stay silent for the first two (~8 s),
+reporting only a persisting failure with "retrying" in the text.
+Side finding: `reload_doc` clears `dirty` before the read, so a
+failed disk-wins conflict reload leaves in-memory edits unsaveable.
 **1MAX ACCEPTED in game 2026-08-30** ("1Max seems to working
 great!"): `LootPlus1MAXTuned` (PR #65) — vanilla density, XP ×3 —
 plays at the pace it was built for, so the XP factor is settled.
@@ -116,14 +140,14 @@ only). No issue tracker is bound yet (deliberately deferred).
 |---|---|---|
 | `main` | trunk | PRs #1–#65 all merged; all gates green |
 | `worktree-fix+projectile-speeds-ae` | a parallel session's cast-speed / DPS docs work | pushed, no PR; locked worktree under `.claude/worktrees/` — not the main session's to touch |
+| `feat/persist-ui-state-slot-filter-app-icon` | persisted view state, relic/charm slot filter, helm app icon | PR #69 (draft), gates green, awaiting the user's in-app pass |
 
-The remote is now just these two. Everything merged has been pruned
+The remote is these three. Everything merged has been pruned
 local and remote (2026-08-30), including the long-lingering
 `docs/checkpoint-2026-08-29` branch and worktree — `git cherry`
 confirmed its content was already upstream from the #64 squash before
-it went. The only leftover is this session's own
-`mod-phantom-strike` worktree, detached at `main` and safe to remove
-whenever its session ends.
+it went. The `mod-phantom-strike` worktree now carries the PR #69
+branch; it goes when the PR lands.
 
 ## Next up
 
@@ -181,6 +205,25 @@ buttons shipped in PR #44):
    the whole store loads and filters in memory.
 
 ## Most recent meaningful progress
+
+- **2026-08-30 — Persisted view state, relic/charm slot filter, helm
+  app icon (PR #69, draft).** Three asks in one round. (1) A
+  `ui-state.json` beside the store (format tag `univault-ui-state`)
+  carries the left tab, inventory sub-tab, store surface, the store
+  pane's bucket/sort/Skip-duplicates/slot filter, and the whole
+  search bar + sort; snapshotted per frame, written after 1 s of
+  quiet, flushed on exit, ignored when foreign or newer. The pane's
+  view fields became `StoreView` with the family derived from the
+  bucket. (2) Relic and Charm buckets get a "Fits into:" chip row —
+  any number of equipment families lit, OR semantics, from the
+  cache's existing `socket_targets`; "n of m fit" under the chips.
+  (3) The icon is `c04_helm06` (Iron + Corinthian + Great Helm tags)
+  read from the game cache at launch — not committed, per the
+  never-distribute posture — so the platform default shows until the
+  first import. 264 tests, clippy clean, restore + chips seen live
+  under a scratch `HOME`. Risk: no click has landed on the chips; the
+  dock icon was not captured; a bundled `.app` would still need an
+  embedded icon.
 
 - **2026-08-30 — 1MAX: the same mod at vanilla density, XP ×3 (PR
   #65, merged).** User
@@ -349,20 +392,6 @@ buttons shipped in PR #44):
   pane and scoped per-sack ("Move all → Vault"). Risk: accepted
   live in debug builds; the release-build full pass is still the
   user's to run, and the search view got only a spot check.
-- **2026-08-27 — Component workshop + in-app review loop (PR #43,
-  merged).** User pivot after the chrome epic: UI parts now grow as
-  distinct components (gui lib target, `components/`), previewed in
-  isolation (`preview` bin, checkerboard transparency proof) from
-  the user's own GIMP art — first two: the gilded border
-  (nine-patch, transparent interior) and the tabbed bronze panel
-  (3-sliced plates, open plate merging through a rail frame made
-  symmetric by flipping the art's good sides). The review overlay
-  (armable shape tools, per-shape notes, badge edit/delete, export
-  → annotated PNG + component-space JSON in `review/`) replaced
-  GIMP markup and caught four real fixes this session. Risk: the
-  components are preview-proven but not yet in the app; black
-  panel interior is baked from the design — confirm it's wanted
-  once composited over the app backdrop.
 ## Blocked / waiting
 
 - *(nothing)*
