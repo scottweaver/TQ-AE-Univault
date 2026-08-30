@@ -5,7 +5,7 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-29 (PR #58 merged — Phantom Strike blink speed)
+Last updated: 2026-08-29 (mod: Psionic Burn radius, PR open)
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
@@ -91,7 +91,8 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#58 all merged; all gates green |
+| `main` | trunk | PRs #1–#60 all merged; all gates green |
+| `mod/psionic-burn-radius` | Mod: Psionic Burn `skillTargetRadius` 3.5→6.0 | PR open; both bundles rebuilt + installed, in-game check pending |
 | `worktree-fix+projectile-speeds-ae` | a parallel session's cast-speed / DPS docs work | pushed, no PR; locked worktree under `.claude/worktrees/` — not the main session's to touch |
 
 The remote is now just these two: every merged branch has been pruned
@@ -154,6 +155,20 @@ buttons shipped in PR #44):
    the whole store loads and filters in memory.
 
 ## Most recent meaningful progress
+
+- **2026-08-29 — Mod: Psionic Burn radius 3.5 → 6.0 (PR open).** User
+  ask, taken literally: `skillTargetRadius` set on the live record
+  `records\xpack\skills\dream\psionictouch_psionicburn.dbr`
+  (`SkillSecondary_AttackRadius`; the `OLD\` and `11-15-06\` copies
+  share the display name but are dev leftovers). Both bundles
+  rebuilt + installed, dump-verified at 6.0. Also asked in the same
+  round: triple the max targets of Phantom Strike and Dream Stealer —
+  **no change was needed and none was made.** The spec's blanket
+  `multiply_player_skills` / `skillTargetNumber` ×3 rule already
+  takes Dream Stealer from vanilla 3–8 to 9–24, and Phantom Strike
+  has no `skillTargetNumber` at all (single-target blink; Dream
+  Stealer supplies the 360° multi-hit). User's call after seeing the
+  numbers: leave both alone.
 
 - **2026-08-29 — Mod: Phantom Strike blinks at speed (PR #58,
   merged).**
@@ -310,14 +325,6 @@ buttons shipped in PR #44):
   sub-tabs (UIX queue item retired), Recent as a chrome menu.
   Risk: the final strip fix merged without an in-app pass; the
   whole look now needs one fresh full review.
-- **2026-08-27 — Mod: Sylvan Nymph joins the cooldown-free summons
-  (PR #41, merged; parallel session).** Her summon is class
-  `Skill_AttackProjectileSpawnPet` (thrown as a seed projectile),
-  which the zero-cooldown fill rule missed; a new rule covers the
-  projectile class (also zeroing Lay Trap, Blood of Ouranos,
-  Terracotta Servants — all summons, per the mod's spirit). Both
-  bundles recomposed + installed; nymph cooldown dump-verified 0.0.
-  Risk: in-game acceptance after a session restart.
 ## Blocked / waiting
 
 - *(nothing)*
