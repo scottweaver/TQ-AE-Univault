@@ -5,41 +5,38 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-30 (PR #77 merged and pruned — auto-refresh
-stall fix)
+Last updated: 2026-08-30 (empty-read guard branch open, after PR #77
+merged)
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** PR #77 **merged to main (fb97d32) on the user's
-"merge it"**, branch pruned local and remote, all five CI checks
-green. **User report: "Shared bank doesn't seem to be reloading when it should."**
-Reproduced against a *local copy* of their save tree (never their
-real files) and it is **not shared-bank-specific** — auto-refresh
-runs inside the paint loop, so a fully occluded window consumes no
-watcher polls and notices nothing until it is visible again. Two
-defects fixed: `drive_refresh` drained every queued
-poll and kept only the newest, so the "settled across two polls"
-debounce counted *UI frames* and a hidden window's backlog was
-thrown away (costing another poll cycle on return); and `busy`
-included `memory.focused().is_some()`, which is **sticky** — a caret
-left in the ⌘F search box disabled refreshing for every pane
-indefinitely. Focus now defers only the character pane, and only for
-the gold `DragValue` (the one focusable widget bound to document
-state — search fields bind to UI state). A toolbar line
-("watching: checked 2s ago · longest pause 38s (window hidden?)")
-makes a stall visible after the fact, since the user could not say
-which scenario they had hit. Verified live occluded → raised: pane
-reloads within 2 s and the 38 s pause is reported. 270 tests, clippy
-clean. **Residual, and the user has not yet exercised it:** while the
-window is *fully covered* nothing refreshes at all; moving reloads
-off the paint loop is a bigger change and was deliberately not
-attempted. **Two things to watch for from the user's pass:** whether
-the toolbar line stays put or moves behind the planned "?"
-technical-info affordance (offered, unanswered), and — the important
-one — **a stall reported while the window was never hidden would mean
-a third cause that this round did not find.** Ask for the toolbar
-line's reading if the symptom recurs.
+**Resume here:** branch `fix/empty-read-guard` is open. **Third user
+report in the same area: "there was a change on disk and a successful
+reload, but Character Bank and Shared are showing [no] items."**
+Cause found: **a stash save caught mid-write parses as a perfectly
+valid *empty* stash.** Nothing fails, so `RELOAD_PATIENCE` (which only
+counts reads that error) never fires — the app truthfully reports a
+successful reload and truthfully shows an empty bank. The fix uses the
+`.dxg` twin as evidence: the game keeps it as the last good write, so
+a `.dxb` reading empty while its twin still parses with items is a
+save in flight (`mid_save()`), and the pane is held. Bounded by
+`EMPTY_PATIENCE` (5 attempts ≈ 20 s) so a twin that never catches up
+cannot pin stale items on screen. Verified live: empty `.dxb` + intact
+twin held the pane 15 s; once the budget ran out the pane cleared.
+A genuine emptying (twin empty too) clears with no delay. 271 tests,
+clippy clean. **Honest limit: the user's exact trigger was never
+reproduced** — this fixes the most plausible mechanism, not a proven
+one. If it recurs, the toolbar's watcher line is the first thing to
+read.
+**No data was ever lost.** Verified against their real files: Shared
+bank 3 items, Character bank 2, `.dxb` and `.dxg` in agreement.
+**Two of this session's own scans were wrong** and nearly sent it
+chasing phantom corruption — both read files mid-rewrite while the
+user was live. Snapshot to scratch before analysing; recorded in
+WORKING_NOTES.md "Reading a save the game is still writing".
+Earlier in the session PR #75 (socket affordances) and PR #77
+(auto-refresh stalls) both merged and pruned.
 
 Previously: PR #75 **merged to main (477cd0e) on the user's
 "merge it"**, branch pruned local and remote, all five CI checks
@@ -171,6 +168,7 @@ only). No issue tracker is bound yet (deliberately deferred).
 | Branch | Purpose | Status |
 |---|---|---|
 | `main` | trunk | PRs #1–#78 all merged; all gates green |
+| `fix/empty-read-guard` | mid-save empty-read guard | this session's work; branched from `main`, PR open |
 | `worktree-fix+projectile-speeds-ae` | a parallel session's cast-speed / DPS docs work | pushed, no PR; locked worktree under `.claude/worktrees/` — not the main session's to touch |
 | `worktree-mcp-overlay-and-coverage` | a parallel session's MCP mod-overlay / coverage work | pushed, no PR; checked out in its own worktree — not this session's to touch |
 
@@ -236,6 +234,25 @@ buttons shipped in PR #44):
    the whole store loads and filters in memory.
 
 ## Most recent meaningful progress
+
+- **2026-08-30 — A mid-save read no longer empties a bank
+  (`fix/empty-read-guard`).** Third report in the same area: "a change
+  on disk and a successful reload, but Character Bank and Shared are
+  showing no items." The cause is a gap `RELOAD_PATIENCE` structurally
+  cannot see — a stash save caught between truncating and writing its
+  items parses as a **valid empty stash**, so nothing fails, the app
+  truthfully says "auto-reloaded", and the pane truthfully goes empty.
+  The fix reads the evidence the game already keeps: `.dxg` is its
+  last good write, so a `.dxb` that comes back empty while its twin
+  still parses with items is a save in flight, and the pane is held
+  and re-read. Bounded by `EMPTY_PATIENCE` (5 attempts ≈ 20 s) so a
+  twin that never catches up cannot pin stale items on screen; a
+  genuine emptying, where the twin is empty too, clears with no delay
+  at all. Verified live in both directions. 271 tests, clippy clean.
+  Risk, stated plainly: **the user's exact trigger was never
+  reproduced** — this closes the most plausible mechanism, not a
+  proven one. No data was ever at risk; their files were checked and
+  found intact throughout.
 
 - **2026-08-30 — Auto-refresh stops stalling silently (PR #77,
   merged).** User report: "Shared bank doesn't
@@ -427,33 +444,7 @@ buttons shipped in PR #44):
   landed on either control (synthetic input banned), and rarity
   descending now floats artifacts/relics above legendaries in a
   bucket that mixes them.
-- **2026-08-29 — Tabs become views onto a normalized store (PR #50,
-  merged).** User ask: stop letting tabs be
-  arbitrary buckets — dedicate each to an item type — and make
-  storage "a true database of sorts" while keeping the app portable.
-  Design-dialogued (all four picks the user's): one unified store
-  file rather than named vaults; own format over redb/SQLite (a
-  DBMS buys nothing at ~10⁴ items and SQLite is the native dep the
-  rules gate); TQVaultAE JSON demoted from two-way wire contract to
-  import **and** export interchange; family → sub-type tabs. New
-  `core/store.rs`: a flat set of `{StoredItemId, Item}` in one
-  versioned self-describing file, with buckets *computed* from each
-  item's record (`bucket_of`), so misfiling is unrepresentable and
-  buckets are unbounded. Addressing unified as `ItemAddr` (game
-  containers positional, the store identity-addressed); "no room"
-  and the whole bulk-spill path deleted from `transfer`; search
-  collapsed onto the one store; MCP's `list_vaults`/`get_vault`
-  became `list_buckets`/`get_store`. ARCHITECTURE.md renegotiated in
-  the same PR. 241 tests, including an env-gated real-data
-  migration check (the user's 295 items: all classified, lossless
-  round trip, export repacked into 4 sacks with no overlap).
-  Verified by launch against a scratch `HOME`; the family strip
-  overflowed on that first run (Misc unreachable) and was fixed,
-  as was the content-sized grid (now padded to 18×20, centered).
-  Risk: merged on the user's call with **no interactive time** —
-  drag/drop, bulk sends, ⌘F, and an export opened in TQVaultAE are
-  unexercised on main; grid positions for vaulted items are gone by
-  design (the store sorts, the user no longer arranges).
+
 ## Blocked / waiting
 
 - *(nothing)*

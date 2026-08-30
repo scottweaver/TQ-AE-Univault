@@ -134,6 +134,7 @@ impl CliArgs {
     }
 }
 
+#[derive(Clone)]
 struct CharacterPane {
     path: PathBuf,
     original: Vec<u8>,
@@ -144,6 +145,7 @@ struct CharacterPane {
     disk_stamp: Option<SourceStamp>,
 }
 
+#[derive(Clone)]
 struct StashPane {
     path: PathBuf,
     original: Vec<u8>,
@@ -377,6 +379,13 @@ fn takes_slot_filter(bucket: Bucket) -> bool {
     )
 }
 
+/// A pane held aside across a reload, so a read that turns out to be
+/// a half-written game save can be undone.
+enum PaneSnapshot {
+    Character(Box<CharacterPane>),
+    Stash(StashSlot, Box<StashPane>),
+}
+
 /// One open document, addressable across panes — the unit the
 /// auto-refresh watcher reloads or reports conflicts on.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -406,6 +415,9 @@ struct RefreshTracker {
     pending: HashMap<PathBuf, SourceStamp>,
     /// Consecutive failed reloads per path since the last success.
     failures: HashMap<PathBuf, u32>,
+    /// Consecutive emptying reads held back per game-owned file,
+    /// while the evidence still says a save is in flight.
+    empty_defers: HashMap<PathBuf, u32>,
 }
 
 /// What a failed auto-reload means for the user: nothing yet — a
@@ -422,6 +434,11 @@ enum ReloadFailure {
 /// reported; attempts are two polls apart, so this is ~12 s of
 /// patience.
 const RELOAD_PATIENCE: u32 = 3;
+
+/// Emptying reads of one file held back while the evidence says a
+/// save is in flight; attempts are two polls apart, so this caps the
+/// protection at roughly 20 s.
+const EMPTY_PATIENCE: u32 = 5;
 
 /// Whether auto-refresh is actually running, and the worst stall it
 /// has seen. The watcher thread polls on its own cadence but only the
@@ -531,6 +548,25 @@ impl RefreshTracker {
 
     fn reload_succeeded(&mut self, path: &Path) {
         self.failures.remove(path);
+    }
+
+    /// Whether an emptying read should be held back rather than
+    /// clearing the pane. A game save caught between truncating and
+    /// writing its items parses as a perfectly valid empty stash, so
+    /// nothing fails and [`RELOAD_PATIENCE`] never fires; the caller
+    /// supplies the evidence that a write is still in flight and this
+    /// bounds how long that evidence is believed, so a twin that goes
+    /// permanently stale cannot pin a genuinely emptied bank forever.
+    fn defer_empty(&mut self, path: &Path) -> bool {
+        let count = self.empty_defers.entry(path.to_path_buf()).or_insert(0);
+        *count += 1;
+        *count <= EMPTY_PATIENCE
+    }
+
+    /// Forgets the deferrals once a read is adopted, so the *next*
+    /// emptying is questioned too rather than waved through.
+    fn empty_settled(&mut self, path: &Path) {
+        self.empty_defers.remove(path);
     }
 }
 
@@ -2122,8 +2158,24 @@ impl App {
             if dirty {
                 self.push_conflict(doc);
             } else {
+                let held = self.game_doc_item_count(doc).unwrap_or(0);
+                let restore = (held > 0).then(|| self.snapshot_doc(doc)).flatten();
                 match self.reload_doc(doc) {
                     Ok(()) => {
+                        // A game save caught between truncating and
+                        // writing its items parses as a valid empty
+                        // stash, so nothing failed and the patience
+                        // counter never fires. Make the emptying prove
+                        // itself once before the pane clears.
+                        if self.game_doc_item_count(doc) == Some(0)
+                            && let Some(restore) = restore
+                            && mid_save(doc, &path)
+                            && self.refresh.defer_empty(&path)
+                        {
+                            self.restore_doc(restore);
+                            continue;
+                        }
+                        self.refresh.empty_settled(&path);
                         self.refresh.reload_succeeded(&path);
                         reloaded.push(doc_label(doc));
                     }
@@ -2146,6 +2198,61 @@ impl App {
                 "auto-reloaded {} — changed on disk",
                 reloaded.join(", ")
             )));
+        }
+    }
+
+    /// Items a game-owned document holds. `None` for the item store,
+    /// which only this app writes — nothing can catch it mid-save, so
+    /// it needs no empty-read guard.
+    fn game_doc_item_count(&self, doc: DocId) -> Option<usize> {
+        match doc {
+            DocId::Character => self.character.as_ref().map(|pane| {
+                let worn = pane.character.equipment.slots.iter().flatten().count();
+                let carried: usize = pane
+                    .character
+                    .sacks
+                    .iter()
+                    .map(|sack| sack.items.len())
+                    .sum();
+                worn + carried
+            }),
+            DocId::Stash(slot) => match slot {
+                StashSlot::Bank => &self.bank,
+                StashSlot::Shared => &self.shared,
+                StashSlot::Relic => &self.relics,
+            }
+            .as_ref()
+            .map(|pane| pane.stash.items.len()),
+            DocId::Store => None,
+        }
+    }
+
+    /// The pane as it stands, so a reload that turns out to be a
+    /// half-written save can be put back.
+    fn snapshot_doc(&self, doc: DocId) -> Option<PaneSnapshot> {
+        match doc {
+            DocId::Character => self
+                .character
+                .clone()
+                .map(|pane| PaneSnapshot::Character(Box::new(pane))),
+            DocId::Stash(slot) => match slot {
+                StashSlot::Bank => &self.bank,
+                StashSlot::Shared => &self.shared,
+                StashSlot::Relic => &self.relics,
+            }
+            .clone()
+            .map(|pane| PaneSnapshot::Stash(slot, Box::new(pane))),
+            DocId::Store => None,
+        }
+    }
+
+    /// Puts a snapshot back, stamp included — the older stamp is what
+    /// makes the next poll re-examine the file rather than call it
+    /// settled.
+    fn restore_doc(&mut self, snapshot: PaneSnapshot) {
+        match snapshot {
+            PaneSnapshot::Character(pane) => self.character = Some(*pane),
+            PaneSnapshot::Stash(slot, pane) => *self.stash_slot_mut(slot) = Some(*pane),
         }
     }
 
@@ -2348,6 +2455,27 @@ fn shift_after_take(target: ItemAddr, source: ItemAddr) -> ItemAddr {
 }
 
 /// Human name of a document for statuses and the conflict modal.
+/// Whether a document that just read empty looks like a save still
+/// in flight rather than a bank someone emptied.
+///
+/// A stash carries the evidence itself: the game keeps the `.dxg`
+/// twin as its last good write, so a `.dxb` reading empty while its
+/// twin still holds items is a write caught in the middle. The
+/// character has no twin — a half-written one almost always fails to
+/// parse and is covered by [`RELOAD_PATIENCE`] — so it falls back to
+/// asking for one confirming read.
+fn mid_save(doc: DocId, path: &Path) -> bool {
+    match doc {
+        DocId::Stash(_) => std::fs::read(path.with_extension("dxg"))
+            .ok()
+            .and_then(|twin| stash::restore_from_twin(&twin).ok())
+            .and_then(|bytes| stash::parse_stash(&bytes).ok())
+            .is_some_and(|twin| !twin.items.is_empty()),
+        DocId::Character => true,
+        DocId::Store => false,
+    }
+}
+
 fn doc_label(doc: DocId) -> String {
     match doc {
         DocId::Character => "the character".to_string(),
@@ -5997,6 +6125,27 @@ mod tests {
             .filter(|observed| tracker.settled(path, Some(observed), Some(&ours)))
             .count();
         assert_eq!(settles, backlog.len() - 1, "only the first arms the check");
+    }
+
+    #[test]
+    fn an_emptied_bank_is_held_back_but_never_forever() {
+        let mut tracker = RefreshTracker::default();
+        let shared = Path::new("Sys/winsys.dxb");
+        let bank = Path::new("_Sif/winsys.dxb");
+        for attempt in 1..=EMPTY_PATIENCE {
+            assert!(tracker.defer_empty(shared), "held on attempt {attempt}");
+        }
+        // A twin that never catches up must not pin the pane forever.
+        assert!(!tracker.defer_empty(shared), "patience is bounded");
+
+        // Deferral is per file: one bank emptying says nothing about
+        // another that emptied in the same poll.
+        assert!(tracker.defer_empty(bank));
+
+        // Once adopted, a later emptying is questioned afresh rather
+        // than waved through on the spent budget.
+        tracker.empty_settled(shared);
+        assert!(tracker.defer_empty(shared));
     }
 
     #[test]
