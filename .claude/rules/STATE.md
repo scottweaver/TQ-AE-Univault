@@ -5,13 +5,38 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-30 (PR #75 merged and pruned — socketing now
-announces itself)
+Last updated: 2026-08-30 (auto-refresh stall fix branch open, after
+PR #75 merged)
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** PR #75 **merged to main (477cd0e) on the user's
+**Resume here:** branch `fix/auto-refresh-stalls` is open. **User
+report: "Shared bank doesn't seem to be reloading when it should."**
+Reproduced against a *local copy* of their save tree (never their
+real files) and it is **not shared-bank-specific** — auto-refresh
+runs inside the paint loop, so a fully occluded window consumes no
+watcher polls and notices nothing until it is visible again. Two
+defects fixed on the branch: `drive_refresh` drained every queued
+poll and kept only the newest, so the "settled across two polls"
+debounce counted *UI frames* and a hidden window's backlog was
+thrown away (costing another poll cycle on return); and `busy`
+included `memory.focused().is_some()`, which is **sticky** — a caret
+left in the ⌘F search box disabled refreshing for every pane
+indefinitely. Focus now defers only the character pane, and only for
+the gold `DragValue` (the one focusable widget bound to document
+state — search fields bind to UI state). A toolbar line
+("watching: checked 2s ago · longest pause 38s (window hidden?)")
+makes a stall visible after the fact, since the user could not say
+which scenario they had hit. Verified live occluded → raised: pane
+reloads within 2 s and the 38 s pause is reported. 270 tests, clippy
+clean. **Residual, unfixable on the UI thread:** while the window is
+fully covered nothing refreshes at all; moving reloads off the paint
+loop is a bigger change and was not attempted. Ask the user whether
+the toolbar line stays or moves behind the planned "?" technical-info
+affordance.
+
+Previously: PR #75 **merged to main (477cd0e) on the user's
 "merge it"**, branch pruned local and remote, all five CI checks
 green. The socket-discoverability round — **the user asked to "add
 the ability to slot/unslot charms and relics from gear" and the
@@ -140,11 +165,12 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#75 all merged; all gates green |
+| `main` | trunk | PRs #1–#76 all merged; all gates green |
+| `fix/auto-refresh-stalls` | auto-refresh stall fix + watcher indicator | this session's work; branched from `main`, PR open |
 | `worktree-fix+projectile-speeds-ae` | a parallel session's cast-speed / DPS docs work | pushed, no PR; locked worktree under `.claude/worktrees/` — not the main session's to touch |
 | `worktree-mcp-overlay-and-coverage` | a parallel session's MCP mod-overlay / coverage work | pushed, no PR; checked out in its own worktree — not this session's to touch |
 
-Everything merged through #75 has been pruned local and remote
+Everything merged through #76 has been pruned local and remote
 (2026-08-30). The two `worktree-*` branches belong to parallel
 sessions; leave them alone.
 
@@ -206,6 +232,34 @@ buttons shipped in PR #44):
    the whole store loads and filters in memory.
 
 ## Most recent meaningful progress
+
+- **2026-08-30 — Auto-refresh stops stalling silently
+  (`fix/auto-refresh-stalls`).** User report: "Shared bank doesn't
+  seem to be reloading when it should." Reproduced against a local
+  copy of their save tree, and it was never shared-bank-specific:
+  auto-refresh is consumed inside the paint loop, so a fully occluded
+  window (macOS stops repainting one) sees no file change at all.
+  Two real defects behind that. `drive_refresh` drained every queued
+  poll and kept only the newest, so the documented "settled across
+  two polls" debounce actually counted *UI frames* and a hidden
+  window's backlog of identical observations was discarded — costing
+  another poll cycle after the window returned; it now feeds every
+  queued poll, so the backlog settles it. And `busy` included
+  `memory.focused().is_some()`, which is sticky: a caret left in the
+  ⌘F search box disabled refreshing for **every** pane indefinitely.
+  Focus now defers only the character, and only for the gold
+  `DragValue` — the one focusable widget bound to document state
+  (both search fields bind to UI state, and nothing calls
+  `request_focus`). Because the user could not say which scenario
+  they had hit, the toolbar gained "watching: checked Ns ago ·
+  longest pause … (window hidden?)", which records a stall after it
+  ends. Verified live occluded → raised: the pane reloads within 2 s
+  and a 38 s pause is reported. 270 tests, clippy clean. Risk: while
+  the window is *fully covered* nothing refreshes at all and this
+  does not change that — moving reloads off the paint loop is a
+  bigger change, deliberately not attempted. The toolbar line is a
+  first cut; it may belong behind the planned "?" technical-info
+  affordance instead.
 
 - **2026-08-30 — Socketing announces itself: tooltip gesture footer +
   socket pips (PR #75, merged).** The ask was "add the
@@ -396,19 +450,6 @@ buttons shipped in PR #44):
   drag/drop, bulk sends, ⌘F, and an export opened in TQVaultAE are
   unexercised on main; grid positions for vaulted items are gone by
   design (the store sorts, the user no longer arranges).
-- **2026-08-28 — Filter overhaul: search in the vault pane (PR #47,
-  merged).** User ask: no more full-window swap — the all-vaults
-  search now renders in the vault column (one "Search all vaults"
-  plate) with the character/bank pane live beside it; ⌘F toggles,
-  Esc / "← Vault" returns, and sends, bulk sends, and auto-refresh
-  all work while filtering. The search UI's `&mut self` methods
-  became split-borrow functions to render inside the columns
-  closure; filter combos wrap into sized rows and the stats column
-  clips for the half width (screenshot-verified live — the old
-  wrapped row silently overflowed the pane). Risk: half-width
-  table feel (stats column starts narrow; columns are draggable)
-  awaits the user's in-app pass; full-window mode is gone by
-  design.
 ## Blocked / waiting
 
 - *(nothing)*

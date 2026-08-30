@@ -31,7 +31,15 @@ annotated.
    sized for the pane instead.
 4. **A fully occluded window stops repainting** (normal macOS
    occlusion). A background import then looks "stuck at 2%" until the
-   window is uncovered — not a hang.
+   window is uncovered — not a hang. The same stall hits **anything
+   driven from the paint loop**: auto-refresh consumes the watcher
+   thread's polls inside `drive_refresh`, so a covered window notices
+   no file change at all until it is visible again (found 2026-08-30
+   chasing "Shared bank doesn't reload"). The toolbar's
+   "watching: checked Ns ago · longest pause …" line exists to make
+   that visible; when testing a repaint-driven feature, **raise the
+   window first** — a screenshot via `screencapture -l <id>` captures
+   an occluded window happily and hides the stall.
 
 ## The UI development loop
 

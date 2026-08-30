@@ -423,6 +423,68 @@ enum ReloadFailure {
 /// patience.
 const RELOAD_PATIENCE: u32 = 3;
 
+/// Whether auto-refresh is actually running, and the worst stall it
+/// has seen. The watcher thread polls on its own cadence but only the
+/// paint loop consumes it, so a fully hidden window (macOS stops
+/// repainting one) or a held pointer suspends refreshing with nothing
+/// on screen to say so. Recording the gap makes that diagnosable
+/// after the fact instead of a guess.
+#[derive(Default)]
+struct WatchHealth {
+    last_checked: Option<Instant>,
+    longest_stall: Option<Duration>,
+}
+
+/// A gap between consumed polls longer than this means the paint loop
+/// stopped, not that a poll ran late — the watcher's cadence is
+/// [`WATCH_INTERVAL`].
+const STALL_THRESHOLD: Duration = Duration::from_secs(10);
+
+impl WatchHealth {
+    /// Records a consumed poll, remembering the worst gap so the
+    /// shell can report a stall that has already ended.
+    fn checked(&mut self, now: Instant) {
+        if let Some(previous) = self.last_checked {
+            let gap = now.saturating_duration_since(previous);
+            if gap >= STALL_THRESHOLD && self.longest_stall.is_none_or(|worst| gap > worst) {
+                self.longest_stall = Some(gap);
+            }
+        }
+        self.last_checked = Some(now);
+    }
+
+    /// One line for the toolbar: how long since a poll landed, plus
+    /// the worst stall once there has been one worth reporting.
+    fn summary(&self, now: Instant) -> String {
+        let Some(last) = self.last_checked else {
+            return "watching: starting…".to_string();
+        };
+        let ago = brief_duration(now.saturating_duration_since(last));
+        match self.longest_stall {
+            Some(stall) => format!(
+                "watching: checked {ago} ago · longest pause {} (window hidden?)",
+                brief_duration(stall)
+            ),
+            None => format!("watching: checked {ago} ago"),
+        }
+    }
+
+    /// Whether the current gap already looks like a stall — the
+    /// toolbar line goes warm so a live stall reads at a glance.
+    fn stalled_now(&self, now: Instant) -> bool {
+        self.last_checked
+            .is_none_or(|last| now.saturating_duration_since(last) >= STALL_THRESHOLD)
+    }
+}
+
+fn brief_duration(span: Duration) -> String {
+    let seconds = span.as_secs();
+    if seconds < 60 {
+        return format!("{seconds}s");
+    }
+    format!("{}m{:02}s", seconds / 60, seconds % 60)
+}
+
 impl RefreshTracker {
     /// Feeds one poll observation; `true` means the change settled
     /// and the caller should reload or raise a conflict now.
@@ -758,6 +820,14 @@ struct App {
     inventory_tab: InventoryTab,
     watcher: FileWatcher,
     refresh: RefreshTracker,
+    /// How auto-refresh is actually faring — the watcher runs off the
+    /// paint loop, so a hidden window silently stops consuming it.
+    watch_health: WatchHealth,
+    /// Whether the gold field holds keyboard focus, reported by the
+    /// character pane each frame. The one focusable widget bound to
+    /// document state, so it is the only one auto-refresh defers to —
+    /// and only for the character.
+    editing_gold: bool,
     /// Documents whose file changed on disk while they hold unsaved
     /// edits — resolved by the conflict modal, never silently.
     conflicts: Vec<DocId>,
@@ -850,6 +920,8 @@ impl App {
             inventory_tab: restored.inventory_tab,
             watcher: start_watcher(),
             refresh: RefreshTracker::default(),
+            watch_health: WatchHealth::default(),
+            editing_gold: false,
             conflicts: Vec::new(),
             view,
             search: search::SearchState::with_settings(restored.search),
@@ -1997,30 +2069,54 @@ impl App {
             *guard = watched;
         }
         ctx.request_repaint_after(WATCH_INTERVAL);
-        let mut latest = None;
+        let mut polls = Vec::new();
         while let Ok(snapshot) = self.watcher.receiver.try_recv() {
-            latest = Some(snapshot);
+            polls.push(snapshot);
         }
-        let Some(snapshot) = latest else { return };
-        let busy = self.drag.is_some()
-            || ctx.input(|input| input.pointer.any_down())
-            || ctx.memory(|memory| memory.focused().is_some());
-        if busy {
+        if polls.is_empty() {
             return;
+        }
+        // A held pointer or a drag means the user is mid-gesture and
+        // the panes must not move underneath it. Keyboard focus is
+        // deliberately not part of this: it is sticky, so a caret left
+        // in the search box used to disable refreshing for every pane
+        // indefinitely. Only the character defers to it, below.
+        if self.drag.is_some() || ctx.input(|input| input.pointer.any_down()) {
+            return;
+        }
+        self.watch_health.checked(Instant::now());
+        // Every queued poll is evidence, not just the newest: the
+        // settle rule counts *disk* observations, and dropping the
+        // backlog a hidden window accumulated would restart the count
+        // from zero and stall the catch-up by another poll or two.
+        let mut ready: Vec<DocId> = Vec::new();
+        for snapshot in &polls {
+            for doc in DocId::FIXED {
+                let Some((path, ours, _)) = self.doc_state(doc) else {
+                    continue;
+                };
+                let Some((_, observed)) = snapshot.iter().find(|(seen, _)| *seen == path) else {
+                    continue;
+                };
+                if self
+                    .refresh
+                    .settled(&path, observed.as_ref(), ours.as_ref())
+                    && !ready.contains(&doc)
+                {
+                    ready.push(doc);
+                }
+            }
         }
         let mut reloaded = Vec::new();
         let mut failed = Vec::new();
-        for doc in DocId::FIXED {
-            let Some((path, ours, dirty)) = self.doc_state(doc) else {
+        for doc in ready {
+            let Some((path, _, dirty)) = self.doc_state(doc) else {
                 continue;
             };
-            let Some((_, observed)) = snapshot.iter().find(|(seen, _)| *seen == path) else {
-                continue;
-            };
-            if !self
-                .refresh
-                .settled(&path, observed.as_ref(), ours.as_ref())
-            {
+            // The gold field edits the character in place through an
+            // uncommitted buffer; reloading under it would land the
+            // typed value on a replaced character.
+            if doc == DocId::Character && self.editing_gold {
                 continue;
             }
             if dirty {
@@ -3016,12 +3112,31 @@ impl App {
             if self.any_dirty() {
                 ui.weak("Saving…");
             }
+            let now = Instant::now();
+            let health = &self.watch_health;
+            let color = if health.stalled_now(now) {
+                theme::GOLD
+            } else {
+                theme::TEXT_WEAK
+            };
+            ui.label(
+                egui::RichText::new(health.summary(now))
+                    .color(color)
+                    .size(11.0),
+            )
+            .on_hover_text(
+                "Auto-refresh watches the open files every 2 s, but only while the \
+                 window is drawing — macOS stops that for a fully hidden window, so \
+                 a long pause here means the app was covered, not that a file was \
+                 missed. Panes catch up on the first frame after it is visible again.",
+            );
         });
     }
 
     /// Advances the drag: adopts a newly started one, paints the item
     /// at the pointer, and commits or cancels on release.
     fn update_drag(&mut self, ctx: &egui::Context, frame: DragFrame) {
+        self.editing_gold = frame.editing_gold;
         if self.drag.is_none() {
             self.drag = frame.begin;
         }
@@ -4191,6 +4306,9 @@ struct DragFrame {
     /// An Alt+Click asking to split the socketed relic/charm out of
     /// the item — both survive.
     extract: Option<ItemAddr>,
+    /// The gold field held keyboard focus this frame: the character
+    /// must not be reloaded under a half-typed value.
+    editing_gold: bool,
 }
 
 /// Paints a container as its actual cell grid, with items at their
@@ -4986,6 +5104,7 @@ fn show_character_section(
         if gold.changed() {
             pane.dirty = true;
         }
+        frame.editing_gold = gold.has_focus();
         let selection_here = matches!(
             *selected,
             Some(ItemAddr::Grid {
@@ -5859,6 +5978,56 @@ mod tests {
         assert_eq!(
             tracker.reload_failed(Path::new("other")),
             ReloadFailure::Transient
+        );
+    }
+
+    #[test]
+    fn a_backlog_of_polls_settles_without_waiting_for_more() {
+        // What a hidden window accumulates: the same changed stamp
+        // observed over and over. Consuming the backlog in order must
+        // settle it, which is why drive_refresh feeds every queued
+        // poll rather than only the newest.
+        let mut tracker = RefreshTracker::default();
+        let path = Path::new("watched");
+        let ours = stamp(10, 100);
+        let changed = stamp(20, 200);
+        let backlog = [&changed; 30];
+        let settles = backlog
+            .iter()
+            .filter(|observed| tracker.settled(path, Some(observed), Some(&ours)))
+            .count();
+        assert_eq!(settles, backlog.len() - 1, "only the first arms the check");
+    }
+
+    #[test]
+    fn watch_health_reports_a_stall_after_it_ends() {
+        let start = Instant::now();
+        let mut health = WatchHealth::default();
+        assert_eq!(health.summary(start), "watching: starting…");
+        assert!(health.stalled_now(start), "nothing checked yet reads stale");
+
+        health.checked(start);
+        assert!(!health.stalled_now(start + Duration::from_secs(2)));
+        assert_eq!(
+            health.summary(start + Duration::from_secs(2)),
+            "watching: checked 2s ago"
+        );
+
+        // A gap the paint loop stopped through, then a resume: the
+        // pause is still reported once polls are landing again.
+        let resumed = start + STALL_THRESHOLD + Duration::from_secs(65);
+        assert!(health.stalled_now(resumed));
+        health.checked(resumed);
+        assert_eq!(
+            health.summary(resumed),
+            "watching: checked 0s ago · longest pause 1m15s (window hidden?)"
+        );
+        // Ordinary cadence afterwards neither clears nor worsens it.
+        health.checked(resumed + Duration::from_secs(2));
+        assert!(
+            health
+                .summary(resumed + Duration::from_secs(2))
+                .contains("1m15s")
         );
     }
 
