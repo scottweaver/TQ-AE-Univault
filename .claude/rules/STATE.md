@@ -19,22 +19,21 @@ restore path and chips were seen live under a scratch `HOME`, but
 **nothing has been clicked** and the dock icon was not captured —
 the user's in-app pass decides. Two assumptions to confirm there:
 chips combine as OR, and `Export type…` still exports the whole
-bucket, not the narrowed view. **Open bug report, unfixed (user's
-call whether to fix):** auto-reload of the transfer stash sometimes
-fails with "unexpected end of data at 0xEFD8: wanted 4 more bytes"
-after the user edits the stash in-game. Assessment: the two-poll
-stability check (`RefreshTracker::settled`, 2 s polls) passed yet
-the `.dxb` read back short, so the game's write over SMB was still
-landing (or the SMB client served a mixed stale/fresh read); the
-`.dxg` twin fallback in `open_stash` ran and failed too, so the
-direct error surfaced. The pane keeps its last good state and the
-tracker re-arms, so it self-heals on a later settle — the defect is
-the alarming toast for a transient condition (and a fresh toast per
-failed retry). Proposed fix: count consecutive failed reloads per
-path in `drive_refresh` and stay silent for the first two (~8 s),
-reporting only a persisting failure with "retrying" in the text.
-Side finding: `reload_doc` clears `dirty` before the read, so a
-failed disk-wins conflict reload leaves in-memory edits unsaveable.
+bucket, not the narrowed view. The same PR carries the **fix for
+the user's auto-reload report** ("unexpected end of data at 0xEFD8:
+wanted 4 more bytes" on the transfer stash after an in-game edit):
+the two-poll stability check passed yet the `.dxb` read back short —
+the game's write over SMB was still landing (or the SMB client
+served a mixed read) and the `.dxg` twin was in the same state, so
+the direct error surfaced as a toast on every retry. Now
+`RefreshTracker` counts consecutive failed reloads per path and the
+first two (`RELOAD_PATIENCE` 3, attempts two polls apart ≈ 12 s)
+stay silent; a persisting failure reports once with "retrying;
+Reload forces it". `reload_doc` also restores the pane's `dirty`
+flag when the read fails, so a failed disk-wins conflict reload can
+no longer strand edits that look saved. **Unplayed** — the user
+should edit the stash in-game with the app open and confirm the
+toast is gone and the reload lands.
 **1MAX ACCEPTED in game 2026-08-30** ("1Max seems to working
 great!"): `LootPlus1MAXTuned` (PR #65) — vanilla density, XP ×3 —
 plays at the pace it was built for, so the XP factor is settled.
@@ -221,9 +220,15 @@ buttons shipped in PR #44):
   read from the game cache at launch — not committed, per the
   never-distribute posture — so the platform default shows until the
   first import. 264 tests, clippy clean, restore + chips seen live
-  under a scratch `HOME`. Risk: no click has landed on the chips; the
-  dock icon was not captured; a bundled `.app` would still need an
-  embedded icon.
+  under a scratch `HOME`. Also fixes the user's mid-session report —
+  transfer-stash auto-reload toasting "unexpected end of data …
+  wanted 4 more bytes" while the game's SMB write was still landing:
+  failed reloads now stay silent for two attempts (~12 s) and report
+  once when persisting; a failed reload restores `dirty`. Risk: no
+  click has landed on the chips; the dock icon was not captured; a
+  bundled `.app` would still need an embedded icon; the reload fix
+  is reasoned from the code, not reproduced — the game-side timing
+  is the user's to exercise.
 
 - **2026-08-30 — 1MAX: the same mod at vanilla density, XP ×3 (PR
   #65, merged).** User

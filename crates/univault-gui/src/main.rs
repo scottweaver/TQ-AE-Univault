@@ -399,11 +399,29 @@ impl DocId {
 /// Decides when an externally observed file state is worth acting
 /// on: a change must hold steady across two consecutive polls so a
 /// file caught mid-write (the game saves over SMB) is never read
-/// half-written.
+/// half-written — and, when a settled file still reads short or
+/// corrupt, how long to keep quiet about it while the write lands.
 #[derive(Default)]
 struct RefreshTracker {
     pending: HashMap<PathBuf, SourceStamp>,
+    /// Consecutive failed reloads per path since the last success.
+    failures: HashMap<PathBuf, u32>,
 }
+
+/// What a failed auto-reload means for the user: nothing yet — a
+/// file whose stamp held still can still read short over SMB while
+/// the game's write lands, and the next settle retries — or a
+/// failure that has outlasted any write and deserves a report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReloadFailure {
+    Transient,
+    Persisting,
+}
+
+/// Failed reloads of one file tolerated silently before one is
+/// reported; attempts are two polls apart, so this is ~12 s of
+/// patience.
+const RELOAD_PATIENCE: u32 = 3;
 
 impl RefreshTracker {
     /// Feeds one poll observation; `true` means the change settled
@@ -431,8 +449,26 @@ impl RefreshTracker {
         false
     }
 
+    /// Drops the pending observation for a freshly (re)opened file.
+    /// The failure count is deliberately kept: every reload attempt
+    /// opens the file, and clearing it here would reset the count
+    /// before it could ever reach [`RELOAD_PATIENCE`].
     fn forget(&mut self, path: &Path) {
         self.pending.remove(path);
+    }
+
+    fn reload_failed(&mut self, path: &Path) -> ReloadFailure {
+        let count = self.failures.entry(path.to_path_buf()).or_insert(0);
+        *count += 1;
+        if *count >= RELOAD_PATIENCE {
+            ReloadFailure::Persisting
+        } else {
+            ReloadFailure::Transient
+        }
+    }
+
+    fn reload_succeeded(&mut self, path: &Path) {
+        self.failures.remove(path);
     }
 }
 
@@ -1986,14 +2022,22 @@ impl App {
                 self.push_conflict(doc);
             } else {
                 match self.reload_doc(doc) {
-                    Ok(()) => reloaded.push(doc_label(doc)),
-                    Err(error) => failed.push(format!("{}: {error}", doc_label(doc))),
+                    Ok(()) => {
+                        self.refresh.reload_succeeded(&path);
+                        reloaded.push(doc_label(doc));
+                    }
+                    Err(error) => match self.refresh.reload_failed(&path) {
+                        ReloadFailure::Transient => {}
+                        ReloadFailure::Persisting => {
+                            failed.push(format!("{}: {error}", doc_label(doc)));
+                        }
+                    },
                 }
             }
         }
         if !failed.is_empty() {
             self.status = Some(Err(format!(
-                "changed on disk but could not reload {}",
+                "changed on disk but still not readable — {} (retrying; Reload forces it)",
                 failed.join("; ")
             )));
         } else if !reloaded.is_empty() {
@@ -2005,27 +2049,40 @@ impl App {
     }
 
     /// Re-reads one document from its own path, dropping in-memory
-    /// edits for it (callers decide when that is allowed).
+    /// edits for it (callers decide when that is allowed). A read
+    /// that fails leaves the pane exactly as it was — edits included,
+    /// still marked unsaved — so a failed disk-wins reload cannot
+    /// strand edits that look saved but never are.
     fn reload_doc(&mut self, doc: DocId) -> Result<(), String> {
-        let (path, _, _) = self.doc_state(doc).ok_or("nothing loaded")?;
+        let (path, _, was_dirty) = self.doc_state(doc).ok_or("nothing loaded")?;
+        self.set_dirty(doc, false);
+        let reloaded = match doc {
+            DocId::Character => self.open_character_file(&path).map(|_| ()),
+            DocId::Stash(slot) => self.open_stash(slot, &path).map(|_| ()),
+            DocId::Store => self.open_store().map(|_| ()),
+        };
+        if reloaded.is_err() {
+            self.set_dirty(doc, was_dirty);
+        }
+        reloaded
+    }
+
+    fn set_dirty(&mut self, doc: DocId, dirty: bool) {
         match doc {
             DocId::Character => {
                 if let Some(pane) = &mut self.character {
-                    pane.dirty = false;
+                    pane.dirty = dirty;
                 }
-                self.open_character_file(&path).map(|_| ())
             }
             DocId::Stash(slot) => {
                 if let Some(pane) = self.stash_slot_mut(slot).as_mut() {
-                    pane.dirty = false;
+                    pane.dirty = dirty;
                 }
-                self.open_stash(slot, &path).map(|_| ())
             }
             DocId::Store => {
                 if let Some(pane) = &mut self.store {
-                    pane.dirty = false;
+                    pane.dirty = dirty;
                 }
-                self.open_store().map(|_| ())
             }
         }
     }
@@ -5732,6 +5789,26 @@ mod tests {
         // Once the pane catches up, the pending state clears.
         assert!(!tracker.settled(path, Some(&changed), Some(&changed)));
         assert!(!tracker.settled(path, Some(&changed), Some(&changed)));
+    }
+
+    #[test]
+    fn a_failed_reload_is_reported_only_once_it_persists() {
+        let mut tracker = RefreshTracker::default();
+        let path = Path::new("watched");
+        for _ in 1..RELOAD_PATIENCE {
+            assert_eq!(tracker.reload_failed(path), ReloadFailure::Transient);
+            // Every attempt reopens the file, which forgets the
+            // pending observation but must not forget the count.
+            tracker.forget(path);
+        }
+        assert_eq!(tracker.reload_failed(path), ReloadFailure::Persisting);
+        assert_eq!(tracker.reload_failed(path), ReloadFailure::Persisting);
+        tracker.reload_succeeded(path);
+        assert_eq!(tracker.reload_failed(path), ReloadFailure::Transient);
+        assert_eq!(
+            tracker.reload_failed(Path::new("other")),
+            ReloadFailure::Transient
+        );
     }
 
     #[test]
