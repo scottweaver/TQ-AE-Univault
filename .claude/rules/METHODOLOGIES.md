@@ -91,12 +91,21 @@ anything not ours still get a question first.
    with the upstream, and pulling by hand is never part of their
    workflow** (user instruction 2026-08-30, after a merge left it
    three commits behind and the merged features "weren't there").
-   A worktree-isolated session cannot do this: the harness refuses
-   git against the shared checkout (`-C`, `cd`, scripts reaching
-   it) and the guard is not to be bypassed. From such a session,
-   the merge announcement carries the exact one-liner for the user
-   (`! git -C ~/Projects/tq-univault pull --ff-only`) and STATE.md
-   says `main` was left behind — silently stale is the failure.
+   **The harness does this itself:** a `PostToolUse` hook on `Bash`
+   (`.claude/settings.json` → `.claude/hooks/sync-main.sh`) runs
+   after every `gh pr merge` from any session — worktree-isolated
+   ones included, since hooks run as the user outside the sandbox —
+   finds the checkout via `git worktree list`, fetches, and
+   fast-forwards its `main` (only the `main` ref when another branch
+   is out). It reports "main checkout fast-forwarded a → b" as a
+   system message, or why it could not (dirty or diverged checkout,
+   fetch failure); on a failure, hand the user the exact one-liner
+   (`! git -C ~/Projects/tq-univault pull --ff-only`) and say so in
+   STATE.md — silently stale is the failure. The guard that refuses
+   git against the shared checkout from an isolated session's Bash
+   tool is still not to be bypassed; the hook is the sanctioned
+   path. Merges made outside Claude Code (the GitHub UI) still need
+   the manual pull.
 2. **Delete the merged branch — local and remote.** Use `git branch -d`
    (not `-D`); if `-d` refuses, the branch isn't actually merged —
    investigate before forcing. (Squash-merge warnings about
