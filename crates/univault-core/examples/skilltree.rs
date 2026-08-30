@@ -28,9 +28,10 @@ fn main() {
     let text = std::fs::read(game.join("Text/Text_EN.arc")).expect("read Text_EN.arc");
     let data = GameData::from_bytes(database, text).expect("assemble game data");
 
+    let db = skilltree::SkillDb::vanilla(&data);
     let mut index = Vec::new();
-    for mastery in skilltree::masteries(&data) {
-        let Some(document) = skilltree::mastery_tree(&data, &mastery) else {
+    for mastery in skilltree::masteries(&db) {
+        let Some(document) = skilltree::mastery_tree(&db, &mastery) else {
             continue;
         };
         let slug: String = mastery

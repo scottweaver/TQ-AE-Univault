@@ -1,7 +1,8 @@
 {
   "mcpServers": {
     "univault": {
-      "command": "target/release/univault-mcp"
+      "command": "cargo",
+      "args": ["run", "--release", "--quiet", "--package", "univault-mcp"]
     }
   }
 }
