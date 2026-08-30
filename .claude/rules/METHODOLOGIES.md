@@ -76,14 +76,24 @@ drift — stale branches accumulate, tickets read "In Progress" weeks
 after the code shipped, docs describe a world that no longer exists.
 
 Run this as soon as the PR is merged. **Confirm with the user before
-the destructive steps** if acting unprompted.
+the destructive steps** if acting unprompted — with one standing
+exception: **deleting the merged PR's own branch needs no
+confirmation** (user instruction 2026-08-30, "once merged, branches
+should be removed per the wrap-up"). The merge is the authorization;
+asking only delays the routine. Unmerged branches, worktrees, and
+anything not ours still get a question first.
 
 1. **Pull `main` and switch off the merged branch.**
    `git checkout main && git pull --ff-only`
 2. **Delete the merged branch — local and remote.** Use `git branch -d`
    (not `-D`); if `-d` refuses, the branch isn't actually merged —
    investigate before forcing. (Squash-merge warnings about
-   "not yet merged to HEAD" are expected.)
+   "not yet merged to HEAD" are expected: verify with an empty
+   `git diff <squash-sha> <branch-tip>`, then `-D`.) Note that
+   `gh pr merge --delete-branch` fails here — it tries to switch the
+   current worktree to `main`, which the user's checkout already
+   holds — so delete by hand: `git branch -D <branch>` and
+   `git push origin --delete <branch>`.
 3. **Verify the tracker ticket state** matches reality; flip it
    manually if needed (see LINEAR.md, if this project uses Linear).
 4. **Refresh STATE.md** — and audit ARCHITECTURE.md if the merge
