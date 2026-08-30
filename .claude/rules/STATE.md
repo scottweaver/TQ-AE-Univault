@@ -5,35 +5,36 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-30 (PR #69 open — persisted view state, slot filter, app icon)
+Last updated: 2026-08-30 (PR #69 merged — testing from main)
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** PR #69 (draft, branch
-`feat/persist-ui-state-slot-filter-app-icon`) delivers the 2026-08-30
-three-feature ask — restart-persistent view state (`ui-state.json`),
-a "Fits into:" slot-filter chip row on the Relic/Charm buckets, and
-the Iron Great Helm (Corinthian) as the app icon. Gates green; the
-restore path and chips were seen live under a scratch `HOME`, but
-**nothing has been clicked** and the dock icon was not captured —
-the user's in-app pass decides. Two assumptions to confirm there:
-chips combine as OR, and `Export type…` still exports the whole
-bucket, not the narrowed view. The same PR carries the **fix for
-the user's auto-reload report** ("unexpected end of data at 0xEFD8:
-wanted 4 more bytes" on the transfer stash after an in-game edit):
-the two-poll stability check passed yet the `.dxb` read back short —
-the game's write over SMB was still landing (or the SMB client
-served a mixed read) and the `.dxg` twin was in the same state, so
-the direct error surfaced as a toast on every retry. Now
-`RefreshTracker` counts consecutive failed reloads per path and the
-first two (`RELOAD_PATIENCE` 3, attempts two polls apart ≈ 12 s)
-stay silent; a persisting failure reports once with "retrying;
-Reload forces it". `reload_doc` also restores the pane's `dirty`
-flag when the read fails, so a failed disk-wins conflict reload can
-no longer strand edits that look saved. **Unplayed** — the user
-should edit the stash in-game with the app open and confirm the
-toast is gone and the reload lands.
+**Resume here:** PR #69 **merged to main (7bd87a5) on the user's
+"just merge all PRs so we can test from main"** — the 2026-08-30
+three-feature round (restart-persistent view state in
+`ui-state.json`, the "Fits into:" slot-filter chip row on the
+Relic/Charm buckets, the Iron Great Helm (Corinthian) as the app
+icon) plus the transfer-stash auto-reload fix. Merged **unclicked**:
+the restore path and chips were seen live under a scratch `HOME`,
+the dock icon was never captured, and the reload fix is reasoned
+from the code, not reproduced. The user's pass from `main` decides,
+and regressions are fixed forward. What that pass should answer:
+the dock shows the crested helm; chips combine as OR (Helmet + Ring
+= fits either — flip to AND if that reads wrong); `Export type…`
+exporting the whole bucket rather than the narrowed view is
+acceptable; quitting and relaunching brings tabs, sort, Skip
+duplicates, and the search bar back; editing the stash in-game with
+the app open now ends in "auto-reloaded Shared bank" rather than the
+"unexpected end of data at 0xEFD8: wanted 4 more bytes" toast (the
+fix: `RefreshTracker` keeps the first two failed reloads silent,
+`RELOAD_PATIENCE` 3 ≈ 12 s, reports once if persisting; `reload_doc`
+restores `dirty` on a failed read). Post-merge cleanup still owed:
+the merged branch `feat/persist-ui-state-slot-filter-app-icon` and
+this session's `mod-phantom-strike` worktree are **not yet deleted**
+— confirm with the user, then `git branch -d` + `git push origin
+--delete`. The user tests from their own checkout, which needs
+`git pull --ff-only` on `main` first.
 **1MAX ACCEPTED in game 2026-08-30** ("1Max seems to working
 great!"): `LootPlus1MAXTuned` (PR #65) — vanilla density, XP ×3 —
 plays at the pace it was built for, so the XP factor is settled.
@@ -137,16 +138,13 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#65 all merged; all gates green |
+| `main` | trunk | PRs #1–#69 all merged; all gates green |
 | `worktree-fix+projectile-speeds-ae` | a parallel session's cast-speed / DPS docs work | pushed, no PR; locked worktree under `.claude/worktrees/` — not the main session's to touch |
-| `feat/persist-ui-state-slot-filter-app-icon` | persisted view state, relic/charm slot filter, helm app icon | PR #69 (draft), gates green, awaiting the user's in-app pass |
+| `feat/persist-ui-state-slot-filter-app-icon` | persisted view state, relic/charm slot filter, helm app icon, stash auto-reload fix | PR #69 **merged** 2026-08-30; branch and its `mod-phantom-strike` worktree await deletion (confirm first) |
 
-The remote is these three. Everything merged has been pruned
-local and remote (2026-08-30), including the long-lingering
-`docs/checkpoint-2026-08-29` branch and worktree — `git cherry`
-confirmed its content was already upstream from the #64 squash before
-it went. The `mod-phantom-strike` worktree now carries the PR #69
-branch; it goes when the PR lands.
+The remote is these three. Everything merged before #69 has been
+pruned local and remote (2026-08-30); the #69 branch is the one
+leftover, kept until the user confirms its deletion.
 
 ## Next up
 
@@ -206,7 +204,7 @@ buttons shipped in PR #44):
 ## Most recent meaningful progress
 
 - **2026-08-30 — Persisted view state, relic/charm slot filter, helm
-  app icon (PR #69, draft).** Three asks in one round. (1) A
+  app icon (PR #69, merged).** Three asks in one round. (1) A
   `ui-state.json` beside the store (format tag `univault-ui-state`)
   carries the left tab, inventory sub-tab, store surface, the store
   pane's bucket/sort/Skip-duplicates/slot filter, and the whole
