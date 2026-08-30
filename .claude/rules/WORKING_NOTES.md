@@ -73,11 +73,23 @@ annotated.
   cargo test -p univault-core --test real_vault_migration -- --nocapture`
 - **The MCP server** is exercised by piping JSON-RPC into
   `./target/debug/univault-mcp` with `UNIVAULT_STORE` set.
-- **Two mod bundles are installed on this machine** —
-  `LootPlusXMAX3Tuned` and `LootPlusXMAX3Tuned1xBoss`, both under the
-  save root's `CustomMaps`. `resolve_mod(None)` errors naming the
-  choices whenever more than one exists, so record tools need an
-  explicit `mod` argument here.
+- **Three mod bundles are installed on this machine** —
+  `LootPlusXMAX3Tuned`, `LootPlusXMAX3Tuned1xBoss`, and
+  `LootPlus1MAXTuned`, all under the save root's `CustomMaps`.
+  `resolve_mod(None)` errors naming the choices whenever more than one
+  exists, so record tools need an explicit `mod` argument here.
+- **The base mods all ship in one Workshop item.** Item 1779344333
+  under `steamapps/workshop/content/475150/` holds eight sibling
+  folders — `LootPlusXMAXFTWx1` through `x5`, `x3x1`, `xMax-`,
+  `xMax+`. They share the LootPlus loot tables and differ in density:
+  `x1` leaves `spawnMinModifier`/`spawnMaxModifier` at 100/120 and the
+  boss/hero proxy pools at vanilla entry counts, while `x3` sets
+  300/300, expands those pools, and pays for it with a `* 0.7` wrapper
+  on `experienceEquation`. Pick the base folder that already does the
+  density you want rather than trying to undo one.
+- **Custom-quest characters live in `SaveData/User`, shared by every
+  bundle** — switching between our CustomMaps mods keeps the same
+  characters; only `SaveData/Main` is the vanilla campaign.
 
 ## Reading the game's record semantics
 
@@ -110,6 +122,13 @@ annotated.
   A request to "triple X" is often already satisfied; adding a rule
   on top multiplies again. Diff the installed bundle against vanilla
   first — that is what `moddiff` and the build report are for.
+- **A new bundle inherits the tunes with `"extends"`, never a copy.**
+  `mods/1max.json` is `{name, extends: "xmax3-tuned.json", rules}`:
+  modforge prepends the named spec's rules, so a rule added to
+  `xmax3-tuned.json` reaches every bundle and the extending spec only
+  states its own difference. Rules run in order, so a later `set`
+  refines an earlier `revert_variables` on the same variable — that is
+  how 1MAX overrides the inherited XP revert.
 - **Useful globals in `records\xpack\game\gameengine.dbr`:** distance
   profiles (`meleeRange` 1.2, `shortRange` 5, `moderateRange` 10,
   `longRange` 17, `maximumRange` 30, against a 34-unit

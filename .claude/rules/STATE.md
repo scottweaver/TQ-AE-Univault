@@ -5,14 +5,20 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-29 (checkpoint — session handoff refreshed)
+Last updated: 2026-08-29 (1MAX bundle built and installed)
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** nothing is in flight — tree clean, no unpushed
-commits, no open PRs. Two mod tunes are live on the user's install
-but **unplayed**: Phantom Strike `characterRunSpeedModifier` 0→500
+**Resume here:** `mod/1max-xp` carries a third bundle,
+`LootPlus1MAXTuned` — vanilla density, XP ×3 — built and installed to
+`CustomMaps`, **unplayed**. The question it answers is empirical: a
+mob group should feel worth what a 3× pack is worth in
+`LootPlusXMAX3Tuned`. If levelling lands fast or slow, the one knob is
+the `* 3` at the tail of `experienceEquation` in `mods/1max.json` —
+rebuild and reinstall, nothing else moves. Two older mod tunes are
+also live and **unplayed**: Phantom Strike
+`characterRunSpeedModifier` 0→500
 (PR #58) and Psionic Burn `skillTargetRadius` 3.5→6.0 (PR #61). Both
 need only an in-game pass after a session restart. If the blink still
 feels slow, the next suspect is `playerRunSpeedCapMax` (166) clamping
@@ -65,9 +71,10 @@ forward or reverted (`git revert da227aa`), not re-branched.
 - **Known gap, unfixed:** `get_mastery` / `list_masteries` call
   `game_data()` directly, so MCP skill trees are always vanilla while
   the record tools overlay the installed bundle. Listed under "Next up".
-- User in-game checks outstanding (mod acceptance): **Phantom Strike
-  blink speed (PR #58) and Psionic Burn radius (PR #61) — the two
-  freshest**; pet Energy ×2.5 / regen ×1.75 on Core Dweller (875 /
+- User in-game checks outstanding (mod acceptance): **the
+  `LootPlus1MAXTuned` levelling pace — the freshest, and the only one
+  that is a judgment call rather than a yes/no**; Phantom Strike
+  blink speed (PR #58) and Psionic Burn radius (PR #61); pet Energy ×2.5 / regen ×1.75 on Core Dweller (875 /
   5.25 at level 20) and Call of the Wild wolves (255 / 3.5); vanilla
   XP restored (even-level trash mob on Normal ≈ level×15); target
   caps ×3 in dense packs; 2026-08-26 Core Dweller tune. Older
@@ -96,8 +103,9 @@ with its computed type tabs, with
 drag-and-drop, right-click sends, copy/duplicate,
 respec, Reload, gold editing, and autosaved backup-first splice
 writes — user-accepted against a real network-mounted save tree.
-The mod forge (arz composer + patch specs) tunes the user's live
-LootPlus x3 mod. Binding decisions in ARCHITECTURE.md
+The mod forge (arz composer + patch specs, one shared rule set that
+bundles extend) builds the user's three live LootPlus bundles: x3, x3
+with 1× bosses, and 1MAX at vanilla density. Binding decisions in ARCHITECTURE.md
 (autosave + per-load backup-first + targeted-splice writes, one
 unified store file with computed type buckets and TQVaultAE JSON as
 import/export interchange,
@@ -109,12 +117,14 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#62 all merged; all gates green |
+| `main` | trunk | PRs #1–#64 all merged; all gates green |
+| `mod/1max-xp` | the `LootPlus1MAXTuned` bundle + modforge `extends` | pushed, PR open; bundle already installed |
 | `worktree-fix+projectile-speeds-ae` | a parallel session's cast-speed / DPS docs work | pushed, no PR; locked worktree under `.claude/worktrees/` — not the main session's to touch |
 
-The remote is now just these two: every merged branch has been pruned
-(2026-08-29). A local `docs/checkpoint-2026-08-29` worktree lingers
-whose remote branch is already gone — remove it when convenient.
+The remote is now just these three: every merged branch has been
+pruned (2026-08-29). A local `docs/checkpoint-2026-08-29` worktree
+lingers whose remote branch is already gone — remove it when
+convenient.
 
 ## Next up
 
@@ -172,6 +182,28 @@ buttons shipped in PR #44):
    the whole store loads and filters in memory.
 
 ## Most recent meaningful progress
+
+- **2026-08-29 — 1MAX: the same mod at vanilla density, XP ×3.** User
+  ask: a third bundle with no enemy-density increase, where a mob
+  group is still worth what a 3× pack is worth. Two things made it
+  cheap. The Workshop item already ships `LootPlusXMAXFTWx1` — same
+  LootPlus loot tables, `spawnMin/MaxModifier` 100/120 instead of
+  300/300, boss and hero pools left at vanilla counts — so the base
+  supplies "no density" without undoing anything. And the x3 base pays
+  for its density with a `* 0.7` wrapper on `experienceEquation`,
+  which `xmax3-tuned` already reverts; 1MAX writes the same vanilla
+  string wrapped `* 3` instead. Rather than fork the rules, modforge
+  gained `"extends"`: `mods/1max.json` is a name, a parent, and one
+  rule, and every tune added to `xmax3-tuned.json` from now on reaches
+  all three bundles. Proof the mechanism is inert on what exists:
+  rebuilding `LootPlusXMAX3Tuned` with the new binary is **byte-identical**
+  to the installed bundle. Built and installed; 255 tests, clippy
+  clean. Three user decisions, all theirs: star heroes keep their ×3
+  (a density bump, but one they want), XP ×3.0 over the gentler
+  options, name `LootPlus1MAXTuned`. Risk: the XP factor is a feel
+  question no test can settle, and heroes now stack ×3 spawns with ×3
+  XP — nine times vanilla hero XP, the one place the pacing could run
+  hot.
 
 - **2026-08-29 — Mod: Psionic Burn radius 3.5 → 6.0 (PR #61,
   merged).** User
@@ -330,19 +362,6 @@ buttons shipped in PR #44):
   components are preview-proven but not yet in the app; black
   panel interior is baked from the design — confirm it's wanted
   once composited over the app backdrop.
-- **2026-08-27 — Chrome live-review marathon (PR #39, merged).** A
-  dozen rounds of screenshot-annotated iteration with the user on
-  top of the phase-2 base: two border vocabularies settled (ornate
-  frame = pane outermost only; the 15px under-tabs leather strip =
-  every tab-owned panel, active tab merging through — found after
-  two wrong crops, one slicing the caravan art's own tab plates).
-  Reactive layout (`fit_cell_size` by both axes, pane scrollbars
-  removed, grids center, doll padded in and out), pointer-attached
-  tooltips, sectioned Help modal replacing the intro wall-of-text,
-  import-progress modal, vault Filter… button, exclusive inventory
-  sub-tabs (UIX queue item retired), Recent as a chrome menu.
-  Risk: the final strip fix merged without an in-app pass; the
-  whole look now needs one fresh full review.
 ## Blocked / waiting
 
 - *(nothing)*

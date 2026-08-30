@@ -1,0 +1,16 @@
+{
+  "name": "LootPlus1MAXTuned",
+  "extends": "xmax3-tuned.json",
+  "builds": [
+    "LootPlus1MAXTuned: base LootPlusXMAXFTWx1 (Workshop 1779344333) — vanilla monster density (the base leaves the spawn modifiers and the boss/hero pools alone), every xmax3-tuned rule inherited, and experienceEquation x3 so a mob group is worth what a 3x pack is worth in LootPlusXMAX3Tuned"
+  ],
+  "rules": [
+    {
+      "kind": "record",
+      "record": "records\\xpack\\game\\gameengine.dbr",
+      "set": {
+        "experienceEquation": "((((monsterLevel*15)+((monsterLevel-averagePlayerLevel)*(averagePlayerLevel/3.5)))*(1+(monsterExperience/100)) * (1+(0.125 * gameDifficultyDV))) * 3)"
+      }
+    }
+  ]
+}

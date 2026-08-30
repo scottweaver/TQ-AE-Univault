@@ -17,11 +17,14 @@
 //! }
 //! ```
 //!
+//! An `"extends": "<sibling spec>.json"` field prepends that spec's
+//! rules, so several bundles share one set of tunes and add their own.
+//!
 //! Usage: `cargo run --release -p univault-core --example modforge -- \
 //!     "<TQ AE install dir>" "<base mod dir>" <patch.json> "<CustomMaps dir>"`
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use univault_core::arz::{ArzFile, DbRecord, DbValues, DbVariable, compose, normalize};
@@ -30,6 +33,10 @@ use univault_core::chr::RecordId;
 #[derive(Deserialize)]
 struct PatchSpec {
     name: String,
+    /// A sibling spec whose rules run first. Shared tunes live in one
+    /// file so a bundle added later cannot drift from the others.
+    #[serde(default)]
+    extends: Option<String>,
     rules: Vec<Rule>,
 }
 
@@ -102,9 +109,7 @@ fn main() {
         );
         std::process::exit(2);
     };
-    let mut spec: PatchSpec =
-        serde_json::from_str(&std::fs::read_to_string(&patch_path).expect("read patch spec"))
-            .expect("parse patch spec");
+    let mut spec = load_spec(Path::new(&patch_path), &mut Vec::new());
     // One rules file, several bundles: an override names this build
     // (e.g. the same tunes onto the x3 and x3x1 bases).
     if let Some(name) = args.next() {
@@ -408,6 +413,29 @@ fn main() {
         image.len() / 1024,
         bundle.display()
     );
+}
+
+/// Reads a spec and the chain it extends, base rules first — a rule
+/// in the extending spec therefore refines the one it follows.
+fn load_spec(path: &Path, chain: &mut Vec<PathBuf>) -> PatchSpec {
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    assert!(
+        !chain.contains(&canonical),
+        "extends cycle at {}",
+        path.display()
+    );
+    chain.push(canonical);
+    let text = std::fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("read patch spec {}: {error}", path.display()));
+    let mut spec: PatchSpec = serde_json::from_str(&text)
+        .unwrap_or_else(|error| panic!("parse patch spec {}: {error}", path.display()));
+    if let Some(base) = spec.extends.take() {
+        let base_path = path.parent().unwrap_or(Path::new(".")).join(base);
+        let mut rules = load_spec(&base_path, chain).rules;
+        rules.append(&mut spec.rules);
+        spec.rules = rules;
+    }
+    spec
 }
 
 /// Player-side skill records: the mastery trees, shared actions,
