@@ -37,7 +37,11 @@ pub struct Univault {
 impl Univault {
     #[must_use]
     pub fn from_env() -> Self {
-        let paths = Paths::from_env();
+        Self::with_paths(Paths::from_env())
+    }
+
+    #[must_use]
+    pub fn with_paths(paths: Paths) -> Self {
         let cache = paths.cache_file.as_deref().and_then(world::load_cache);
         Self {
             paths,
@@ -288,6 +292,21 @@ fn ok_json<T: serde::Serialize>(value: &T) -> CallToolResult {
     }
 }
 
+/// The skill database a mastery request reads: the resolved bundle
+/// layered over vanilla, or vanilla alone. Mastery tools go through
+/// this so their trees agree with what the record tools report —
+/// reading `GameData` directly reported vanilla numbers for a modded
+/// skill, with nothing in the response admitting it.
+fn skill_db<'a>(
+    data: &'a GameData,
+    source: Option<&'a (String, Arc<ArzFile>)>,
+) -> skilltree::SkillDb<'a> {
+    match source {
+        Some((_, mod_db)) => skilltree::SkillDb::overlaid(data, mod_db),
+        None => skilltree::SkillDb::vanilla(data),
+    }
+}
+
 fn fail(message: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(message.into())])
 }
@@ -370,6 +389,18 @@ pub struct SearchParams {
 pub struct MasteryParams {
     /// Mastery name (e.g. "Earth") or its record path.
     pub mastery: String,
+    /// Mod bundle to overlay (omit = the single installed bundle;
+    /// "vanilla" = no overlay).
+    #[serde(rename = "mod")]
+    pub mod_bundle: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct ModParams {
+    /// Mod bundle to overlay (omit = the single installed bundle;
+    /// "vanilla" = no overlay).
+    #[serde(rename = "mod")]
+    pub mod_bundle: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -580,7 +611,7 @@ impl Univault {
     }
 
     #[tool(
-        description = "Items in the store. With no 'bucket', returns everything; with one (a type name like 'Ring' or 'Sword', case-insensitive), only that type."
+        description = "Items in the store, each with the stable 'id' that addresses it. With no 'bucket', returns everything; with one (a type name like 'Ring' or 'Sword', case-insensitive), only that type. Stored items have no grid position, so no x/y is reported — 'width'/'height' are the item's footprint."
     )]
     fn get_store(&self, Parameters(params): Parameters<StoreParams>) -> CallToolResult {
         let result = self.store().and_then(|store| {
@@ -591,13 +622,19 @@ impl Univault {
             };
             let items: Vec<Value> = store
                 .entries()
-                .filter(|entry| {
-                    wanted.is_none_or(|bucket| store::bucket_of(db, &entry.item) == bucket)
-                })
-                .map(|entry| {
+                .filter_map(|entry| {
+                    let bucket = store::bucket_of(db, &entry.item);
+                    if wanted.is_some_and(|wanted| wanted != bucket) {
+                        return None;
+                    }
                     let mut item = json!(view::item_view(db, &entry.item));
-                    item["type"] = json!(store::bucket_of(db, &entry.item).label());
-                    item
+                    if let Some(object) = item.as_object_mut() {
+                        object.remove("x");
+                        object.remove("y");
+                        object.insert("id".to_string(), json!(entry.id()));
+                        object.insert("type".to_string(), json!(bucket.label()));
+                    }
+                    Some(item)
                 })
                 .collect();
             Ok(json!({
@@ -741,29 +778,38 @@ impl Univault {
     }
 
     #[tool(
-        description = "List the playable masteries discovered in the game database. First call loads the database (a few seconds)."
+        description = "List the playable masteries the game would actually run: the installed bundle overlaid on vanilla by default, so a mod's added or renamed masteries appear. 'mod' names a bundle explicitly, or \"vanilla\" for no overlay. First call loads the database (a few seconds)."
     )]
-    fn list_masteries(&self) -> CallToolResult {
-        let result = self.game_data().map(|data| {
-            skilltree::masteries(&data)
-                .into_iter()
-                .map(|mastery| {
-                    json!({
-                        "name": mastery.name,
-                        "record": mastery.record,
+    fn list_masteries(&self, Parameters(params): Parameters<ModParams>) -> CallToolResult {
+        let result = (|| {
+            let source = self.resolve_mod(params.mod_bundle.as_deref())?;
+            let data = self.game_data()?;
+            let db = skill_db(&data, source.as_ref());
+            Ok(json!({
+                "mod": source.as_ref().map(|(name, _)| name.as_str()),
+                "masteries": skilltree::masteries(&db)
+                    .into_iter()
+                    .map(|mastery| {
+                        json!({
+                            "name": mastery.name,
+                            "record": mastery.record,
+                        })
                     })
-                })
-                .collect::<Vec<_>>()
-        });
+                    .collect::<Vec<_>>(),
+            }))
+        })();
         or_fail(result)
     }
 
     #[tool(
-        description = "One mastery's full skill tree: every skill with localized names, tiers, caps, per-level effect arrays, and the buff/pet records they reference. Large response (~100-500 KB)."
+        description = "One mastery's full skill tree: every skill with localized names, tiers, caps, per-level effect arrays, and the buff/pet records they reference. Reflects the installed bundle by default — a mod's skill tuning shows here, and the 'mod' key in the response says which source it came from. Large response (~100-500 KB)."
     )]
     fn get_mastery(&self, Parameters(params): Parameters<MasteryParams>) -> CallToolResult {
-        let result = self.game_data().and_then(|data| {
-            let masteries = skilltree::masteries(&data);
+        let result = (|| {
+            let source = self.resolve_mod(params.mod_bundle.as_deref())?;
+            let data = self.game_data()?;
+            let db = skill_db(&data, source.as_ref());
+            let masteries = skilltree::masteries(&db);
             let wanted = params.mastery.to_lowercase();
             let mastery = masteries
                 .iter()
@@ -781,9 +827,16 @@ impl Univault {
                         names.join(", ")
                     )
                 })?;
-            skilltree::mastery_tree(&data, mastery)
-                .ok_or_else(|| format!("mastery '{}' has no skill directory", mastery.name))
-        });
+            let mut document = skilltree::mastery_tree(&db, mastery)
+                .ok_or_else(|| format!("mastery '{}' has no skill directory", mastery.name))?;
+            if let Some(object) = document.as_object_mut() {
+                object.insert(
+                    "mod".to_string(),
+                    json!(source.as_ref().map(|(name, _)| name.as_str())),
+                );
+            }
+            Ok(document)
+        })();
         or_fail(result)
     }
 
@@ -1048,5 +1101,128 @@ impl ServerHandler for Univault {
                 .into(),
         );
         info
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A store holding one ring and one sword, with no game cache to
+    /// classify them — buckets still resolve, from the base records.
+    const TWO_ITEMS: &str = r#"{"format":"univault-store","version":1,"nextId":2,
+        "items":[
+          {"id":0,"baseName":"records\\items\\jewelry\\rings\\r001.dbr","seed":11,"var1":0,"stackSize":1},
+          {"id":1,"baseName":"records\\items\\weapons\\sword\\s001.dbr","seed":22,"var1":0,"stackSize":1}
+        ]}"#;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let base = std::env::temp_dir().join(format!(
+            "univault-mcp-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&base).unwrap();
+        base
+    }
+
+    fn server_over(store_file: Option<PathBuf>, custom_maps: Option<PathBuf>) -> Univault {
+        Univault::with_paths(Paths {
+            save_roots: Vec::new(),
+            store_file,
+            cache_file: None,
+            game_dir: None,
+            custom_maps,
+        })
+    }
+
+    fn payload(result: &CallToolResult) -> (bool, Value) {
+        let rendered = serde_json::to_value(result).unwrap();
+        let is_error = rendered["isError"].as_bool().unwrap_or(false);
+        let text = rendered["content"][0]["text"].as_str().unwrap().to_string();
+        let body = serde_json::from_str(&text).unwrap_or(Value::String(text));
+        (is_error, body)
+    }
+
+    #[test]
+    fn bucket_names_resolve_case_insensitively_and_a_miss_lists_the_choices() {
+        assert_eq!(
+            resolve_bucket("ring").unwrap(),
+            resolve_bucket("Ring").unwrap()
+        );
+
+        let error = resolve_bucket("Trousers").unwrap_err();
+        assert!(error.contains("no item type 'Trousers'"));
+        assert!(error.contains("Ring"), "the miss must name the valid types");
+    }
+
+    #[test]
+    fn a_stored_item_reports_its_id_and_no_grid_position() {
+        let base = scratch("store");
+        let file = base.join("vault-store.json");
+        std::fs::write(&file, TWO_ITEMS).unwrap();
+
+        let (is_error, body) = payload(
+            &server_over(Some(file), None).get_store(Parameters(StoreParams { bucket: None })),
+        );
+
+        assert!(!is_error);
+        assert_eq!(body["total_items"], 2);
+        assert_eq!(body["shown"], 2);
+        let ids: Vec<u64> = body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["id"].as_u64().unwrap())
+            .collect();
+        assert_eq!(ids, [0, 1], "the store's own ids address each item");
+        for item in body["items"].as_array().unwrap() {
+            assert!(item.get("x").is_none(), "stored items have no position");
+            assert!(item.get("y").is_none(), "stored items have no position");
+            assert!(item["width"].is_i64(), "footprint still reported");
+        }
+
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn an_unknown_bucket_fails_the_call_rather_than_returning_everything() {
+        let base = scratch("bucket");
+        let file = base.join("vault-store.json");
+        std::fs::write(&file, TWO_ITEMS).unwrap();
+
+        let (is_error, body) = payload(&server_over(Some(file), None).get_store(Parameters(
+            StoreParams {
+                bucket: Some("Trousers".to_string()),
+            },
+        )));
+
+        assert!(is_error);
+        assert!(body.as_str().unwrap().contains("no item type 'Trousers'"));
+
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn vanilla_is_always_available_and_an_unknown_bundle_is_named_in_the_error() {
+        let server = server_over(None, None);
+        assert!(server.resolve_mod(Some("vanilla")).unwrap().is_none());
+        assert!(
+            server.resolve_mod(None).unwrap().is_none(),
+            "no bundles installed reads as vanilla, not an error"
+        );
+
+        let Err(error) = server.resolve_mod(Some("NoSuchBundle")) else {
+            panic!("an unknown bundle must not resolve");
+        };
+        assert!(error.contains("no mod bundle named 'NoSuchBundle'"));
+    }
+
+    #[test]
+    fn overview_states_the_read_only_contract() {
+        let (is_error, body) = payload(&server_over(None, None).overview());
+        assert!(!is_error);
+        assert_eq!(body["read_only"], true);
+        assert_eq!(body["cache"]["loaded"], false);
     }
 }
