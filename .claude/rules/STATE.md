@@ -5,28 +5,31 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-30 (socket affordances branch open — tooltip
-hints + socket pips)
+Last updated: 2026-08-30 (PR #75 merged and pruned — socketing now
+announces itself)
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** branch `feat/socket-affordances` is open with the
-socket-discoverability round — **the user asked to "add the ability
-to slot/unslot charms and relics from gear" and the answer was that
-it already shipped** (drag a piece onto gear to socket; Alt+Click
-gear to extract, PRs #25/#26), invisibly. Their call after seeing
-that: keep every gesture exactly as it is, make it announce itself.
-So: a tooltip footer listing every relic/charm gesture the hovered
-item accepts, and one relic-orange pip per filled socket at a tile's
-lower-left. Core gained `Affordance` + `affordances()` and a typed
-`BonusPick` (which also de-duplicates the double-click gate that
-`request_bonus_edit` had inlined). 268 tests, clippy clean; the
-footer and pips were **seen live** under a scratch `HOME` — the
-tooltip by temporarily forcing `hovered` (synthetic input stays
-banned), a scratch patch that was reverted before commit. What the
-user's own pass decides: whether the pip is findable without being
-loud, and whether the footer earns its two lines on partial pieces.
+**Resume here:** PR #75 **merged to main (477cd0e) on the user's
+"merge it"**, branch pruned local and remote, all five CI checks
+green. The socket-discoverability round — **the user asked to "add
+the ability to slot/unslot charms and relics from gear" and the
+answer was that it already shipped** (drag a piece onto gear to
+socket; Alt+Click gear to extract, PRs #25/#26), invisibly. Their
+call after seeing that: keep every gesture exactly as it is, make it
+announce itself. So: a tooltip footer listing every relic/charm
+gesture the hovered item accepts, and one relic-orange pip per
+filled socket at a tile's lower-left. Core gained `Affordance` +
+`affordances()` and a typed `BonusPick` (which also de-duplicates
+the double-click gate that `request_bonus_edit` had inlined). 268
+tests, clippy clean; the footer and pips were **seen live** under a
+scratch `HOME` — the tooltip by temporarily forcing `hovered`
+(synthetic input stays banned), a scratch patch reverted before
+commit. Merged **unclicked**, like #69 before it: what the user's
+own pass from `main` decides is whether the pip is findable without
+being loud, and whether the footer earns its two lines on partial
+pieces. Regressions are fixed forward.
 **Deliberately not built, and worth a decision:** the second
 (Atlantis) socket can still only be *emptied*, never filled —
 `can_socket` refuses any target whose first socket is full. A scan
@@ -137,12 +140,13 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#73 all merged; all gates green |
-| `feat/socket-affordances` | tooltip gesture footer + socket pips | this session's work; branched from `main`, PR open |
+| `main` | trunk | PRs #1–#75 all merged; all gates green |
 | `worktree-fix+projectile-speeds-ae` | a parallel session's cast-speed / DPS docs work | pushed, no PR; locked worktree under `.claude/worktrees/` — not the main session's to touch |
+| `worktree-mcp-overlay-and-coverage` | a parallel session's MCP mod-overlay / coverage work | pushed, no PR; checked out in its own worktree — not this session's to touch |
 
-Everything merged through #73 has been pruned local and remote
-(2026-08-30).
+Everything merged through #75 has been pruned local and remote
+(2026-08-30). The two `worktree-*` branches belong to parallel
+sessions; leave them alone.
 
 ## Next up
 
@@ -204,7 +208,7 @@ buttons shipped in PR #44):
 ## Most recent meaningful progress
 
 - **2026-08-30 — Socketing announces itself: tooltip gesture footer +
-  socket pips (`feat/socket-affordances`).** The ask was "add the
+  socket pips (PR #75, merged).** The ask was "add the
   ability to slot/unslot charms and relics from gear"; the honest
   finding was that both have shipped since PRs #25/#26 — drag a piece
   onto gear, Alt+Click gear to pull it back out, on every surface —
