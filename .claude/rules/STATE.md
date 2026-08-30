@@ -5,15 +5,17 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-30 (empty-read guard branch open, after PR #77
-merged)
+Last updated: 2026-08-30 (PR #79 merged and pruned — mid-save
+empty-read guard)
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** branch `fix/empty-read-guard` is open. **Third user
-report in the same area: "there was a change on disk and a successful
-reload, but Character Bank and Shared are showing [no] items."**
+**Resume here:** PR #79 **merged to main (83771fb) on the user's
+`/wrap-up`**, branch pruned local and remote, all five CI checks
+green. **Third user report in the same area: "there was a change
+on disk and a successful reload, but Character Bank and Shared are
+showing [no] items."**
 Cause found: **a stash save caught mid-write parses as a perfectly
 valid *empty* stash.** Nothing fails, so `RELOAD_PATIENCE` (which only
 counts reads that error) never fires — the app truthfully reports a
@@ -167,12 +169,11 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#78 all merged; all gates green |
-| `fix/empty-read-guard` | mid-save empty-read guard | this session's work; branched from `main`, PR open |
+| `main` | trunk | PRs #1–#80 all merged; all gates green |
 | `worktree-fix+projectile-speeds-ae` | a parallel session's cast-speed / DPS docs work | pushed, no PR; locked worktree under `.claude/worktrees/` — not the main session's to touch |
 | `worktree-mcp-overlay-and-coverage` | a parallel session's MCP mod-overlay / coverage work | pushed, no PR; checked out in its own worktree — not this session's to touch |
 
-Everything merged through #78 has been pruned local and remote
+Everything merged through #80 has been pruned local and remote
 (2026-08-30). The two `worktree-*` branches belong to parallel
 sessions; leave them alone.
 
@@ -235,8 +236,8 @@ buttons shipped in PR #44):
 
 ## Most recent meaningful progress
 
-- **2026-08-30 — A mid-save read no longer empties a bank
-  (`fix/empty-read-guard`).** Third report in the same area: "a change
+- **2026-08-30 — A mid-save read no longer empties a bank (PR #79,
+  merged).** Third report in the same area: "a change
   on disk and a successful reload, but Character Bank and Shared are
   showing no items." The cause is a gap `RELOAD_PATIENCE` structurally
   cannot see — a stash save caught between truncating and writing its
