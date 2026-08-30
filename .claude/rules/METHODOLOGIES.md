@@ -84,7 +84,19 @@ asking only delays the routine. Unmerged branches, worktrees, and
 anything not ours still get a question first.
 
 1. **Pull `main` and switch off the merged branch.**
-   `git checkout main && git pull --ff-only`
+   `git checkout main && git pull --ff-only` — and this means the
+   **user's own checkout** (`~/Projects/tq-univault`, on `main`),
+   not just whatever tree the session happens to be in. The user
+   tests from that checkout; **`main` there is always kept current
+   with the upstream, and pulling by hand is never part of their
+   workflow** (user instruction 2026-08-30, after a merge left it
+   three commits behind and the merged features "weren't there").
+   A worktree-isolated session cannot do this: the harness refuses
+   git against the shared checkout (`-C`, `cd`, scripts reaching
+   it) and the guard is not to be bypassed. From such a session,
+   the merge announcement carries the exact one-liner for the user
+   (`! git -C ~/Projects/tq-univault pull --ff-only`) and STATE.md
+   says `main` was left behind — silently stale is the failure.
 2. **Delete the merged branch — local and remote.** Use `git branch -d`
    (not `-D`); if `-d` refuses, the branch isn't actually merged —
    investigate before forcing. (Squash-merge warnings about
