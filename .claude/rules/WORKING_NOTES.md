@@ -76,6 +76,26 @@ annotated.
   prefer asking the user to export. Game-art reference screenshots
   live in `/Volumes/scott-games/tq-ae-designs` (mount required).
 
+## Reading a save the game is still writing
+
+- **A stash save caught mid-write parses as a valid *empty* stash.**
+  Nothing errors, so `RELOAD_PATIENCE` (which only counts reads that
+  fail) never fires: the app reports a successful reload and shows an
+  empty bank. Found 2026-08-30 chasing "Character Bank and Shared
+  aren't showing any items".
+- **The `.dxg` twin is the tell.** The game keeps it as the last good
+  write, so a `.dxb` that reads empty while its twin still parses with
+  items is a save in flight, not an emptied bank. That is what
+  `mid_save()` checks before letting a reload clear a pane; the
+  deferral is bounded (`EMPTY_PATIENCE`) so a twin that never catches
+  up cannot pin stale items on screen forever.
+- **Never diagnose these files while the app or game is live.** Two
+  separate scans during this session read a file mid-rewrite and
+  reported "0 items" and "`.dxb` and `.dxg` disagree in 920 bytes",
+  both of which were measurement artifacts and sent the session
+  chasing corruption that did not exist. `cp` the files to scratch
+  first, then analyse the copies.
+
 ## Verifying against real game data
 
 - **Copy the database off the mount first.** The game install lives
