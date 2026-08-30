@@ -34,11 +34,14 @@ and remote; only this session's `mod-phantom-strike` worktree
 remains, detached, and goes when the session ends. **Standing
 instruction recorded 2026-08-30** (METHODOLOGIES.md "After a PR
 merges"): a merged PR's branch is deleted without asking. The user
-tests from their own checkout, which was still at `59fffb4` with an
-Aug 28 release binary when they reported "none of the changes in
-main" — it needs `git pull --ff-only && cargo run --release` first;
-if the chips or the dock icon are still missing after that, it is
-a real bug.
+tests from their own checkout. **Standing instruction 2026-08-30
+(METHODOLOGIES.md step 1): that checkout's `main` is always kept
+current — pulling by hand is not their job.** This session is
+worktree-isolated and the harness refuses git against the shared
+checkout, so it could not fast-forward it; the user pulled (they
+confirmed "ok, that's better" once the changes showed). A
+non-isolated session does the pull itself as wrap-up step 1. The
+chips and dock icon were confirmed present after the pull.
 **1MAX ACCEPTED in game 2026-08-30** ("1Max seems to working
 great!"): `LootPlus1MAXTuned` (PR #65) — vanilla density, XP ×3 —
 plays at the pace it was built for, so the XP factor is settled.
