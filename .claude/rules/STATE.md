@@ -5,19 +5,20 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-30 (auto-refresh stall fix branch open, after
-PR #75 merged)
+Last updated: 2026-08-30 (PR #77 merged and pruned — auto-refresh
+stall fix)
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** branch `fix/auto-refresh-stalls` is open. **User
-report: "Shared bank doesn't seem to be reloading when it should."**
+**Resume here:** PR #77 **merged to main (fb97d32) on the user's
+"merge it"**, branch pruned local and remote, all five CI checks
+green. **User report: "Shared bank doesn't seem to be reloading when it should."**
 Reproduced against a *local copy* of their save tree (never their
 real files) and it is **not shared-bank-specific** — auto-refresh
 runs inside the paint loop, so a fully occluded window consumes no
 watcher polls and notices nothing until it is visible again. Two
-defects fixed on the branch: `drive_refresh` drained every queued
+defects fixed: `drive_refresh` drained every queued
 poll and kept only the newest, so the "settled across two polls"
 debounce counted *UI frames* and a hidden window's backlog was
 thrown away (costing another poll cycle on return); and `busy`
@@ -30,11 +31,15 @@ state — search fields bind to UI state). A toolbar line
 makes a stall visible after the fact, since the user could not say
 which scenario they had hit. Verified live occluded → raised: pane
 reloads within 2 s and the 38 s pause is reported. 270 tests, clippy
-clean. **Residual, unfixable on the UI thread:** while the window is
-fully covered nothing refreshes at all; moving reloads off the paint
-loop is a bigger change and was not attempted. Ask the user whether
-the toolbar line stays or moves behind the planned "?" technical-info
-affordance.
+clean. **Residual, and the user has not yet exercised it:** while the
+window is *fully covered* nothing refreshes at all; moving reloads
+off the paint loop is a bigger change and was deliberately not
+attempted. **Two things to watch for from the user's pass:** whether
+the toolbar line stays put or moves behind the planned "?"
+technical-info affordance (offered, unanswered), and — the important
+one — **a stall reported while the window was never hidden would mean
+a third cause that this round did not find.** Ask for the toolbar
+line's reading if the symptom recurs.
 
 Previously: PR #75 **merged to main (477cd0e) on the user's
 "merge it"**, branch pruned local and remote, all five CI checks
@@ -165,12 +170,11 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#76 all merged; all gates green |
-| `fix/auto-refresh-stalls` | auto-refresh stall fix + watcher indicator | this session's work; branched from `main`, PR open |
+| `main` | trunk | PRs #1–#78 all merged; all gates green |
 | `worktree-fix+projectile-speeds-ae` | a parallel session's cast-speed / DPS docs work | pushed, no PR; locked worktree under `.claude/worktrees/` — not the main session's to touch |
 | `worktree-mcp-overlay-and-coverage` | a parallel session's MCP mod-overlay / coverage work | pushed, no PR; checked out in its own worktree — not this session's to touch |
 
-Everything merged through #76 has been pruned local and remote
+Everything merged through #78 has been pruned local and remote
 (2026-08-30). The two `worktree-*` branches belong to parallel
 sessions; leave them alone.
 
@@ -233,8 +237,8 @@ buttons shipped in PR #44):
 
 ## Most recent meaningful progress
 
-- **2026-08-30 — Auto-refresh stops stalling silently
-  (`fix/auto-refresh-stalls`).** User report: "Shared bank doesn't
+- **2026-08-30 — Auto-refresh stops stalling silently (PR #77,
+  merged).** User report: "Shared bank doesn't
   seem to be reloading when it should." Reproduced against a local
   copy of their save tree, and it was never shared-bank-specific:
   auto-refresh is consumed inside the paint loop, so a fully occluded
