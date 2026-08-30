@@ -85,8 +85,6 @@ forward or reverted (`git revert da227aa`), not re-branched.
   network mount (one `univault-bak` per file per session). The
   2026-08-25 relic-bank `.dxb` truncation was game-side; the twin
   fallback (PR #10) recovers it.
-- **Local leftover:** a `docs/checkpoint-2026-08-29` worktree +
-  branch whose remote branch is already gone.
 - PROJECT.md bootstrap still deferred (user re-confirmed 2026-08-25);
   answers saved in agent memory (`bootstrap-project-deferred`).
 
@@ -122,10 +120,13 @@ only). No issue tracker is bound yet (deliberately deferred).
 | `main` | trunk | PRs #1–#65 all merged; all gates green |
 | `worktree-fix+projectile-speeds-ae` | a parallel session's cast-speed / DPS docs work | pushed, no PR; locked worktree under `.claude/worktrees/` — not the main session's to touch |
 
-`mod/1max-xp` merged as #65 and is awaiting the user's go-ahead to
-prune (local + remote), along with its `mod-phantom-strike` worktree.
-A local `docs/checkpoint-2026-08-29` worktree also lingers whose
-remote branch is already gone — remove it when convenient.
+The remote is now just these two. Everything merged has been pruned
+local and remote (2026-08-30), including the long-lingering
+`docs/checkpoint-2026-08-29` branch and worktree — `git cherry`
+confirmed its content was already upstream from the #64 squash before
+it went. The only leftover is this session's own
+`mod-phantom-strike` worktree, detached at `main` and safe to remove
+whenever its session ends.
 
 ## Next up
 
