@@ -101,10 +101,26 @@ characters. Only `SaveData/Main` is the vanilla campaign.
   16 → 12.8→6.4. The cut table and the 50% floor live in the spec
   JSON — retuning the curve is a data edit, no code change.
 
-### Pets (Earth's Core Dweller, Nature's Call of the Wild)
+### Pets
 
+- **Normal-difficulty pets carry half of Epic's defenses** (PR #83).
+  The engine scales every Pet-class summon through one global table,
+  `records\game\petgamebalanceattributes.dbr`, whose arrays hold
+  3 difficulties × 6 acts — and vanilla's Normal segment grants
+  almost nothing (life +0→85% across the acts, zero DA/resists/
+  armor, even a −10% attack-speed penalty), which is exactly why
+  pets feel fragile until Epic's cliff (+100% life, +350 DA, +12–15%
+  resists, +80 armor). The tune rewrites only the Normal segment to
+  half of Epic's opening values: life +50→100% (act 6 meets Epic's
+  start), DA +175, life regen +25%, resists +6–8% (physical +2.5%),
+  armor +40, attack-speed penalty removed. Epic and Legendary are
+  byte-identical to vanilla. Known side effect, accepted: enemy-owned
+  summons (dark-obelisk raises, broodmother spawns) share the Pet
+  class and gain the same Normal-only bump; scroll summons are
+  `PetNonScaling` and unaffected.
 - **Energy ×2.5, Energy regen ×1.75** across all 20 level records of
-  both pets (Core Dweller 875 / 5.25 at level 20; wolves 255 / 3.5).
+  Earth's Core Dweller and Nature's Call of the Wild (Core Dweller
+  875 / 5.25 at level 20; wolves 255 / 3.5).
 - **Core Dweller Provoke**: `skillTargetRadius` → 5.0 and
   `offensiveTauntMax` raised to 12–18 across its ladder (PR #17).
 - **Core Dweller Wildfire**: minimum slow durations
@@ -157,14 +173,16 @@ every record round-trips before anything is written.
 - **Accepted in game**: `LootPlus1MAXTuned` overall pace and XP ×3
   ("1Max seems to working great!", 2026-08-30). The feared hero
   hot-spot (×3 spawns stacking with ×3 XP) did not bite.
-- **Awaiting an in-game pass**: the cooldown tune (PR #81), Phantom
-  Strike blink speed (PR #58), Psionic Burn radius (PR #61), the pet
-  Energy/regen numbers, and target caps ×3 in dense packs.
+- **Awaiting an in-game pass**: Normal pet durability (PR #83), the
+  cooldown tune (PR #81), Phantom Strike blink speed (PR #58),
+  Psionic Burn radius (PR #61), the pet Energy/regen numbers, and
+  target caps ×3 in dense packs.
 
 ## Changelog
 
 | Date | PR | Change |
 |---|---|---|
+| 2026-08-30 | #83 | Normal pets: half-Epic defenses, attack-speed penalty removed (`petgamebalanceattributes.dbr`) |
 | 2026-08-30 | #81 | Blanket cooldown tune: per-point ramps; >10 s cut 20%, >60 s halved |
 | 2026-08-30 | #65 | `LootPlus1MAXTuned`: vanilla density, XP ×3, `extends` mechanism |
 | 2026-08-29 | #61 | Psionic Burn radius 3.5 → 6.0 |
