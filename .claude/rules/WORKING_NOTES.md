@@ -121,10 +121,17 @@ work throughout on the fallback theme.
 
 ## Repository and CI quirks
 
-- **PR auto-merge is disabled** (`enablePullRequestAutoMerge`), so
-  docs PRs cannot `gh pr merge --auto` — watch CI and merge directly.
-  Enabling it is a one-click change: repo Settings → General → "Allow
-  auto-merge".
+- **`gh pr merge --auto` merges immediately here — it does not
+  queue** (corrected 2026-08-29 by running it twice, PRs #53 and
+  #55). The repo's `allow_auto_merge` is `false` *and* `main` is
+  unprotected with zero required status checks, so there is no gate
+  for `--auto` to wait behind and gh falls straight through to a
+  direct merge. Both docs PRs landed before CI reported. Harmless
+  under the docs-only carve-out; **dangerous on a source PR** —
+  those still get CI watched to completion and merged deliberately.
+  Enabling real auto-merge is a one-click change (repo Settings →
+  General → "Allow auto-merge") but would also need branch
+  protection with required checks to actually gate anything.
 - **A stale Travis CI GitHub App** is installed and attaches
   permanently-queued phantom check suites to commits. Uninstall
   advised (repo Settings → Integrations → GitHub Apps); not yet
