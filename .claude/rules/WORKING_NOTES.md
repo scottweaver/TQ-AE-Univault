@@ -139,10 +139,16 @@ annotated.
 - **Check the spec's blanket rules before adding a per-record one.**
   `mods/xmax3-tuned.json` carries sweeping rules — `skillTargetNumber`
   ×3 across every player skill that has one (10 skills; Dream Stealer
-  3–8 → 9–24), `skillCooldownTime` zeroed on both summon classes.
-  A request to "triple X" is often already satisfied; adding a rule
-  on top multiplies again. Diff the installed bundle against vanilla
-  first — that is what `moddiff` and the build report are for.
+  3–8 → 9–24), `skillCooldownTime` zeroed on both summon classes,
+  and `tune_cooldowns` over every remaining player-skill cooldown
+  (added 2026-08-30: rank-1 >60s halves the array, >10s cuts it 20%,
+  and a flat array on an investable skill becomes a linear per-rank
+  ramp down to half the cut baseline at ultimate level; vanilla's 9
+  hand-shaped decreasing arrays keep their shape and get the cut
+  alone). A request to "triple X" or "shorten X's cooldown" is often
+  already satisfied; adding a rule on top multiplies again. Diff the
+  installed bundle against vanilla first — that is what `moddiff`
+  and the build report are for.
 - **A new bundle inherits the tunes with `"extends"`, never a copy.**
   `mods/1max.json` is `{name, extends: "xmax3-tuned.json", rules}`:
   modforge prepends the named spec's rules, so a rule added to

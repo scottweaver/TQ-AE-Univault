@@ -148,6 +148,14 @@
       "set": {
         "skillTargetRadius": 6.0
       }
+    },
+    {
+      "kind": "tune_cooldowns",
+      "cuts": [
+        { "over": 60.0, "scale": 0.5 },
+        { "over": 10.0, "scale": 0.8 }
+      ],
+      "ultimate_fraction": 0.5
     }
   ]
 }

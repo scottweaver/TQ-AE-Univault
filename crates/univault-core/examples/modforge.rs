@@ -70,6 +70,17 @@ enum Rule {
         #[serde(default)]
         set: BTreeMap<String, serde_json::Value>,
     },
+    /// Rescales every player-side skill cooldown. The deepest
+    /// matching baseline cut scales the whole array (no stacking),
+    /// then a flat array on an investable skill becomes a per-rank
+    /// ramp reaching `ultimate_fraction` of the cut baseline at the
+    /// skill's last investable level — every point shortens the
+    /// timer by an equal step. Arrays that already vary per rank
+    /// keep their designed shape and receive the cut alone.
+    TuneCooldowns {
+        cuts: Vec<CooldownCut>,
+        ultimate_fraction: f64,
+    },
     /// Repeats the vanilla entry list of every spawn pool whose
     /// monsters are all Hero-classified (the star-marked ones)
     /// `factor` times — pool entry count is the engine's spawn
@@ -78,6 +89,14 @@ enum Rule {
     /// quest bosses under its hero-pool folder). Replaces whatever
     /// the base mod did to a qualifying pool.
     MultiplyHeroPools { factor: usize },
+}
+
+/// One baseline cut: rank-1 cooldowns above `over` seconds scale by
+/// `scale`.
+#[derive(Deserialize)]
+struct CooldownCut {
+    over: f64,
+    scale: f64,
 }
 
 /// A single record path or a list — `record` rules accept both.
@@ -313,6 +332,27 @@ fn main() {
                     patched.insert(key, record);
                 }
             }
+            Rule::TuneCooldowns {
+                cuts,
+                ultimate_fraction,
+            } => {
+                let targets: Vec<RecordId> = main_db
+                    .record_ids()
+                    .filter(|id| player_skill(&normalize(id.as_str())))
+                    .cloned()
+                    .collect();
+                for id in targets {
+                    let key = normalize(id.as_str());
+                    let record = patched.get(&key).cloned().or_else(|| effective(&id));
+                    let Some(mut record) = record else { continue };
+                    let Some(changed) = tune_cooldown(&mut record, cuts, *ultimate_fraction)
+                    else {
+                        continue;
+                    };
+                    report.push(format!("{key}: skillCooldownTime {changed}"));
+                    patched.insert(key, record);
+                }
+            }
             Rule::Record {
                 record,
                 multiply,
@@ -486,6 +526,80 @@ fn pool_entries(record: &DbRecord) -> Vec<(String, Option<i32>)> {
         entries.push((name.to_string(), weight));
     }
     entries
+}
+
+/// The last level a player can invest into a skill: the ultimate
+/// (with +skill gear) cap, falling back to the natural maximum.
+fn invested_levels(record: &DbRecord) -> u32 {
+    ["skillUltimateLevel", "skillMaxLevel"]
+        .iter()
+        .filter_map(|name| record.variable(name))
+        .filter_map(|variable| match &variable.values {
+            DbValues::Integers(values) => values.first().copied(),
+            DbValues::Floats(_) | DbValues::Strings(_) | DbValues::Booleans(_) => None,
+        })
+        .find_map(|levels| u32::try_from(levels).ok().filter(|&levels| levels >= 1))
+        .unwrap_or(1)
+}
+
+/// Applies a `tune_cooldowns` rule to one record's
+/// `skillCooldownTime`; `None` when the record has no positive
+/// cooldown or nothing changes. Returns a before → after
+/// description.
+fn tune_cooldown(
+    record: &mut DbRecord,
+    cuts: &[CooldownCut],
+    ultimate_fraction: f64,
+) -> Option<String> {
+    let current = record.variable("skillCooldownTime")?;
+    let DbValues::Floats(values) = &current.values else {
+        return None;
+    };
+    let first = *values.first()?;
+    let baseline = f64::from(first);
+    if baseline <= 0.0 {
+        return None;
+    }
+    let cut = cuts
+        .iter()
+        .filter(|cut| baseline > cut.over)
+        .map(|cut| cut.scale)
+        .min_by(f64::total_cmp)
+        .unwrap_or(1.0);
+    let flat = values.iter().all(|&value| value.to_bits() == first.to_bits());
+    let tuned: Vec<f32> = if flat {
+        let levels =
+            invested_levels(record).max(u32::try_from(values.len()).expect("game-scale array"));
+        (0..levels)
+            .map(|rank| {
+                let progress = if levels > 1 {
+                    f64::from(rank) / f64::from(levels - 1)
+                } else {
+                    0.0
+                };
+                round2(baseline * cut * (1.0 - (1.0 - ultimate_fraction) * progress))
+            })
+            .collect()
+    } else {
+        values
+            .iter()
+            .map(|&value| round2(f64::from(value) * cut))
+            .collect()
+    };
+    if tuned == *values {
+        return None;
+    }
+    let description = format!("{values:?} -> {tuned:?}");
+    record.set_variable(DbVariable {
+        name: "skillCooldownTime".to_string(),
+        values: DbValues::Floats(tuned),
+    });
+    Some(description)
+}
+
+#[allow(clippy::cast_possible_truncation)] // game-scale seconds
+fn round2(value: f64) -> f32 {
+    ((value * 100.0).round() / 100.0) as f32
 }
 
 /// Multiplies every value of `variable`; `None` when the record has
