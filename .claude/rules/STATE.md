@@ -10,38 +10,61 @@ Last updated: 2026-08-30 (PR #81 open — blanket cooldown tune, bundles install
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** PR #69 **merged to main (7bd87a5) on the user's
-"just merge all PRs so we can test from main"** — the 2026-08-30
-three-feature round (restart-persistent view state in
-`ui-state.json`, the "Fits into:" slot-filter chip row on the
-Relic/Charm buckets, the Iron Great Helm (Corinthian) as the app
-icon) plus the transfer-stash auto-reload fix. Merged **unclicked**:
-the restore path and chips were seen live under a scratch `HOME`,
-the dock icon was never captured, and the reload fix is reasoned
-from the code, not reproduced. The user's pass from `main` decides,
-and regressions are fixed forward. What that pass should answer:
-the dock shows the crested helm; chips combine as OR (Helmet + Ring
-= fits either — flip to AND if that reads wrong); `Export type…`
-exporting the whole bucket rather than the narrowed view is
-acceptable; quitting and relaunching brings tabs, sort, Skip
-duplicates, and the search bar back; editing the stash in-game with
-the app open now ends in "auto-reloaded Shared bank" rather than the
-"unexpected end of data at 0xEFD8: wanted 4 more bytes" toast (the
-fix: `RefreshTracker` keeps the first two failed reloads silent,
-`RELOAD_PATIENCE` 3 ≈ 12 s, reports once if persisting; `reload_doc`
-restores `dirty` on a failed read). The #69 branch is pruned local
-and remote; only this session's `mod-phantom-strike` worktree
-remains, detached, and goes when the session ends. **Standing
-instruction recorded 2026-08-30** (METHODOLOGIES.md "After a PR
-merges"): a merged PR's branch is deleted without asking. The user
-tests from their own checkout. **Standing instruction 2026-08-30
-(METHODOLOGIES.md step 1): that checkout's `main` is always kept
-current — pulling by hand is not their job.** This session is
-worktree-isolated and the harness refuses git against the shared
-checkout, so it could not fast-forward it; the user pulled (they
-confirmed "ok, that's better" once the changes showed). A
-non-isolated session does the pull itself as wrap-up step 1. The
-chips and dock icon were confirmed present after the pull.
+**Resume here:** PR #79 **merged to main (83771fb) on the user's
+`/wrap-up`**, branch pruned local and remote, all five CI checks
+green. **Third user report in the same area: "there was a change
+on disk and a successful reload, but Character Bank and Shared are
+showing [no] items."**
+Cause found: **a stash save caught mid-write parses as a perfectly
+valid *empty* stash.** Nothing fails, so `RELOAD_PATIENCE` (which only
+counts reads that error) never fires — the app truthfully reports a
+successful reload and truthfully shows an empty bank. The fix uses the
+`.dxg` twin as evidence: the game keeps it as the last good write, so
+a `.dxb` reading empty while its twin still parses with items is a
+save in flight (`mid_save()`), and the pane is held. Bounded by
+`EMPTY_PATIENCE` (5 attempts ≈ 20 s) so a twin that never catches up
+cannot pin stale items on screen. Verified live: empty `.dxb` + intact
+twin held the pane 15 s; once the budget ran out the pane cleared.
+A genuine emptying (twin empty too) clears with no delay. 271 tests,
+clippy clean. **Honest limit: the user's exact trigger was never
+reproduced** — this fixes the most plausible mechanism, not a proven
+one. If it recurs, the toolbar's watcher line is the first thing to
+read.
+**No data was ever lost.** Verified against their real files: Shared
+bank 3 items, Character bank 2, `.dxb` and `.dxg` in agreement.
+**Two of this session's own scans were wrong** and nearly sent it
+chasing phantom corruption — both read files mid-rewrite while the
+user was live. Snapshot to scratch before analysing; recorded in
+WORKING_NOTES.md "Reading a save the game is still writing".
+Earlier in the session PR #75 (socket affordances) and PR #77
+(auto-refresh stalls) both merged and pruned.
+
+Previously: PR #75 **merged to main (477cd0e) on the user's
+"merge it"**, branch pruned local and remote, all five CI checks
+green. The socket-discoverability round — **the user asked to "add
+the ability to slot/unslot charms and relics from gear" and the
+answer was that it already shipped** (drag a piece onto gear to
+socket; Alt+Click gear to extract, PRs #25/#26), invisibly. Their
+call after seeing that: keep every gesture exactly as it is, make it
+announce itself. So: a tooltip footer listing every relic/charm
+gesture the hovered item accepts, and one relic-orange pip per
+filled socket at a tile's lower-left. Core gained `Affordance` +
+`affordances()` and a typed `BonusPick` (which also de-duplicates
+the double-click gate that `request_bonus_edit` had inlined). 268
+tests, clippy clean; the footer and pips were **seen live** under a
+scratch `HOME` — the tooltip by temporarily forcing `hovered`
+(synthetic input stays banned), a scratch patch reverted before
+commit. Merged **unclicked**, like #69 before it: what the user's
+own pass from `main` decides is whether the pip is findable without
+being loud, and whether the footer earns its two lines on partial
+pieces. Regressions are fixed forward.
+**Deliberately not built, and worth a decision:** the second
+(Atlantis) socket can still only be *emptied*, never filled —
+`can_socket` refuses any target whose first socket is full. A scan
+of both characters and all banks found 15 socketed items and **zero**
+using `relicName2`, so nothing in the user's save exercises it and
+the game's acceptance of an app-made two-relic item is unverified.
+Also unbuilt by their choice: any right-click/menu affordance.
 **1MAX ACCEPTED in game 2026-08-30** ("1Max seems to working
 great!"): `LootPlus1MAXTuned` (PR #65) — vanilla density, XP ×3 —
 plays at the pace it was built for, so the XP factor is settled.
@@ -147,13 +170,13 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#69 all merged; all gates green |
+| `main` | trunk | PRs #1–#80 all merged; all gates green |
 | `worktree-fix+projectile-speeds-ae` | a parallel session's cast-speed / DPS docs work | pushed, no PR; locked worktree under `.claude/worktrees/` — not the main session's to touch |
+| `worktree-mcp-overlay-and-coverage` | a parallel session's MCP mod-overlay / coverage work | pushed, no PR; checked out in its own worktree — not this session's to touch |
 
-The remote is just these two. Everything merged through #70 has
-been pruned local and remote (2026-08-30). The only leftover is this
-session's `mod-phantom-strike` worktree, detached at `main` and safe
-to remove whenever its session ends.
+Everything merged through #80 has been pruned local and remote
+(2026-08-30). The two `worktree-*` branches belong to parallel
+sessions; leave them alone.
 
 ## Next up
 
@@ -180,8 +203,10 @@ that's better") and merged as PR #7.
 0. **The store's interactive acceptance pass** (merged, unverified):
    drops into a bucket, bulk sends, ⌘F search, an export opened in
    TQVaultAE, the ▲/▼ sort-direction toggle (store combo + search
-   headers, PR #52), and the Skip duplicates box (PR #54) — on the
-   user's own config.
+   headers, PR #52), the Skip duplicates box (PR #54), and now the
+   socket pip + tooltip gesture footer — on the user's own config.
+   The socketing gestures the footer advertises (drag a piece onto
+   gear, Alt+Click to pull it back) have never been clicked either.
 0b. **Component-ize remaining chrome surfaces as the user directs:**
    nameplates, plate buttons, grid cells, stone backdrop, tooltip
    frame — each through the preview + review loop first, from new
@@ -231,6 +256,76 @@ buttons shipped in PR #44):
   steps to 50% at ultimate — the exact curve is the user's to bless
   in game; Renewal's by-design *rising* cooldown kept its shape but
   took the 20% cut.
+
+- **2026-08-30 — A mid-save read no longer empties a bank (PR #79,
+  merged).** Third report in the same area: "a change
+  on disk and a successful reload, but Character Bank and Shared are
+  showing no items." The cause is a gap `RELOAD_PATIENCE` structurally
+  cannot see — a stash save caught between truncating and writing its
+  items parses as a **valid empty stash**, so nothing fails, the app
+  truthfully says "auto-reloaded", and the pane truthfully goes empty.
+  The fix reads the evidence the game already keeps: `.dxg` is its
+  last good write, so a `.dxb` that comes back empty while its twin
+  still parses with items is a save in flight, and the pane is held
+  and re-read. Bounded by `EMPTY_PATIENCE` (5 attempts ≈ 20 s) so a
+  twin that never catches up cannot pin stale items on screen; a
+  genuine emptying, where the twin is empty too, clears with no delay
+  at all. Verified live in both directions. 271 tests, clippy clean.
+  Risk, stated plainly: **the user's exact trigger was never
+  reproduced** — this closes the most plausible mechanism, not a
+  proven one. No data was ever at risk; their files were checked and
+  found intact throughout.
+
+- **2026-08-30 — Auto-refresh stops stalling silently (PR #77,
+  merged).** User report: "Shared bank doesn't
+  seem to be reloading when it should." Reproduced against a local
+  copy of their save tree, and it was never shared-bank-specific:
+  auto-refresh is consumed inside the paint loop, so a fully occluded
+  window (macOS stops repainting one) sees no file change at all.
+  Two real defects behind that. `drive_refresh` drained every queued
+  poll and kept only the newest, so the documented "settled across
+  two polls" debounce actually counted *UI frames* and a hidden
+  window's backlog of identical observations was discarded — costing
+  another poll cycle after the window returned; it now feeds every
+  queued poll, so the backlog settles it. And `busy` included
+  `memory.focused().is_some()`, which is sticky: a caret left in the
+  ⌘F search box disabled refreshing for **every** pane indefinitely.
+  Focus now defers only the character, and only for the gold
+  `DragValue` — the one focusable widget bound to document state
+  (both search fields bind to UI state, and nothing calls
+  `request_focus`). Because the user could not say which scenario
+  they had hit, the toolbar gained "watching: checked Ns ago ·
+  longest pause … (window hidden?)", which records a stall after it
+  ends. Verified live occluded → raised: the pane reloads within 2 s
+  and a 38 s pause is reported. 270 tests, clippy clean. Risk: while
+  the window is *fully covered* nothing refreshes at all and this
+  does not change that — moving reloads off the paint loop is a
+  bigger change, deliberately not attempted. The toolbar line is a
+  first cut; it may belong behind the planned "?" technical-info
+  affordance instead.
+
+- **2026-08-30 — Socketing announces itself: tooltip gesture footer +
+  socket pips (PR #75, merged).** The ask was "add the
+  ability to slot/unslot charms and relics from gear"; the honest
+  finding was that both have shipped since PRs #25/#26 — drag a piece
+  onto gear, Alt+Click gear to pull it back out, on every surface —
+  and that nothing in the app ever said so. Scope the user chose after
+  seeing that: change no gesture, make them visible. Every item
+  tooltip now ends with the relic/charm gestures that item actually
+  accepts ("Alt+Click to remove Essence of the Golden Fleece — both
+  are kept", socket, pour shards, pick bonus), and gear wears one
+  relic-orange pip per filled socket at its lower-left, so a socketed
+  piece is findable while scanning a bank. Core owns the rules, the
+  shell owns the phrasing: new `Affordance` (carrying the socketed
+  record, so the shell cannot name a piece that isn't there) and a
+  typed `BonusPick`, which also collapses the double-click gate
+  `request_bonus_edit` had inlined. 268 tests, clippy clean; both
+  surfaces seen live under a scratch `HOME`. Risk: no pointer has
+  touched either — the tooltip was captured by temporarily forcing
+  `hovered` (reverted before commit), since synthetic input stays
+  banned, so pip legibility and footer length are the user's call.
+  The second (Atlantis) socket is still fill-proof by design, and no
+  right-click menu was added — both the user's explicit choices.
 
 - **2026-08-30 — Persisted view state, relic/charm slot filter, helm
   app icon (PR #69, merged).** Three asks in one round. (1) A
@@ -353,64 +448,6 @@ buttons shipped in PR #44):
   returns early without dirtying the source. 255 tests. Risk: the
   box sits in the store pane while the buttons it governs are on
   the left pane's headers, and nothing has been clicked yet.
-- **2026-08-29 — Every sort reads both ways (PR #52, merged).**
-  User ask, one line: all sorting operations should offer
-  ascending/descending. Two surfaces existed — the search table
-  could already flip via its headers (spelling direction as
-  `ascending: bool`), while the store pane's combo was one-way and
-  its rarity key faked descending by negating its own rank. Both
-  now share a `SortDirection` (new gui `sort.rs`): the store gains a
-  ▲/▼ plate toggle beside the combo, ranks are built ascending
-  everywhere and oriented once at the comparison, and a freshly
-  picked key opens in its natural direction (names/type A→Z, rarity
-  and level best-first) so the store's old rarity view is preserved.
-  Two divergent rarity ladders collapsed into
-  `ItemStyle::rarity_rank` in core — "by rarity" had meant two
-  different orders in one app. 248 tests; toggle rendering confirmed
-  in the real chrome under a scratch `HOME`. Risk: no click has
-  landed on either control (synthetic input banned), and rarity
-  descending now floats artifacts/relics above legendaries in a
-  bucket that mixes them.
-- **2026-08-29 — Tabs become views onto a normalized store (PR #50,
-  merged).** User ask: stop letting tabs be
-  arbitrary buckets — dedicate each to an item type — and make
-  storage "a true database of sorts" while keeping the app portable.
-  Design-dialogued (all four picks the user's): one unified store
-  file rather than named vaults; own format over redb/SQLite (a
-  DBMS buys nothing at ~10⁴ items and SQLite is the native dep the
-  rules gate); TQVaultAE JSON demoted from two-way wire contract to
-  import **and** export interchange; family → sub-type tabs. New
-  `core/store.rs`: a flat set of `{StoredItemId, Item}` in one
-  versioned self-describing file, with buckets *computed* from each
-  item's record (`bucket_of`), so misfiling is unrepresentable and
-  buckets are unbounded. Addressing unified as `ItemAddr` (game
-  containers positional, the store identity-addressed); "no room"
-  and the whole bulk-spill path deleted from `transfer`; search
-  collapsed onto the one store; MCP's `list_vaults`/`get_vault`
-  became `list_buckets`/`get_store`. ARCHITECTURE.md renegotiated in
-  the same PR. 241 tests, including an env-gated real-data
-  migration check (the user's 295 items: all classified, lossless
-  round trip, export repacked into 4 sacks with no overlap).
-  Verified by launch against a scratch `HOME`; the family strip
-  overflowed on that first run (Misc unreachable) and was fixed,
-  as was the content-sized grid (now padded to 18×20, centered).
-  Risk: merged on the user's call with **no interactive time** —
-  drag/drop, bulk sends, ⌘F, and an export opened in TQVaultAE are
-  unexercised on main; grid positions for vaulted items are gone by
-  design (the store sorts, the user no longer arranges).
-- **2026-08-28 — Filter overhaul: search in the vault pane (PR #47,
-  merged).** User ask: no more full-window swap — the all-vaults
-  search now renders in the vault column (one "Search all vaults"
-  plate) with the character/bank pane live beside it; ⌘F toggles,
-  Esc / "← Vault" returns, and sends, bulk sends, and auto-refresh
-  all work while filtering. The search UI's `&mut self` methods
-  became split-borrow functions to render inside the columns
-  closure; filter combos wrap into sized rows and the stats column
-  clips for the half width (screenshot-verified live — the old
-  wrapped row silently overflowed the pane). Risk: half-width
-  table feel (stats column starts narrow; columns are draggable)
-  awaits the user's in-app pass; full-window mode is gone by
-  design.
 ## Blocked / waiting
 
 - *(nothing)*

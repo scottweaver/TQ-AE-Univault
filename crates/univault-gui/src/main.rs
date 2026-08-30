@@ -134,6 +134,7 @@ impl CliArgs {
     }
 }
 
+#[derive(Clone)]
 struct CharacterPane {
     path: PathBuf,
     original: Vec<u8>,
@@ -144,6 +145,7 @@ struct CharacterPane {
     disk_stamp: Option<SourceStamp>,
 }
 
+#[derive(Clone)]
 struct StashPane {
     path: PathBuf,
     original: Vec<u8>,
@@ -377,6 +379,13 @@ fn takes_slot_filter(bucket: Bucket) -> bool {
     )
 }
 
+/// A pane held aside across a reload, so a read that turns out to be
+/// a half-written game save can be undone.
+enum PaneSnapshot {
+    Character(Box<CharacterPane>),
+    Stash(StashSlot, Box<StashPane>),
+}
+
 /// One open document, addressable across panes — the unit the
 /// auto-refresh watcher reloads or reports conflicts on.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -406,6 +415,9 @@ struct RefreshTracker {
     pending: HashMap<PathBuf, SourceStamp>,
     /// Consecutive failed reloads per path since the last success.
     failures: HashMap<PathBuf, u32>,
+    /// Consecutive emptying reads held back per game-owned file,
+    /// while the evidence still says a save is in flight.
+    empty_defers: HashMap<PathBuf, u32>,
 }
 
 /// What a failed auto-reload means for the user: nothing yet — a
@@ -422,6 +434,73 @@ enum ReloadFailure {
 /// reported; attempts are two polls apart, so this is ~12 s of
 /// patience.
 const RELOAD_PATIENCE: u32 = 3;
+
+/// Emptying reads of one file held back while the evidence says a
+/// save is in flight; attempts are two polls apart, so this caps the
+/// protection at roughly 20 s.
+const EMPTY_PATIENCE: u32 = 5;
+
+/// Whether auto-refresh is actually running, and the worst stall it
+/// has seen. The watcher thread polls on its own cadence but only the
+/// paint loop consumes it, so a fully hidden window (macOS stops
+/// repainting one) or a held pointer suspends refreshing with nothing
+/// on screen to say so. Recording the gap makes that diagnosable
+/// after the fact instead of a guess.
+#[derive(Default)]
+struct WatchHealth {
+    last_checked: Option<Instant>,
+    longest_stall: Option<Duration>,
+}
+
+/// A gap between consumed polls longer than this means the paint loop
+/// stopped, not that a poll ran late — the watcher's cadence is
+/// [`WATCH_INTERVAL`].
+const STALL_THRESHOLD: Duration = Duration::from_secs(10);
+
+impl WatchHealth {
+    /// Records a consumed poll, remembering the worst gap so the
+    /// shell can report a stall that has already ended.
+    fn checked(&mut self, now: Instant) {
+        if let Some(previous) = self.last_checked {
+            let gap = now.saturating_duration_since(previous);
+            if gap >= STALL_THRESHOLD && self.longest_stall.is_none_or(|worst| gap > worst) {
+                self.longest_stall = Some(gap);
+            }
+        }
+        self.last_checked = Some(now);
+    }
+
+    /// One line for the toolbar: how long since a poll landed, plus
+    /// the worst stall once there has been one worth reporting.
+    fn summary(&self, now: Instant) -> String {
+        let Some(last) = self.last_checked else {
+            return "watching: starting…".to_string();
+        };
+        let ago = brief_duration(now.saturating_duration_since(last));
+        match self.longest_stall {
+            Some(stall) => format!(
+                "watching: checked {ago} ago · longest pause {} (window hidden?)",
+                brief_duration(stall)
+            ),
+            None => format!("watching: checked {ago} ago"),
+        }
+    }
+
+    /// Whether the current gap already looks like a stall — the
+    /// toolbar line goes warm so a live stall reads at a glance.
+    fn stalled_now(&self, now: Instant) -> bool {
+        self.last_checked
+            .is_none_or(|last| now.saturating_duration_since(last) >= STALL_THRESHOLD)
+    }
+}
+
+fn brief_duration(span: Duration) -> String {
+    let seconds = span.as_secs();
+    if seconds < 60 {
+        return format!("{seconds}s");
+    }
+    format!("{}m{:02}s", seconds / 60, seconds % 60)
+}
 
 impl RefreshTracker {
     /// Feeds one poll observation; `true` means the change settled
@@ -469,6 +548,25 @@ impl RefreshTracker {
 
     fn reload_succeeded(&mut self, path: &Path) {
         self.failures.remove(path);
+    }
+
+    /// Whether an emptying read should be held back rather than
+    /// clearing the pane. A game save caught between truncating and
+    /// writing its items parses as a perfectly valid empty stash, so
+    /// nothing fails and [`RELOAD_PATIENCE`] never fires; the caller
+    /// supplies the evidence that a write is still in flight and this
+    /// bounds how long that evidence is believed, so a twin that goes
+    /// permanently stale cannot pin a genuinely emptied bank forever.
+    fn defer_empty(&mut self, path: &Path) -> bool {
+        let count = self.empty_defers.entry(path.to_path_buf()).or_insert(0);
+        *count += 1;
+        *count <= EMPTY_PATIENCE
+    }
+
+    /// Forgets the deferrals once a read is adopted, so the *next*
+    /// emptying is questioned too rather than waved through.
+    fn empty_settled(&mut self, path: &Path) {
+        self.empty_defers.remove(path);
     }
 }
 
@@ -758,6 +856,14 @@ struct App {
     inventory_tab: InventoryTab,
     watcher: FileWatcher,
     refresh: RefreshTracker,
+    /// How auto-refresh is actually faring — the watcher runs off the
+    /// paint loop, so a hidden window silently stops consuming it.
+    watch_health: WatchHealth,
+    /// Whether the gold field holds keyboard focus, reported by the
+    /// character pane each frame. The one focusable widget bound to
+    /// document state, so it is the only one auto-refresh defers to —
+    /// and only for the character.
+    editing_gold: bool,
     /// Documents whose file changed on disk while they hold unsaved
     /// edits — resolved by the conflict modal, never silently.
     conflicts: Vec<DocId>,
@@ -850,6 +956,8 @@ impl App {
             inventory_tab: restored.inventory_tab,
             watcher: start_watcher(),
             refresh: RefreshTracker::default(),
+            watch_health: WatchHealth::default(),
+            editing_gold: false,
             conflicts: Vec::new(),
             view,
             search: search::SearchState::with_settings(restored.search),
@@ -1613,8 +1721,13 @@ impl App {
                          socket it — any rarity, epics and legendaries included.",
                             "Alt+Click an item with a socketed relic/charm to extract \
                          it — both kept.",
+                            "Drag a partial piece onto another of the same record to \
+                         pour its shards in; the remainder stays behind.",
                             "Double-click a completed relic, charm, or artifact to \
                          (re)pick its completion bonus.",
+                            "Gear holding a piece shows an orange pip in its lower-left \
+                         corner — one per filled socket. Hovering any item lists the \
+                         gestures it accepts.",
                         ],
                     );
                     help_section(
@@ -1992,37 +2105,77 @@ impl App {
             *guard = watched;
         }
         ctx.request_repaint_after(WATCH_INTERVAL);
-        let mut latest = None;
+        let mut polls = Vec::new();
         while let Ok(snapshot) = self.watcher.receiver.try_recv() {
-            latest = Some(snapshot);
+            polls.push(snapshot);
         }
-        let Some(snapshot) = latest else { return };
-        let busy = self.drag.is_some()
-            || ctx.input(|input| input.pointer.any_down())
-            || ctx.memory(|memory| memory.focused().is_some());
-        if busy {
+        if polls.is_empty() {
             return;
+        }
+        // A held pointer or a drag means the user is mid-gesture and
+        // the panes must not move underneath it. Keyboard focus is
+        // deliberately not part of this: it is sticky, so a caret left
+        // in the search box used to disable refreshing for every pane
+        // indefinitely. Only the character defers to it, below.
+        if self.drag.is_some() || ctx.input(|input| input.pointer.any_down()) {
+            return;
+        }
+        self.watch_health.checked(Instant::now());
+        // Every queued poll is evidence, not just the newest: the
+        // settle rule counts *disk* observations, and dropping the
+        // backlog a hidden window accumulated would restart the count
+        // from zero and stall the catch-up by another poll or two.
+        let mut ready: Vec<DocId> = Vec::new();
+        for snapshot in &polls {
+            for doc in DocId::FIXED {
+                let Some((path, ours, _)) = self.doc_state(doc) else {
+                    continue;
+                };
+                let Some((_, observed)) = snapshot.iter().find(|(seen, _)| *seen == path) else {
+                    continue;
+                };
+                if self
+                    .refresh
+                    .settled(&path, observed.as_ref(), ours.as_ref())
+                    && !ready.contains(&doc)
+                {
+                    ready.push(doc);
+                }
+            }
         }
         let mut reloaded = Vec::new();
         let mut failed = Vec::new();
-        for doc in DocId::FIXED {
-            let Some((path, ours, dirty)) = self.doc_state(doc) else {
+        for doc in ready {
+            let Some((path, _, dirty)) = self.doc_state(doc) else {
                 continue;
             };
-            let Some((_, observed)) = snapshot.iter().find(|(seen, _)| *seen == path) else {
-                continue;
-            };
-            if !self
-                .refresh
-                .settled(&path, observed.as_ref(), ours.as_ref())
-            {
+            // The gold field edits the character in place through an
+            // uncommitted buffer; reloading under it would land the
+            // typed value on a replaced character.
+            if doc == DocId::Character && self.editing_gold {
                 continue;
             }
             if dirty {
                 self.push_conflict(doc);
             } else {
+                let held = self.game_doc_item_count(doc).unwrap_or(0);
+                let restore = (held > 0).then(|| self.snapshot_doc(doc)).flatten();
                 match self.reload_doc(doc) {
                     Ok(()) => {
+                        // A game save caught between truncating and
+                        // writing its items parses as a valid empty
+                        // stash, so nothing failed and the patience
+                        // counter never fires. Make the emptying prove
+                        // itself once before the pane clears.
+                        if self.game_doc_item_count(doc) == Some(0)
+                            && let Some(restore) = restore
+                            && mid_save(doc, &path)
+                            && self.refresh.defer_empty(&path)
+                        {
+                            self.restore_doc(restore);
+                            continue;
+                        }
+                        self.refresh.empty_settled(&path);
                         self.refresh.reload_succeeded(&path);
                         reloaded.push(doc_label(doc));
                     }
@@ -2045,6 +2198,61 @@ impl App {
                 "auto-reloaded {} — changed on disk",
                 reloaded.join(", ")
             )));
+        }
+    }
+
+    /// Items a game-owned document holds. `None` for the item store,
+    /// which only this app writes — nothing can catch it mid-save, so
+    /// it needs no empty-read guard.
+    fn game_doc_item_count(&self, doc: DocId) -> Option<usize> {
+        match doc {
+            DocId::Character => self.character.as_ref().map(|pane| {
+                let worn = pane.character.equipment.slots.iter().flatten().count();
+                let carried: usize = pane
+                    .character
+                    .sacks
+                    .iter()
+                    .map(|sack| sack.items.len())
+                    .sum();
+                worn + carried
+            }),
+            DocId::Stash(slot) => match slot {
+                StashSlot::Bank => &self.bank,
+                StashSlot::Shared => &self.shared,
+                StashSlot::Relic => &self.relics,
+            }
+            .as_ref()
+            .map(|pane| pane.stash.items.len()),
+            DocId::Store => None,
+        }
+    }
+
+    /// The pane as it stands, so a reload that turns out to be a
+    /// half-written save can be put back.
+    fn snapshot_doc(&self, doc: DocId) -> Option<PaneSnapshot> {
+        match doc {
+            DocId::Character => self
+                .character
+                .clone()
+                .map(|pane| PaneSnapshot::Character(Box::new(pane))),
+            DocId::Stash(slot) => match slot {
+                StashSlot::Bank => &self.bank,
+                StashSlot::Shared => &self.shared,
+                StashSlot::Relic => &self.relics,
+            }
+            .clone()
+            .map(|pane| PaneSnapshot::Stash(slot, Box::new(pane))),
+            DocId::Store => None,
+        }
+    }
+
+    /// Puts a snapshot back, stamp included — the older stamp is what
+    /// makes the next poll re-examine the file rather than call it
+    /// settled.
+    fn restore_doc(&mut self, snapshot: PaneSnapshot) {
+        match snapshot {
+            PaneSnapshot::Character(pane) => self.character = Some(*pane),
+            PaneSnapshot::Stash(slot, pane) => *self.stash_slot_mut(slot) = Some(*pane),
         }
     }
 
@@ -2247,6 +2455,27 @@ fn shift_after_take(target: ItemAddr, source: ItemAddr) -> ItemAddr {
 }
 
 /// Human name of a document for statuses and the conflict modal.
+/// Whether a document that just read empty looks like a save still
+/// in flight rather than a bank someone emptied.
+///
+/// A stash carries the evidence itself: the game keeps the `.dxg`
+/// twin as its last good write, so a `.dxb` reading empty while its
+/// twin still holds items is a write caught in the middle. The
+/// character has no twin — a half-written one almost always fails to
+/// parse and is covered by [`RELOAD_PATIENCE`] — so it falls back to
+/// asking for one confirming read.
+fn mid_save(doc: DocId, path: &Path) -> bool {
+    match doc {
+        DocId::Stash(_) => std::fs::read(path.with_extension("dxg"))
+            .ok()
+            .and_then(|twin| stash::restore_from_twin(&twin).ok())
+            .and_then(|bytes| stash::parse_stash(&bytes).ok())
+            .is_some_and(|twin| !twin.items.is_empty()),
+        DocId::Character => true,
+        DocId::Store => false,
+    }
+}
+
 fn doc_label(doc: DocId) -> String {
     match doc {
         DocId::Character => "the character".to_string(),
@@ -3011,12 +3240,31 @@ impl App {
             if self.any_dirty() {
                 ui.weak("Saving…");
             }
+            let now = Instant::now();
+            let health = &self.watch_health;
+            let color = if health.stalled_now(now) {
+                theme::GOLD
+            } else {
+                theme::TEXT_WEAK
+            };
+            ui.label(
+                egui::RichText::new(health.summary(now))
+                    .color(color)
+                    .size(11.0),
+            )
+            .on_hover_text(
+                "Auto-refresh watches the open files every 2 s, but only while the \
+                 window is drawing — macOS stops that for a fully hidden window, so \
+                 a long pause here means the app was covered, not that a file was \
+                 missed. Panes catch up on the first frame after it is visible again.",
+            );
         });
     }
 
     /// Advances the drag: adopts a newly started one, paints the item
     /// at the pointer, and commits or cancels on release.
     fn update_drag(&mut self, ctx: &egui::Context, frame: DragFrame) {
+        self.editing_gold = frame.editing_gold;
         if self.drag.is_none() {
             self.drag = frame.begin;
         }
@@ -3432,29 +3680,20 @@ impl App {
         let Ok(item) = self.item_at(addr) else {
             return;
         };
-        let (needed, has_table) = match &self.game {
-            GameStatus::Loaded(db) => (
-                db.completed_relic_level(&item.base),
-                !db.relic_bonuses(&item.base).is_empty(),
-            ),
-            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => (None, false),
-        };
-        if let Some(needed) = needed
-            && item.var1 < needed
-        {
-            self.status = Some(Err(format!(
-                "complete the piece first ({}/{needed} shards)",
-                item.var1
-            )));
-            return;
-        }
-        if !has_table {
-            if needed.is_some() {
-                self.status = Some(Err("this piece has no bonus table".to_string()));
+        match transfer::bonus_pick(loaded_db(&self.game), &item) {
+            transfer::BonusPick::Ready => {
+                self.begin_bonus_pick(addr, item.base.clone(), item.relic_bonus.clone());
             }
-            return;
+            transfer::BonusPick::Incomplete { have, needed } => {
+                self.status = Some(Err(format!(
+                    "complete the piece first ({have}/{needed} shards)"
+                )));
+            }
+            transfer::BonusPick::NoTable => {
+                self.status = Some(Err("this item has no bonus table".to_string()));
+            }
+            transfer::BonusPick::NotAPiece => {}
         }
-        self.begin_bonus_pick(addr, item.base.clone(), item.relic_bonus.clone());
     }
 
     /// Writes the chosen completion bonus (or none) onto the
@@ -4195,6 +4434,9 @@ struct DragFrame {
     /// An Alt+Click asking to split the socketed relic/charm out of
     /// the item — both survive.
     extract: Option<ItemAddr>,
+    /// The gold field held keyboard focus this frame: the character
+    /// must not be reloaded under a half-typed value.
+    editing_gold: bool,
 }
 
 /// Paints a container as its actual cell grid, with items at their
@@ -4415,6 +4657,7 @@ fn paint_item_tile(
         egui::Stroke::new(1.0, theme::TILE_EDGE)
     };
     painter.rect_stroke(item_rect, 2.0, outline, egui::StrokeKind::Inside);
+    paint_socket_pips(painter, item_rect, item);
     if item.stack_size > 1 {
         painter.text(
             item_rect.right_bottom() - egui::vec2(2.0, 1.0),
@@ -4423,6 +4666,24 @@ fn paint_item_tile(
             egui::FontId::proportional(10.0),
             visuals.strong_text_color(),
         );
+    }
+}
+
+/// One relic-orange pip per filled socket, bottom-left — the only
+/// sign on the grid that gear carries a relic or charm. Sits clear of
+/// the stack count in the opposite corner.
+fn paint_socket_pips(painter: &egui::Painter, item_rect: egui::Rect, item: &Item) {
+    const RADIUS: f32 = 2.5;
+    let pip = game_color(style::style_color(style::ItemStyle::Relic));
+    let mut center = item_rect.left_bottom() + egui::vec2(RADIUS + 2.0, -(RADIUS + 2.0));
+    for _ in transfer::socketed_slots(item) {
+        painter.circle(
+            center,
+            RADIUS,
+            pip,
+            egui::Stroke::new(1.0, egui::Color32::from_black_alpha(200)),
+        );
+        center.x += 2.0f32.mul_add(RADIUS, 2.0);
     }
 }
 
@@ -4608,24 +4869,60 @@ fn item_tooltip(ui: &mut egui::Ui, item: &Item, db: Option<&GameCache>, caches: 
                     .color(theme::TEXT_WEAK)
                     .size(11.0),
             );
-            let Some(details) = details else { return };
-            for block in &details.blocks {
-                ui.add(egui::Separator::default().spacing(6.0));
-                for line in block {
-                    if line.text.trim().is_empty() {
-                        ui.add_space(4.0);
-                    } else {
-                        ui.label(
-                            egui::RichText::new(&line.text)
-                                .color(game_color(stats::palette_color(line.color)))
-                                .size(12.0),
-                        );
+            if let Some(details) = &details {
+                for block in &details.blocks {
+                    ui.add(egui::Separator::default().spacing(6.0));
+                    for line in block {
+                        if line.text.trim().is_empty() {
+                            ui.add_space(4.0);
+                        } else {
+                            ui.label(
+                                egui::RichText::new(&line.text)
+                                    .color(game_color(stats::palette_color(line.color)))
+                                    .size(12.0),
+                            );
+                        }
                     }
                 }
             }
+            tooltip_gestures(ui, item, db, caches);
         });
     if let Some(pane_chrome) = pane_chrome {
         pane_chrome.tooltip_frame(ui.painter(), response.response.rect);
+    }
+}
+
+/// The footer naming what the hovered item can do beyond being
+/// moved, and the gesture that reaches it — the app's socket
+/// operations are otherwise invisible. Silent for ordinary items.
+fn tooltip_gestures(ui: &mut egui::Ui, item: &Item, db: Option<&GameCache>, caches: &mut Caches) {
+    let affordances = transfer::affordances(db, item);
+    if affordances.is_empty() {
+        return;
+    }
+    ui.add(egui::Separator::default().spacing(6.0));
+    for affordance in affordances {
+        let hint = match affordance {
+            transfer::Affordance::ExtractSocketed { piece } => {
+                let piece = caches.names.record_name(db, piece);
+                format!("Alt+Click to remove {piece} — both are kept")
+            }
+            transfer::Affordance::SocketIntoGear => {
+                "Drag onto gear its type allows to socket it".to_string()
+            }
+            transfer::Affordance::CombineShards => {
+                "Drag onto a matching partial to pour in its shards".to_string()
+            }
+            transfer::Affordance::PickBonus => {
+                "Double-click to pick its completion bonus".to_string()
+            }
+        };
+        ui.label(
+            egui::RichText::new(hint)
+                .color(theme::TEXT_WEAK)
+                .size(11.0)
+                .italics(),
+        );
     }
 }
 
@@ -4935,6 +5232,7 @@ fn show_character_section(
         if gold.changed() {
             pane.dirty = true;
         }
+        frame.editing_gold = gold.has_focus();
         let selection_here = matches!(
             *selected,
             Some(ItemAddr::Grid {
@@ -5808,6 +6106,77 @@ mod tests {
         assert_eq!(
             tracker.reload_failed(Path::new("other")),
             ReloadFailure::Transient
+        );
+    }
+
+    #[test]
+    fn a_backlog_of_polls_settles_without_waiting_for_more() {
+        // What a hidden window accumulates: the same changed stamp
+        // observed over and over. Consuming the backlog in order must
+        // settle it, which is why drive_refresh feeds every queued
+        // poll rather than only the newest.
+        let mut tracker = RefreshTracker::default();
+        let path = Path::new("watched");
+        let ours = stamp(10, 100);
+        let changed = stamp(20, 200);
+        let backlog = [&changed; 30];
+        let settles = backlog
+            .iter()
+            .filter(|observed| tracker.settled(path, Some(observed), Some(&ours)))
+            .count();
+        assert_eq!(settles, backlog.len() - 1, "only the first arms the check");
+    }
+
+    #[test]
+    fn an_emptied_bank_is_held_back_but_never_forever() {
+        let mut tracker = RefreshTracker::default();
+        let shared = Path::new("Sys/winsys.dxb");
+        let bank = Path::new("_Sif/winsys.dxb");
+        for attempt in 1..=EMPTY_PATIENCE {
+            assert!(tracker.defer_empty(shared), "held on attempt {attempt}");
+        }
+        // A twin that never catches up must not pin the pane forever.
+        assert!(!tracker.defer_empty(shared), "patience is bounded");
+
+        // Deferral is per file: one bank emptying says nothing about
+        // another that emptied in the same poll.
+        assert!(tracker.defer_empty(bank));
+
+        // Once adopted, a later emptying is questioned afresh rather
+        // than waved through on the spent budget.
+        tracker.empty_settled(shared);
+        assert!(tracker.defer_empty(shared));
+    }
+
+    #[test]
+    fn watch_health_reports_a_stall_after_it_ends() {
+        let start = Instant::now();
+        let mut health = WatchHealth::default();
+        assert_eq!(health.summary(start), "watching: starting…");
+        assert!(health.stalled_now(start), "nothing checked yet reads stale");
+
+        health.checked(start);
+        assert!(!health.stalled_now(start + Duration::from_secs(2)));
+        assert_eq!(
+            health.summary(start + Duration::from_secs(2)),
+            "watching: checked 2s ago"
+        );
+
+        // A gap the paint loop stopped through, then a resume: the
+        // pause is still reported once polls are landing again.
+        let resumed = start + STALL_THRESHOLD + Duration::from_secs(65);
+        assert!(health.stalled_now(resumed));
+        health.checked(resumed);
+        assert_eq!(
+            health.summary(resumed),
+            "watching: checked 0s ago · longest pause 1m15s (window hidden?)"
+        );
+        // Ordinary cadence afterwards neither clears nor worsens it.
+        health.checked(resumed + Duration::from_secs(2));
+        assert!(
+            health
+                .summary(resumed + Duration::from_secs(2))
+                .contains("1m15s")
         );
     }
 

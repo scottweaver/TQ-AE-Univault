@@ -116,8 +116,17 @@ bootstrap Q&A).
   (2026-08-24, autosave refinement 2026-08-25)
 - The shell watches the open files (character, banks, item store) by
   polling and keeps panes current: an external change reloads a
-  clean pane automatically, but only after the file's stamp holds
-  stable across two polls (never read a file mid-write). **The app
+  clean pane automatically, but only once the change is *believed*.
+  Two independent tests stand between a write and a pane: the
+  file's stamp must hold stable across two polls, and a read that
+  comes back empty must be corroborated before it clears a pane
+  that held items — for a stash by the game's own `.dxg` twin,
+  which still carries the last good write while a save is in
+  flight. Stamp stability alone was found insufficient on
+  2026-08-30: a stash save caught between truncating and writing
+  its items parses as a *valid empty stash*, so no read fails and
+  the pane silently empties. Corroboration is bounded, so a witness
+  that never catches up cannot pin stale items on screen. **The app
   never knowingly overwrites an externally-changed file without the
   user choosing to**: every save first re-checks the file against
   the stamp taken at load/last write, and a mismatch — or an

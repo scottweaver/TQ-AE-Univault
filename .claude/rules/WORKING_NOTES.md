@@ -31,7 +31,15 @@ annotated.
    sized for the pane instead.
 4. **A fully occluded window stops repainting** (normal macOS
    occlusion). A background import then looks "stuck at 2%" until the
-   window is uncovered — not a hang.
+   window is uncovered — not a hang. The same stall hits **anything
+   driven from the paint loop**: auto-refresh consumes the watcher
+   thread's polls inside `drive_refresh`, so a covered window notices
+   no file change at all until it is visible again (found 2026-08-30
+   chasing "Shared bank doesn't reload"). The toolbar's
+   "watching: checked Ns ago · longest pause …" line exists to make
+   that visible; when testing a repaint-driven feature, **raise the
+   window first** — a screenshot via `screencapture -l <id>` captures
+   an occluded window happily and hides the stall.
 
 ## The UI development loop
 
@@ -67,6 +75,26 @@ annotated.
   and python-fu both — the save can land *before* the hang), so
   prefer asking the user to export. Game-art reference screenshots
   live in `/Volumes/scott-games/tq-ae-designs` (mount required).
+
+## Reading a save the game is still writing
+
+- **A stash save caught mid-write parses as a valid *empty* stash.**
+  Nothing errors, so `RELOAD_PATIENCE` (which only counts reads that
+  fail) never fires: the app reports a successful reload and shows an
+  empty bank. Found 2026-08-30 chasing "Character Bank and Shared
+  aren't showing any items".
+- **The `.dxg` twin is the tell.** The game keeps it as the last good
+  write, so a `.dxb` that reads empty while its twin still parses with
+  items is a save in flight, not an emptied bank. That is what
+  `mid_save()` checks before letting a reload clear a pane; the
+  deferral is bounded (`EMPTY_PATIENCE`) so a twin that never catches
+  up cannot pin stale items on screen forever.
+- **Never diagnose these files while the app or game is live.** Two
+  separate scans during this session read a file mid-rewrite and
+  reported "0 items" and "`.dxb` and `.dxg` disagree in 920 bytes",
+  both of which were measurement artifacts and sent the session
+  chasing corruption that did not exist. `cp` the files to scratch
+  first, then analyse the copies.
 
 ## Verifying against real game data
 
