@@ -5,7 +5,7 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-29 (mod: Psionic Burn radius, PR open)
+Last updated: 2026-08-29 (PR #61 merged — Psionic Burn radius)
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
@@ -91,8 +91,7 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#60 all merged; all gates green |
-| `mod/psionic-burn-radius` | Mod: Psionic Burn `skillTargetRadius` 3.5→6.0 | PR open; both bundles rebuilt + installed, in-game check pending |
+| `main` | trunk | PRs #1–#62 all merged; all gates green |
 | `worktree-fix+projectile-speeds-ae` | a parallel session's cast-speed / DPS docs work | pushed, no PR; locked worktree under `.claude/worktrees/` — not the main session's to touch |
 
 The remote is now just these two: every merged branch has been pruned
@@ -156,7 +155,8 @@ buttons shipped in PR #44):
 
 ## Most recent meaningful progress
 
-- **2026-08-29 — Mod: Psionic Burn radius 3.5 → 6.0 (PR open).** User
+- **2026-08-29 — Mod: Psionic Burn radius 3.5 → 6.0 (PR #61,
+  merged).** User
   ask, taken literally: `skillTargetRadius` set on the live record
   `records\xpack\skills\dream\psionictouch_psionicburn.dbr`
   (`SkillSecondary_AttackRadius`; the `OLD\` and `11-15-06\` copies
