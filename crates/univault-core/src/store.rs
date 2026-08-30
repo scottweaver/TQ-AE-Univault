@@ -266,7 +266,7 @@ pub fn export_to_vault(items: impl IntoIterator<Item = Item>, db: Option<&GameCa
 /// The computed bucket an item files into: its [`ItemCategory`], or
 /// [`Bucket::Unknown`] when no cache is loaded or the record isn't in
 /// it (a mod item after the mod is gone).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Bucket {
     Category(ItemCategory),
     Unknown,

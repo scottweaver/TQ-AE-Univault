@@ -196,13 +196,18 @@ impl GameCache {
     /// record's main icon.
     #[must_use]
     pub fn item_icon(&self, item: &Item) -> Option<RgbaImage> {
-        let entry = self.entry(&item.base)?;
-        let icon = if self.is_incomplete_relic(item) {
-            entry.shard_icon.as_ref().or(entry.icon.as_ref())
-        } else {
-            entry.icon.as_ref()
-        }?;
-        icon.decode()
+        if self.is_incomplete_relic(item) {
+            let entry = self.entry(&item.base)?;
+            return entry.shard_icon.as_ref().or(entry.icon.as_ref())?.decode();
+        }
+        self.record_icon(&item.base)
+    }
+
+    /// A record's main icon — the art any item of that base shows
+    /// when complete — independent of any particular item.
+    #[must_use]
+    pub fn record_icon(&self, id: &RecordId) -> Option<RgbaImage> {
+        self.entry(id)?.icon.as_ref()?.decode()
     }
 
     /// The shard count that completes a relic/charm record; `None`

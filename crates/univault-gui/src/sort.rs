@@ -4,8 +4,10 @@
 
 use std::cmp::Ordering;
 
+use serde::{Deserialize, Serialize};
+
 /// Which way a sorted view reads.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum SortDirection {
     Ascending,
     Descending,
@@ -69,8 +71,8 @@ mod tests {
     #[test]
     fn flipping_twice_is_the_identity() {
         for direction in [SortDirection::Ascending, SortDirection::Descending] {
-            assert!(direction.flipped().flipped() == direction);
-            assert!(direction.flipped() != direction);
+            assert_eq!(direction.flipped().flipped(), direction);
+            assert_ne!(direction.flipped(), direction);
         }
     }
 }

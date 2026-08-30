@@ -8,6 +8,7 @@
 
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use univault_core::cache::GameCache;
 use univault_core::chr::Item;
@@ -39,17 +40,45 @@ pub(crate) struct SearchState {
 }
 
 impl SearchState {
+    /// A fresh search view showing the given (restored) settings.
+    pub(crate) fn with_settings(settings: SearchSettings) -> Self {
+        Self {
+            draft: settings.draft,
+            sort: settings.sort,
+            ..Self::default()
+        }
+    }
+
     /// Item data changed (edit, reload, import): rows and suggestion
     /// vocabularies both need a rebuild.
     pub(crate) fn mark_data_changed(&mut self) {
         self.stale = true;
         self.vocab_stale = true;
     }
+
+    /// The filter bar and sort as they stand — what survives a
+    /// restart.
+    pub(crate) fn settings(&self) -> SearchSettings {
+        SearchSettings {
+            draft: self.draft.clone(),
+            sort: self.sort,
+        }
+    }
+}
+
+/// The search view's persisted part: every filter field and the
+/// table's sort, nothing derived (rows and vocabularies rebuild).
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub(crate) struct SearchSettings {
+    draft: FilterDraft,
+    sort: SortSpec,
 }
 
 /// Widget state of the filter bar; empty text fields (and
 /// unparseable numbers) mean "no filter".
-#[derive(Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 struct FilterDraft {
     name: String,
     /// The dynamic stat/affix criteria — as many rows as the user
@@ -91,7 +120,8 @@ impl FilterDraft {
 
 /// One criterion row: what to match, where, and the value window. A
 /// row with nothing filled in is inert.
-#[derive(Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 struct CriterionDraft {
     scope: CriterionScope,
     text: String,
@@ -105,7 +135,7 @@ impl CriterionDraft {
     }
 }
 
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 enum CriterionScope {
     /// Any stat line on the item (base, affix, relic, bonus).
     #[default]
@@ -128,7 +158,7 @@ impl CriterionScope {
     }
 }
 
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 enum OriginDraft {
     #[default]
     Any,
@@ -136,7 +166,7 @@ enum OriginDraft {
     Expansion(Expansion),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 enum SortKey {
     Name,
     Rarity,
@@ -156,7 +186,8 @@ impl SortKey {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SortSpec {
     key: SortKey,
     direction: SortDirection,
@@ -1080,11 +1111,11 @@ mod tests {
 
     #[test]
     fn a_fresh_column_opens_in_its_natural_direction() {
-        assert!(SortKey::Name.natural() == SortDirection::Ascending);
-        assert!(SortKey::Bucket.natural() == SortDirection::Ascending);
-        assert!(SortKey::Rarity.natural() == SortDirection::Descending);
-        assert!(SortKey::ReqLevel.natural() == SortDirection::Descending);
-        assert!(SortSpec::default().direction == SortDirection::Ascending);
+        assert_eq!(SortKey::Name.natural(), SortDirection::Ascending);
+        assert_eq!(SortKey::Bucket.natural(), SortDirection::Ascending);
+        assert_eq!(SortKey::Rarity.natural(), SortDirection::Descending);
+        assert_eq!(SortKey::ReqLevel.natural(), SortDirection::Descending);
+        assert_eq!(SortSpec::default().direction, SortDirection::Ascending);
     }
 
     fn sample_item() -> Item {
