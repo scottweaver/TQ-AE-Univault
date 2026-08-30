@@ -5,7 +5,7 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-30 (PR #69 merged — testing from main)
+Last updated: 2026-08-30 (PR #69 merged and pruned — testing from main)
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
@@ -29,12 +29,16 @@ the app open now ends in "auto-reloaded Shared bank" rather than the
 "unexpected end of data at 0xEFD8: wanted 4 more bytes" toast (the
 fix: `RefreshTracker` keeps the first two failed reloads silent,
 `RELOAD_PATIENCE` 3 ≈ 12 s, reports once if persisting; `reload_doc`
-restores `dirty` on a failed read). Post-merge cleanup still owed:
-the merged branch `feat/persist-ui-state-slot-filter-app-icon` and
-this session's `mod-phantom-strike` worktree are **not yet deleted**
-— confirm with the user, then `git branch -d` + `git push origin
---delete`. The user tests from their own checkout, which needs
-`git pull --ff-only` on `main` first.
+restores `dirty` on a failed read). The #69 branch is pruned local
+and remote; only this session's `mod-phantom-strike` worktree
+remains, detached, and goes when the session ends. **Standing
+instruction recorded 2026-08-30** (METHODOLOGIES.md "After a PR
+merges"): a merged PR's branch is deleted without asking. The user
+tests from their own checkout, which was still at `59fffb4` with an
+Aug 28 release binary when they reported "none of the changes in
+main" — it needs `git pull --ff-only && cargo run --release` first;
+if the chips or the dock icon are still missing after that, it is
+a real bug.
 **1MAX ACCEPTED in game 2026-08-30** ("1Max seems to working
 great!"): `LootPlus1MAXTuned` (PR #65) — vanilla density, XP ×3 —
 plays at the pace it was built for, so the XP factor is settled.
@@ -140,11 +144,11 @@ only). No issue tracker is bound yet (deliberately deferred).
 |---|---|---|
 | `main` | trunk | PRs #1–#69 all merged; all gates green |
 | `worktree-fix+projectile-speeds-ae` | a parallel session's cast-speed / DPS docs work | pushed, no PR; locked worktree under `.claude/worktrees/` — not the main session's to touch |
-| `feat/persist-ui-state-slot-filter-app-icon` | persisted view state, relic/charm slot filter, helm app icon, stash auto-reload fix | PR #69 **merged** 2026-08-30; branch and its `mod-phantom-strike` worktree await deletion (confirm first) |
 
-The remote is these three. Everything merged before #69 has been
-pruned local and remote (2026-08-30); the #69 branch is the one
-leftover, kept until the user confirms its deletion.
+The remote is just these two. Everything merged through #70 has
+been pruned local and remote (2026-08-30). The only leftover is this
+session's `mod-phantom-strike` worktree, detached at `main` and safe
+to remove whenever its session ends.
 
 ## Next up
 
