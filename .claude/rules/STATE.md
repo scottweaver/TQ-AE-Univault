@@ -5,21 +5,19 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-30 (post PR #65 merged — 1MAX bundle)
+Last updated: 2026-08-30 (1MAX accepted in game)
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** PR #65 merged (2026-08-30) — a third bundle,
-`LootPlus1MAXTuned`, vanilla density with XP ×3, installed to
-`CustomMaps` and **unplayed**. The question it answers is empirical: a
-mob group should feel worth what a 3× pack is worth in
-`LootPlusXMAX3Tuned`. If levelling lands fast or slow, the one knob is
-the `* 3` at the tail of `experienceEquation` in `mods/1max.json` —
-rebuild and reinstall, nothing else moves. Watch hero packs first:
-star heroes kept their ×3 spawns *and* take the ×3 XP, so hero XP is
-nine times vanilla — the one place pacing can run hot. Two older mod
-tunes are also live and **unplayed**: Phantom Strike
+**Resume here:** nothing is in flight — tree clean, no open PRs.
+**1MAX ACCEPTED in game 2026-08-30** ("1Max seems to working
+great!"): `LootPlus1MAXTuned` (PR #65) — vanilla density, XP ×3 —
+plays at the pace it was built for, so the XP factor is settled.
+**Do not re-tune the `* 3`** in `mods/1max.json` without a fresh
+complaint; the feared hero-pack hot spot (×3 spawns × ×3 XP = nine
+times vanilla hero XP) did not bite. Two older mod
+tunes are still live and **unplayed**: Phantom Strike
 `characterRunSpeedModifier` 0→500
 (PR #58) and Psionic Burn `skillTargetRadius` 3.5→6.0 (PR #61). Both
 need only an in-game pass after a session restart. If the blink still
@@ -73,10 +71,9 @@ forward or reverted (`git revert da227aa`), not re-branched.
 - **Known gap, unfixed:** `get_mastery` / `list_masteries` call
   `game_data()` directly, so MCP skill trees are always vanilla while
   the record tools overlay the installed bundle. Listed under "Next up".
-- User in-game checks outstanding (mod acceptance): **the
-  `LootPlus1MAXTuned` levelling pace — the freshest, and the only one
-  that is a judgment call rather than a yes/no**; Phantom Strike
-  blink speed (PR #58) and Psionic Burn radius (PR #61); pet Energy ×2.5 / regen ×1.75 on Core Dweller (875 /
+- User in-game checks outstanding (mod acceptance): **Phantom Strike
+  blink speed (PR #58) and Psionic Burn radius (PR #61) — now the
+  freshest two**; pet Energy ×2.5 / regen ×1.75 on Core Dweller (875 /
   5.25 at level 20) and Call of the Wild wolves (255 / 3.5); vanilla
   XP restored (even-level trash mob on Normal ≈ level×15); target
   caps ×3 in dense packs; 2026-08-26 Core Dweller tune. Older
@@ -203,10 +200,11 @@ buttons shipped in PR #44):
   to the installed bundle. Built and installed; 255 tests, clippy
   clean. Three user decisions, all theirs: star heroes keep their ×3
   (a density bump, but one they want), XP ×3.0 over the gentler
-  options, name `LootPlus1MAXTuned`. Risk: the XP factor is a feel
-  question no test can settle, and heroes now stack ×3 spawns with ×3
-  XP — nine times vanilla hero XP, the one place the pacing could run
-  hot.
+  options, name `LootPlus1MAXTuned`. **ACCEPTED in game 2026-08-30**
+  ("1Max seems to working great!") — the XP factor was the one thing
+  no test could settle, and it landed first try. The flagged risk,
+  heroes stacking ×3 spawns with ×3 XP for nine times vanilla hero XP,
+  did not materialise in play. Risk now retired.
 
 - **2026-08-29 — Mod: Psionic Burn radius 3.5 → 6.0 (PR #61,
   merged).** User
