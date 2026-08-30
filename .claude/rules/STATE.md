@@ -5,19 +5,21 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-29 (1MAX bundle built and installed)
+Last updated: 2026-08-30 (post PR #65 merged — 1MAX bundle)
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** `mod/1max-xp` carries a third bundle,
-`LootPlus1MAXTuned` — vanilla density, XP ×3 — built and installed to
-`CustomMaps`, **unplayed**. The question it answers is empirical: a
+**Resume here:** PR #65 merged (2026-08-30) — a third bundle,
+`LootPlus1MAXTuned`, vanilla density with XP ×3, installed to
+`CustomMaps` and **unplayed**. The question it answers is empirical: a
 mob group should feel worth what a 3× pack is worth in
 `LootPlusXMAX3Tuned`. If levelling lands fast or slow, the one knob is
 the `* 3` at the tail of `experienceEquation` in `mods/1max.json` —
-rebuild and reinstall, nothing else moves. Two older mod tunes are
-also live and **unplayed**: Phantom Strike
+rebuild and reinstall, nothing else moves. Watch hero packs first:
+star heroes kept their ×3 spawns *and* take the ×3 XP, so hero XP is
+nine times vanilla — the one place pacing can run hot. Two older mod
+tunes are also live and **unplayed**: Phantom Strike
 `characterRunSpeedModifier` 0→500
 (PR #58) and Psionic Burn `skillTargetRadius` 3.5→6.0 (PR #61). Both
 need only an in-game pass after a session restart. If the blink still
@@ -117,14 +119,13 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#64 all merged; all gates green |
-| `mod/1max-xp` | the `LootPlus1MAXTuned` bundle + modforge `extends` | pushed, PR open; bundle already installed |
+| `main` | trunk | PRs #1–#65 all merged; all gates green |
 | `worktree-fix+projectile-speeds-ae` | a parallel session's cast-speed / DPS docs work | pushed, no PR; locked worktree under `.claude/worktrees/` — not the main session's to touch |
 
-The remote is now just these three: every merged branch has been
-pruned (2026-08-29). A local `docs/checkpoint-2026-08-29` worktree
-lingers whose remote branch is already gone — remove it when
-convenient.
+`mod/1max-xp` merged as #65 and is awaiting the user's go-ahead to
+prune (local + remote), along with its `mod-phantom-strike` worktree.
+A local `docs/checkpoint-2026-08-29` worktree also lingers whose
+remote branch is already gone — remove it when convenient.
 
 ## Next up
 
@@ -183,7 +184,8 @@ buttons shipped in PR #44):
 
 ## Most recent meaningful progress
 
-- **2026-08-29 — 1MAX: the same mod at vanilla density, XP ×3.** User
+- **2026-08-30 — 1MAX: the same mod at vanilla density, XP ×3 (PR
+  #65, merged).** User
   ask: a third bundle with no enemy-density increase, where a mob
   group is still worth what a 3× pack is worth. Two things made it
   cheap. The Workshop item already ships `LootPlusXMAXFTWx1` — same
