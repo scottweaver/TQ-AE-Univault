@@ -2,6 +2,8 @@
 //! origin, coarse categories, and filter matching — the pure engine
 //! behind the search view and the MCP server's item naming.
 
+use serde::{Deserialize, Serialize};
+
 use crate::cache::GameCache;
 use crate::chr::{Item, RecordId};
 use crate::stats::{self, Requirement, StatLine};
@@ -43,7 +45,7 @@ pub fn item_name(db: Option<&GameCache>, item: &Item) -> String {
 
 /// The expansion an item hails from, ranked highest across base and
 /// affixes; `None` is the base game.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Expansion {
     ImmortalThrone,
     Ragnarok,
@@ -101,7 +103,7 @@ pub fn expansion_origin(item: &Item) -> Option<Expansion> {
 
 /// Coarse item category for filtering: an equipment family for gear,
 /// the item kind for everything else.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ItemCategory {
     Gear(GearSlot),
     Relic,

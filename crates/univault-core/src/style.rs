@@ -3,13 +3,15 @@
 //! Ported from `TQVaultAE`'s `Item.ItemStyle`, `ItemStyle`, `TQColor`,
 //! and `RecordId.ForItems` (MIT).
 
+use serde::{Deserialize, Serialize};
+
 use crate::arz::{DbRecord, normalize};
 use crate::cache::GameCache;
 use crate::chr::{Item, RecordId};
 
 /// The game's display style for an item — drives the name color and
 /// the style caption exactly as Titan Quest renders them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ItemStyle {
     Broken,
     Mundane,
@@ -150,7 +152,7 @@ impl Classification {
 /// allow-flags for, mapped from equipment record classes. Socketing
 /// rules are per family (a ring relic fits any ring); rarity never
 /// enters into it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GearSlot {
     Head,
     UpperBody,
@@ -170,8 +172,9 @@ pub enum GearSlot {
 }
 
 impl GearSlot {
-    /// Serialization / bitmask order — append-only.
-    pub(crate) const ALL: [Self; 15] = [
+    /// Every family in serialization / bitmask order — append-only,
+    /// and the order the shell lists them in.
+    pub const ALL: [Self; 15] = [
         Self::Head,
         Self::UpperBody,
         Self::Forearm,

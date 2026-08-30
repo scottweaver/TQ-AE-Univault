@@ -30,12 +30,14 @@ mod safe_write;
 mod search;
 mod sort;
 mod theme;
+mod ui_state;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use eframe::egui;
+use serde::{Deserialize, Serialize};
 use sort::SortDirection;
 use univault_core::cache::{GameCache, SourceStamp};
 use univault_core::chr::{self, EquipSlot, Item, PlayerCharacter, RecordId};
@@ -54,10 +56,15 @@ use univault_gui::components::tabbed_panel::{self, TabbedPanel};
 
 fn main() -> eframe::Result {
     let args = CliArgs::parse();
+    let (game, game_note) = initial_game_status(args.game_dir.clone());
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1280.0, 900.0])
+        .with_min_inner_size([800.0, 600.0]);
+    if let Some(icon) = app_icon(&game) {
+        viewport = viewport.with_icon(icon);
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1280.0, 900.0])
-            .with_min_inner_size([800.0, 600.0]),
+        viewport,
         ..Default::default()
     };
     eframe::run_native(
@@ -67,9 +74,31 @@ fn main() -> eframe::Result {
             theme::apply(&cc.egui_ctx);
             cc.egui_ctx
                 .all_styles_mut(|style| style.interaction.tooltip_delay = 0.0);
-            Ok(Box::new(App::new(args, &cc.egui_ctx)))
+            Ok(Box::new(App::new(args, game, game_note, &cc.egui_ctx)))
         }),
     )
+}
+
+/// The record whose inventory art is the app's icon: the Iron Great
+/// Helm, Corinthian style (`c04_helm06`).
+const APP_ICON_RECORD: &str = r"records\item\equipmenthelm\c04_helm06.dbr";
+
+/// The window (and, on macOS, dock) icon, taken from the game
+/// cache's copy of the helm art rather than shipped with the app —
+/// extracted game assets stay local (ARCHITECTURE.md). Before the
+/// first import there is no cache, and the platform's default icon
+/// stands in.
+fn app_icon(game: &GameStatus) -> Option<egui::IconData> {
+    let GameStatus::Loaded(cache) = game else {
+        return None;
+    };
+    let id = RecordId::parse(APP_ICON_RECORD.to_string())?;
+    let image = cache.record_icon(&id)?;
+    Some(egui::IconData {
+        rgba: image.pixels,
+        width: u32::try_from(image.width).ok()?,
+        height: u32::try_from(image.height).ok()?,
+    })
 }
 
 struct CliArgs {
@@ -154,8 +183,9 @@ enum StashOpened {
 }
 
 /// The left pane's tab strip: which document is on screen.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 enum LeftTab {
+    #[default]
     Inventory,
     Bank,
     Shared,
@@ -193,7 +223,7 @@ impl LeftTab {
 
 /// What the store pane orders each bucket's items *by*; which way it
 /// reads is [`SortDirection`], carried alongside in [`StoreSort`].
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 enum StoreSortKey {
     Name,
     Rarity,
@@ -223,7 +253,8 @@ impl StoreSortKey {
 }
 
 /// The store pane's full ordering: a key and the way it reads.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct StoreSort {
     key: StoreSortKey,
     direction: SortDirection,
@@ -250,9 +281,16 @@ struct StorePane {
     dirty: bool,
     selected: Option<ItemAddr>,
     disk_stamp: Option<SourceStamp>,
-    /// The open family tab and the open bucket inside it — pure view
-    /// state; the store itself has no tab structure.
-    family: Family,
+    view: StoreView,
+}
+
+/// How the store pane is being looked at — the open bucket (its
+/// family follows from it), the ordering, and the filters in force.
+/// Pure view state over a store that has no tab structure, and the
+/// part of the pane that survives a restart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct StoreView {
     bucket: Bucket,
     sort: StoreSort,
     /// Gates bulk sends only: with it set, `All → Store` and the
@@ -260,6 +298,83 @@ struct StorePane {
     /// its type. Single sends and drops are deliberate acts and
     /// always land.
     skip_duplicate_seeds: bool,
+    slot_filter: SlotFilter,
+}
+
+impl Default for StoreView {
+    fn default() -> Self {
+        Self {
+            bucket: Family::Armor.buckets()[0],
+            sort: StoreSort::default(),
+            skip_duplicate_seeds: false,
+            slot_filter: SlotFilter::default(),
+        }
+    }
+}
+
+impl StoreView {
+    fn family(&self) -> Family {
+        self.bucket.family()
+    }
+}
+
+/// The equipment families the Relic and Charm buckets are narrowed
+/// to. Empty is no narrowing; otherwise a piece shows when the game's
+/// own allow-flags admit it to *any* chosen family, so lighting
+/// Helmet and Torso lists everything that fits either.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SlotFilter {
+    /// Kept in [`style::GearSlot::ALL`] order so the file reads like
+    /// the chip row.
+    slots: Vec<style::GearSlot>,
+}
+
+impl SlotFilter {
+    fn is_empty(&self) -> bool {
+        self.slots.is_empty()
+    }
+
+    fn contains(&self, slot: style::GearSlot) -> bool {
+        self.slots.contains(&slot)
+    }
+
+    fn toggle(&mut self, slot: style::GearSlot) {
+        if self.contains(slot) {
+            self.slots.retain(|chosen| *chosen != slot);
+        } else {
+            self.slots.push(slot);
+            self.slots.sort_by_key(|chosen| {
+                style::GearSlot::ALL
+                    .iter()
+                    .position(|other| other == chosen)
+            });
+        }
+    }
+
+    fn clear(&mut self) {
+        self.slots.clear();
+    }
+
+    /// Whether a relic/charm passes: with nothing chosen everything
+    /// does; otherwise it must fit at least one chosen family.
+    fn admits(&self, db: Option<&GameCache>, item: &Item) -> bool {
+        self.is_empty()
+            || db.is_some_and(|db| {
+                self.slots
+                    .iter()
+                    .any(|slot| db.relic_allows(&item.base, *slot))
+            })
+    }
+}
+
+/// The buckets the slot filter applies to — the socketable pieces.
+fn takes_slot_filter(bucket: Bucket) -> bool {
+    use univault_core::query::ItemCategory;
+    matches!(
+        bucket,
+        Bucket::Category(ItemCategory::Relic | ItemCategory::Charm)
+    )
 }
 
 /// One open document, addressable across panes — the unit the
@@ -284,11 +399,29 @@ impl DocId {
 /// Decides when an externally observed file state is worth acting
 /// on: a change must hold steady across two consecutive polls so a
 /// file caught mid-write (the game saves over SMB) is never read
-/// half-written.
+/// half-written — and, when a settled file still reads short or
+/// corrupt, how long to keep quiet about it while the write lands.
 #[derive(Default)]
 struct RefreshTracker {
     pending: HashMap<PathBuf, SourceStamp>,
+    /// Consecutive failed reloads per path since the last success.
+    failures: HashMap<PathBuf, u32>,
 }
+
+/// What a failed auto-reload means for the user: nothing yet — a
+/// file whose stamp held still can still read short over SMB while
+/// the game's write lands, and the next settle retries — or a
+/// failure that has outlasted any write and deserves a report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReloadFailure {
+    Transient,
+    Persisting,
+}
+
+/// Failed reloads of one file tolerated silently before one is
+/// reported; attempts are two polls apart, so this is ~12 s of
+/// patience.
+const RELOAD_PATIENCE: u32 = 3;
 
 impl RefreshTracker {
     /// Feeds one poll observation; `true` means the change settled
@@ -316,8 +449,26 @@ impl RefreshTracker {
         false
     }
 
+    /// Drops the pending observation for a freshly (re)opened file.
+    /// The failure count is deliberately kept: every reload attempt
+    /// opens the file, and clearing it here would reset the count
+    /// before it could ever reach [`RELOAD_PATIENCE`].
     fn forget(&mut self, path: &Path) {
         self.pending.remove(path);
+    }
+
+    fn reload_failed(&mut self, path: &Path) -> ReloadFailure {
+        let count = self.failures.entry(path.to_path_buf()).or_insert(0);
+        *count += 1;
+        if *count >= RELOAD_PATIENCE {
+            ReloadFailure::Persisting
+        } else {
+            ReloadFailure::Transient
+        }
+    }
+
+    fn reload_succeeded(&mut self, path: &Path) {
+        self.failures.remove(path);
     }
 }
 
@@ -614,6 +765,8 @@ struct App {
     /// the search table in its place.
     view: MainView,
     search: search::SearchState,
+    /// The restart-persistent view state and its file.
+    ui_state: ui_state::UiStateFile,
     /// The hand-drawn component chrome (bundled art, uploaded once).
     tabbed_panel: TabbedPanel,
     gilded_border: GildedBorder,
@@ -621,8 +774,9 @@ struct App {
 
 /// The store column's surface — the game-file pane stays put either
 /// way.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 enum MainView {
+    #[default]
     Panes,
     Search,
 }
@@ -634,22 +788,41 @@ struct DllPatchDialog {
     outcome: Result<(Vec<u8>, univault_core::dllpatch::PatchState), String>,
 }
 
+/// Where the item database comes from at launch: `--game` forces a
+/// (re-)import; otherwise the local cache is the runtime database,
+/// imported automatically (in the background) from the remembered
+/// game dir when it is missing or in an older format. The second
+/// value is the standing advisory about the cache, if any.
+fn initial_game_status(forced_dir: Option<PathBuf>) -> (GameStatus, Option<String>) {
+    if let Some(dir) = forced_dir {
+        return (GameStatus::Importing(start_import(dir)), None);
+    }
+    if let Some(cache) = load_cached_game_data() {
+        let note = staleness_warning(&cache);
+        return (GameStatus::Loaded(cache), note);
+    }
+    match stored_game_dir() {
+        Some(dir) => (GameStatus::Importing(start_import(dir)), None),
+        None => (GameStatus::Absent, None),
+    }
+}
+
 impl App {
-    fn new(args: CliArgs, ctx: &egui::Context) -> Self {
-        // --game forces a (re-)import; otherwise the local cache is
-        // the runtime database, imported automatically (in the
-        // background) from the remembered game dir when it is
-        // missing or in an older format.
-        let mut game_note = None;
-        let game = if let Some(dir) = args.game_dir.clone() {
-            GameStatus::Importing(start_import(dir))
-        } else if let Some(cache) = load_cached_game_data() {
-            game_note = staleness_warning(&cache);
-            GameStatus::Loaded(cache)
-        } else if let Some(dir) = stored_game_dir() {
-            GameStatus::Importing(start_import(dir))
-        } else {
-            GameStatus::Absent
+    fn new(
+        args: CliArgs,
+        game: GameStatus,
+        game_note: Option<String>,
+        ctx: &egui::Context,
+    ) -> Self {
+        let ui_state = ui_state::UiStateFile::load();
+        let restored = ui_state.on_disk().clone();
+        // The search table needs the database; without one the pane
+        // is the only surface worth restoring.
+        let view = match game {
+            GameStatus::Loaded(_) => restored.view,
+            GameStatus::Absent | GameStatus::Importing(_) | GameStatus::Failed(_) => {
+                MainView::Panes
+            }
         };
         let mut app = Self {
             game,
@@ -662,7 +835,7 @@ impl App {
             relics: None,
             store: None,
             left_selected: None,
-            active_tab: LeftTab::Inventory,
+            active_tab: restored.left_tab,
             backed_up: HashSet::new(),
             autosave_at: None,
             status: None,
@@ -674,12 +847,13 @@ impl App {
             pending_zoom: 1.0,
             dll_patch: None,
             show_help: false,
-            inventory_tab: InventoryTab::Equipment,
+            inventory_tab: restored.inventory_tab,
             watcher: start_watcher(),
             refresh: RefreshTracker::default(),
             conflicts: Vec::new(),
-            view: MainView::Panes,
-            search: search::SearchState::default(),
+            view,
+            search: search::SearchState::with_settings(restored.search),
+            ui_state,
             tabbed_panel: TabbedPanel::load(ctx),
             gilded_border: GildedBorder::load(ctx),
         };
@@ -866,21 +1040,9 @@ impl App {
         self.refresh.forget(&path);
         let disk_stamp = stamp_of(&path);
         let kept = self.store.as_ref().filter(|pane| pane.path == path);
-        let (family, bucket, sort, skip_duplicate_seeds) = kept.map_or(
-            (
-                Family::Armor,
-                Family::Armor.buckets()[0],
-                StoreSort::default(),
-                false,
-            ),
-            |pane| {
-                (
-                    pane.family,
-                    pane.bucket,
-                    pane.sort,
-                    pane.skip_duplicate_seeds,
-                )
-            },
+        let view = kept.map_or_else(
+            || self.ui_state.on_disk().store.clone(),
+            |pane| pane.view.clone(),
         );
         let existing = path.exists();
         let store = if existing {
@@ -895,10 +1057,7 @@ impl App {
             dirty: false,
             selected: None,
             disk_stamp,
-            family,
-            bucket,
-            sort,
-            skip_duplicate_seeds,
+            view,
         });
         self.search.mark_data_changed();
         if existing {
@@ -992,7 +1151,7 @@ impl App {
                 .map(|entry| entry.item.clone())
                 .collect()
         } else {
-            let bucket = pane.bucket;
+            let bucket = pane.view.bucket;
             pane.store
                 .entries()
                 .filter(|entry| univault_core::store::bucket_of(db, &entry.item) == bucket)
@@ -1086,7 +1245,7 @@ impl App {
         let mut guard = self
             .store
             .as_ref()
-            .filter(|pane| pane.skip_duplicate_seeds)
+            .filter(|pane| pane.view.skip_duplicate_seeds)
             .map(|pane| DuplicateGuard::over(&pane.store, db));
         let (items, source_grid, label): (Vec<Item>, GridId, &str) = match (self.active_tab, sack) {
             (LeftTab::Inventory, Some(index)) => {
@@ -1863,14 +2022,22 @@ impl App {
                 self.push_conflict(doc);
             } else {
                 match self.reload_doc(doc) {
-                    Ok(()) => reloaded.push(doc_label(doc)),
-                    Err(error) => failed.push(format!("{}: {error}", doc_label(doc))),
+                    Ok(()) => {
+                        self.refresh.reload_succeeded(&path);
+                        reloaded.push(doc_label(doc));
+                    }
+                    Err(error) => match self.refresh.reload_failed(&path) {
+                        ReloadFailure::Transient => {}
+                        ReloadFailure::Persisting => {
+                            failed.push(format!("{}: {error}", doc_label(doc)));
+                        }
+                    },
                 }
             }
         }
         if !failed.is_empty() {
             self.status = Some(Err(format!(
-                "changed on disk but could not reload {}",
+                "changed on disk but still not readable — {} (retrying; Reload forces it)",
                 failed.join("; ")
             )));
         } else if !reloaded.is_empty() {
@@ -1882,27 +2049,40 @@ impl App {
     }
 
     /// Re-reads one document from its own path, dropping in-memory
-    /// edits for it (callers decide when that is allowed).
+    /// edits for it (callers decide when that is allowed). A read
+    /// that fails leaves the pane exactly as it was — edits included,
+    /// still marked unsaved — so a failed disk-wins reload cannot
+    /// strand edits that look saved but never are.
     fn reload_doc(&mut self, doc: DocId) -> Result<(), String> {
-        let (path, _, _) = self.doc_state(doc).ok_or("nothing loaded")?;
+        let (path, _, was_dirty) = self.doc_state(doc).ok_or("nothing loaded")?;
+        self.set_dirty(doc, false);
+        let reloaded = match doc {
+            DocId::Character => self.open_character_file(&path).map(|_| ()),
+            DocId::Stash(slot) => self.open_stash(slot, &path).map(|_| ()),
+            DocId::Store => self.open_store().map(|_| ()),
+        };
+        if reloaded.is_err() {
+            self.set_dirty(doc, was_dirty);
+        }
+        reloaded
+    }
+
+    fn set_dirty(&mut self, doc: DocId, dirty: bool) {
         match doc {
             DocId::Character => {
                 if let Some(pane) = &mut self.character {
-                    pane.dirty = false;
+                    pane.dirty = dirty;
                 }
-                self.open_character_file(&path).map(|_| ())
             }
             DocId::Stash(slot) => {
                 if let Some(pane) = self.stash_slot_mut(slot).as_mut() {
-                    pane.dirty = false;
+                    pane.dirty = dirty;
                 }
-                self.open_stash(slot, &path).map(|_| ())
             }
             DocId::Store => {
                 if let Some(pane) = &mut self.store {
-                    pane.dirty = false;
+                    pane.dirty = dirty;
                 }
-                self.open_store().map(|_| ())
             }
         }
     }
@@ -2364,6 +2544,11 @@ impl eframe::App for App {
         theme::SURFACE.to_normalized_gamma_f32()
     }
 
+    fn on_exit(&mut self) {
+        let current = self.ui_snapshot();
+        self.ui_state.flush(current);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let db = match &self.game {
             GameStatus::Loaded(data) => Some(data),
@@ -2478,12 +2663,14 @@ impl App {
         self.show_import_modal(ui.ctx());
         self.show_conflict_modal(ui.ctx());
         self.show_toasts(ui.ctx());
+        self.persist_ui_state(ui.ctx());
     }
 }
 
 /// The Inventory view's exclusive sub-tab: the doll, or one sack.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 enum InventoryTab {
+    #[default]
     Equipment,
     Sack(usize),
 }
@@ -3651,7 +3838,7 @@ impl App {
         }
         self.store.as_ref().map_or_else(
             || "Export.json".to_string(),
-            |pane| format!("{}.json", pane.bucket.label()),
+            |pane| format!("{}.json", pane.view.bucket.label()),
         )
     }
 
@@ -3664,9 +3851,7 @@ impl App {
             return;
         };
         if let Some(item) = pane.store.get(id) {
-            let bucket = univault_core::store::bucket_of(db, item);
-            pane.family = bucket.family();
-            pane.bucket = bucket;
+            pane.view.bucket = univault_core::store::bucket_of(db, item);
             pane.selected = Some(addr);
         }
         self.view = MainView::Panes;
@@ -5173,7 +5358,7 @@ fn show_store_column(
     let tabs = family_tabs();
     let selected = Family::ALL
         .iter()
-        .position(|family| *family == pane.family)
+        .position(|family| *family == pane.view.family())
         .unwrap_or(0);
     let response = panel.show(ui, &tabs, selected, |ui| {
         ui.set_min_width(ui.available_width());
@@ -5187,10 +5372,9 @@ fn show_store_column(
     });
     if let Some(index) = target
         && let Some(family) = Family::ALL.get(index).copied()
-        && family != pane.family
+        && family != pane.view.family()
     {
-        pane.family = family;
-        pane.bucket = family.buckets()[0];
+        pane.view.bucket = family.buckets()[0];
         pane.selected = None;
     }
     response.inner
@@ -5231,24 +5415,24 @@ fn show_store_pane(
             action = Some(PaneAction::OpenSearch);
         }
         let sort = egui::ComboBox::from_id_salt("store-sort")
-            .selected_text(pane.sort.key.label())
+            .selected_text(pane.view.sort.key.label())
             .width(110.0);
         sort.show_ui(ui, |ui| {
             for key in StoreSortKey::ALL {
                 if ui
-                    .selectable_label(pane.sort.key == key, key.label())
+                    .selectable_label(pane.view.sort.key == key, key.label())
                     .clicked()
-                    && pane.sort.key != key
+                    && pane.view.sort.key != key
                 {
-                    pane.sort = StoreSort::by(key);
+                    pane.view.sort = StoreSort::by(key);
                 }
             }
         });
-        if plate_button(ui, pane_chrome, true, pane.sort.direction.arrow())
-            .on_hover_text(pane.sort.direction.flip_hint())
+        if plate_button(ui, pane_chrome, true, pane.view.sort.direction.arrow())
+            .on_hover_text(pane.view.sort.direction.flip_hint())
             .clicked()
         {
-            pane.sort.direction = pane.sort.direction.flipped();
+            pane.view.sort.direction = pane.view.sort.direction.flipped();
         }
     });
     ui.horizontal_wrapped(|ui| {
@@ -5271,23 +5455,27 @@ fn show_store_pane(
             action = Some(PaneAction::ExportAll);
         }
         ui.weak(format!("{} stored", count_items(total)));
-        ui.checkbox(&mut pane.skip_duplicate_seeds, "Skip duplicates")
+        ui.checkbox(&mut pane.view.skip_duplicate_seeds, "Skip duplicates")
             .on_hover_text(
                 "Bulk sends only: pass over an item whose seed is already stored in its \
                  type. Single sends, right-click sends, and drops always land.",
             );
     });
 
-    let buckets = pane.family.buckets();
-    let sub_tabs = bucket_tabs(pane.family, counts);
+    let family = pane.view.family();
+    let buckets = family.buckets();
+    let sub_tabs = bucket_tabs(family, counts);
     let selected = buckets
         .iter()
-        .position(|bucket| *bucket == pane.bucket)
+        .position(|bucket| *bucket == pane.view.bucket)
         .unwrap_or(0);
     let response = panel.show(ui, &sub_tabs, selected, |ui| {
         ui.set_min_width(ui.available_width());
         ui.set_min_height(ui.available_height());
-        show_bucket_grid(ui, pane, db, caches, drag, frame);
+        if takes_slot_filter(pane.view.bucket) {
+            show_slot_filter(ui, &mut pane.view.slot_filter, &mut pane.selected);
+        }
+        show_bucket_grid(ui, pane, counts, db, caches, drag, frame);
     });
     let target = response.clicked.or(if drag.is_some() {
         response.hovered
@@ -5296,12 +5484,34 @@ fn show_store_pane(
     });
     if let Some(index) = target
         && let Some(bucket) = buckets.get(index).copied()
-        && bucket != pane.bucket
+        && bucket != pane.view.bucket
     {
-        pane.bucket = bucket;
+        pane.view.bucket = bucket;
         pane.selected = None;
     }
     action
+}
+
+/// The Relic and Charm buckets' family chips: one toggle per
+/// equipment family, any number lit at once, "Any slot" to clear.
+/// A change drops the selection, which may just have left the view.
+fn show_slot_filter(ui: &mut egui::Ui, filter: &mut SlotFilter, selected: &mut Option<ItemAddr>) {
+    let before = filter.clone();
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Fits into:");
+        if ui.selectable_label(filter.is_empty(), "Any slot").clicked() {
+            filter.clear();
+        }
+        for slot in style::GearSlot::ALL {
+            let label = univault_core::query::ItemCategory::Gear(slot).label();
+            if ui.selectable_label(filter.contains(slot), label).clicked() {
+                filter.toggle(slot);
+            }
+        }
+    });
+    if *filter != before {
+        *selected = None;
+    }
 }
 
 /// The open bucket's items, sorted and shelf-packed into a scrolling
@@ -5310,19 +5520,26 @@ fn show_store_pane(
 fn show_bucket_grid(
     ui: &mut egui::Ui,
     pane: &mut StorePane,
+    counts: &HashMap<Bucket, usize>,
     db: Option<&GameCache>,
     caches: &mut Caches,
     drag: Option<&DragState>,
     frame: &mut DragFrame,
 ) {
-    let bucket = pane.bucket;
-    let sort = pane.sort;
+    let bucket = pane.view.bucket;
+    let sort = pane.view.sort;
+    let narrowing = takes_slot_filter(bucket) && !pane.view.slot_filter.is_empty();
     let mut ids: Vec<StoredItemId> = pane
         .store
         .entries()
         .filter(|entry| univault_core::store::bucket_of(db, &entry.item) == bucket)
+        .filter(|entry| !narrowing || pane.view.slot_filter.admits(db, &entry.item))
         .map(univault_core::store::StoredEntry::id)
         .collect();
+    if narrowing {
+        let total = counts.get(&bucket).copied().unwrap_or(0);
+        ui.weak(format!("{} of {} fit", ids.len(), total));
+    }
     sort_stored(&mut ids, &pane.store, db, sort, &mut caches.names);
 
     let footprints: Vec<(i32, i32)> = ids
@@ -5575,6 +5792,26 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_reload_is_reported_only_once_it_persists() {
+        let mut tracker = RefreshTracker::default();
+        let path = Path::new("watched");
+        for _ in 1..RELOAD_PATIENCE {
+            assert_eq!(tracker.reload_failed(path), ReloadFailure::Transient);
+            // Every attempt reopens the file, which forgets the
+            // pending observation but must not forget the count.
+            tracker.forget(path);
+        }
+        assert_eq!(tracker.reload_failed(path), ReloadFailure::Persisting);
+        assert_eq!(tracker.reload_failed(path), ReloadFailure::Persisting);
+        tracker.reload_succeeded(path);
+        assert_eq!(tracker.reload_failed(path), ReloadFailure::Transient);
+        assert_eq!(
+            tracker.reload_failed(Path::new("other")),
+            ReloadFailure::Transient
+        );
+    }
+
+    #[test]
     fn refresh_never_acts_on_a_file_still_being_written() {
         let mut tracker = RefreshTracker::default();
         let path = Path::new("watched");
@@ -5719,10 +5956,10 @@ mod tests {
 
     #[test]
     fn a_fresh_store_key_opens_in_its_natural_direction() {
-        assert!(StoreSortKey::Name.natural() == SortDirection::Ascending);
-        assert!(StoreSortKey::Rarity.natural() == SortDirection::Descending);
-        assert!(StoreSortKey::Level.natural() == SortDirection::Descending);
-        assert!(StoreSort::default().direction == SortDirection::Ascending);
+        assert_eq!(StoreSortKey::Name.natural(), SortDirection::Ascending);
+        assert_eq!(StoreSortKey::Rarity.natural(), SortDirection::Descending);
+        assert_eq!(StoreSortKey::Level.natural(), SortDirection::Descending);
+        assert_eq!(StoreSort::default().direction, SortDirection::Ascending);
     }
 
     #[test]
@@ -5877,5 +6114,54 @@ mod tests {
         assert_eq!(fraction(0, 0), 0.0);
         assert_eq!(fraction(1, 4), 0.25);
         assert_eq!(fraction(4, 4), 1.0);
+    }
+
+    #[test]
+    fn slot_filter_keeps_family_order_whatever_the_click_order() {
+        use style::GearSlot;
+        let mut filter = SlotFilter::default();
+        assert!(filter.is_empty());
+        filter.toggle(GearSlot::Staff);
+        filter.toggle(GearSlot::Head);
+        filter.toggle(GearSlot::Ring);
+        assert_eq!(
+            filter.slots,
+            vec![GearSlot::Head, GearSlot::Ring, GearSlot::Staff]
+        );
+        filter.toggle(GearSlot::Ring);
+        assert_eq!(filter.slots, vec![GearSlot::Head, GearSlot::Staff]);
+        assert!(filter.contains(GearSlot::Head));
+        assert!(!filter.contains(GearSlot::Ring));
+        filter.clear();
+        assert!(filter.is_empty());
+    }
+
+    #[test]
+    fn an_empty_slot_filter_admits_everything_and_a_lit_one_needs_the_database() {
+        let relic = seeded("relic", 1);
+        let mut filter = SlotFilter::default();
+        assert!(filter.admits(None, &relic));
+        filter.toggle(style::GearSlot::Head);
+        assert!(!filter.admits(None, &relic));
+    }
+
+    #[test]
+    fn only_the_socketable_buckets_take_the_slot_filter() {
+        use univault_core::query::ItemCategory;
+        assert!(takes_slot_filter(Bucket::Category(ItemCategory::Relic)));
+        assert!(takes_slot_filter(Bucket::Category(ItemCategory::Charm)));
+        assert!(!takes_slot_filter(Bucket::Category(ItemCategory::Gear(
+            style::GearSlot::Head
+        ))));
+        assert!(!takes_slot_filter(Bucket::Unknown));
+    }
+
+    #[test]
+    fn the_default_store_view_opens_on_helmets() {
+        let view = StoreView::default();
+        assert_eq!(view.family(), Family::Armor);
+        assert_eq!(view.bucket, Family::Armor.buckets()[0]);
+        assert!(view.slot_filter.is_empty());
+        assert!(!view.skip_duplicate_seeds);
     }
 }
