@@ -5,7 +5,7 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-30 (PR #69 merged and pruned — testing from main)
+Last updated: 2026-08-30 (PR #81 open — blanket cooldown tune, bundles installed)
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
@@ -47,11 +47,13 @@ great!"): `LootPlus1MAXTuned` (PR #65) — vanilla density, XP ×3 —
 plays at the pace it was built for, so the XP factor is settled.
 **Do not re-tune the `* 3`** in `mods/1max.json` without a fresh
 complaint; the feared hero-pack hot spot (×3 spawns × ×3 XP = nine
-times vanilla hero XP) did not bite. Two older mod
-tunes are still live and **unplayed**: Phantom Strike
-`characterRunSpeedModifier` 0→500
-(PR #58) and Psionic Burn `skillTargetRadius` 3.5→6.0 (PR #61). Both
-need only an in-game pass after a session restart. If the blink still
+times vanilla hero XP) did not bite. Three mod
+tunes are still live and **unplayed**: the blanket cooldown tune
+(PR #81, 2026-08-30 — every investable skill's cooldown now falls
+per point, >10s baselines cut 20%, >60s halved; all three bundles
+rebuilt + installed), Phantom Strike `characterRunSpeedModifier`
+0→500 (PR #58), and Psionic Burn `skillTargetRadius` 3.5→6.0
+(PR #61). All need only an in-game pass after a session restart. If the blink still
 feels slow, the next suspect is `playerRunSpeedCapMax` (166) clamping
 the 500 — a global affecting all player run speed, so **ask before
 changing it**. Otherwise the interactive acceptance pass over the
@@ -102,9 +104,9 @@ forward or reverted (`git revert da227aa`), not re-branched.
 - **Known gap, unfixed:** `get_mastery` / `list_masteries` call
   `game_data()` directly, so MCP skill trees are always vanilla while
   the record tools overlay the installed bundle. Listed under "Next up".
-- User in-game checks outstanding (mod acceptance): **Phantom Strike
-  blink speed (PR #58) and Psionic Burn radius (PR #61) — now the
-  freshest two**; pet Energy ×2.5 / regen ×1.75 on Core Dweller (875 /
+- User in-game checks outstanding (mod acceptance): **the blanket
+  cooldown tune (PR #81), Phantom Strike blink speed (PR #58), and
+  Psionic Burn radius (PR #61) — the freshest three**; pet Energy ×2.5 / regen ×1.75 on Core Dweller (875 /
   5.25 at level 20) and Call of the Wild wolves (255 / 3.5); vanilla
   XP restored (even-level trash mob on Normal ≈ level×15); target
   caps ×3 in dense packs; 2026-08-26 Core Dweller tune. Older
@@ -209,6 +211,26 @@ buttons shipped in PR #44):
    the whole store loads and filters in memory.
 
 ## Most recent meaningful progress
+
+- **2026-08-30 — Mod: blanket cooldown tune, all bundles (PR #81).**
+  User ask, three rules: every invested point shortens a skill's
+  cooldown meaningfully; baselines >10s cut 20%; >60s halved. One
+  new data-driven modforge rule (`tune_cooldowns` appended to
+  `xmax3-tuned.json`; 1MAX inherits via extends): the deepest
+  matching cut scales the whole array — classified on the
+  *effective* rank-1 value, so LootPlus's own 4s shields are not
+  re-cut — then a flat array on an investable skill becomes a
+  linear per-rank ramp to half the cut baseline at ultimate level.
+  The engine honours per-level cooldown arrays (vanilla ships 9
+  decreasing ones; those keep their shape, cut only), and the
+  zeroed summon classes stay zero. 281 of 300 cooldown-bearing
+  player skills change per bundle (Colossus Form 360 → 180→90,
+  Death Ward 300 → 150→75, Phantom Strike 16 → 12.8→6.4). 209 core
+  tests, clippy clean; scratch and SMB builds byte-identical; all
+  three bundles installed. Risk: "meaningful" was read as equal
+  steps to 50% at ultimate — the exact curve is the user's to bless
+  in game; Renewal's by-design *rising* cooldown kept its shape but
+  took the 20% cut.
 
 - **2026-08-30 — Persisted view state, relic/charm slot filter, helm
   app icon (PR #69, merged).** Three asks in one round. (1) A
@@ -389,19 +411,6 @@ buttons shipped in PR #44):
   table feel (stats column starts narrow; columns are draggable)
   awaits the user's in-app pass; full-window mode is gone by
   design.
-- **2026-08-27 — Components into the app + live-fix round (PR #44,
-  merged).** Both panes and the inventory sub-tabs now render
-  through `TabbedPanel` (per-tab disabled hints, mid-drag hover
-  switching, per-instance widget ids); the gilded border frames
-  the window; the caravan/leather game chrome is deleted (net
-  −600 lines). Five user-hit fixes in the same round: cross-pane
-  tab id collision, the search-view tooltip storm (egui 0.36
-  `Tooltip::for_widget` is unconditionally open), unreadable
-  disabled plate buttons, `cargo run` default-run, plus UIX:
-  auto-open last character, bulk sends moved into each sack's
-  pane and scoped per-sack ("Move all → Vault"). Risk: accepted
-  live in debug builds; the release-build full pass is still the
-  user's to run, and the search view got only a spot check.
 ## Blocked / waiting
 
 - *(nothing)*

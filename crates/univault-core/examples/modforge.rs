@@ -345,8 +345,7 @@ fn main() {
                     let key = normalize(id.as_str());
                     let record = patched.get(&key).cloned().or_else(|| effective(&id));
                     let Some(mut record) = record else { continue };
-                    let Some(changed) = tune_cooldown(&mut record, cuts, *ultimate_fraction)
-                    else {
+                    let Some(changed) = tune_cooldown(&mut record, cuts, *ultimate_fraction) else {
                         continue;
                     };
                     report.push(format!("{key}: skillCooldownTime {changed}"));
@@ -566,7 +565,9 @@ fn tune_cooldown(
         .map(|cut| cut.scale)
         .min_by(f64::total_cmp)
         .unwrap_or(1.0);
-    let flat = values.iter().all(|&value| value.to_bits() == first.to_bits());
+    let flat = values
+        .iter()
+        .all(|&value| value.to_bits() == first.to_bits());
     let tuned: Vec<f32> = if flat {
         let levels =
             invested_levels(record).max(u32::try_from(values.len()).expect("game-scale array"));
