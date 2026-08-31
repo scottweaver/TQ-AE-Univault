@@ -531,7 +531,8 @@ impl RefreshTracker {
     /// Drops the pending observation for a freshly (re)opened file.
     /// The failure count is deliberately kept: every reload attempt
     /// opens the file, and clearing it here would reset the count
-    /// before it could ever reach [`RELOAD_PATIENCE`].
+    /// before it could ever reach [`RELOAD_PATIENCE`]. Only a read
+    /// that succeeds ends the spell, via [`Self::reload_succeeded`].
     fn forget(&mut self, path: &Path) {
         self.pending.remove(path);
     }
@@ -546,6 +547,10 @@ impl RefreshTracker {
         }
     }
 
+    /// Ends `path`'s failure spell. Every open calls this once its
+    /// read and parse succeed — the manual Reload the failure toast
+    /// recommends included — so the patience budget is per-spell,
+    /// never spent for the life of the app.
     fn reload_succeeded(&mut self, path: &Path) {
         self.failures.remove(path);
     }
@@ -1024,6 +1029,7 @@ impl App {
         let character = Box::new(chr::parse_player(&bytes).map_err(|error| error.to_string())?);
         self.backed_up.remove(path);
         self.refresh.forget(path);
+        self.refresh.reload_succeeded(path);
         self.character = Some(CharacterPane {
             path: path.to_path_buf(),
             original: bytes,
@@ -1126,6 +1132,7 @@ impl App {
                 (restored, stash, StashOpened::RecoveredFromTwin)
             }
         };
+        self.refresh.reload_succeeded(path);
         let dirty = matches!(opened, StashOpened::RecoveredFromTwin);
         *self.stash_slot_mut(slot) = Some(StashPane {
             path: path.to_path_buf(),
@@ -1159,6 +1166,7 @@ impl App {
         } else {
             VaultStore::new()
         };
+        self.refresh.reload_succeeded(&path);
         self.store = Some(StorePane {
             path: path.clone(),
             store,
@@ -1581,20 +1589,27 @@ impl App {
                 .map(|message| format!("reloaded — {message}"));
         }
         let mut reloaded = Vec::new();
+        let mut failed = Vec::new();
         for slot in [StashSlot::Bank, StashSlot::Shared, StashSlot::Relic] {
             if let Some(path) = self
                 .stash_slot_mut(slot)
                 .as_ref()
                 .map(|pane| pane.path.clone())
             {
-                self.open_stash(slot, &path)?;
-                reloaded.push(slot.label());
+                match self.open_stash(slot, &path) {
+                    Ok(_) => reloaded.push(slot.label()),
+                    Err(error) => failed.push(format!("{}: {error}", slot.label())),
+                }
             }
         }
-        if reloaded.is_empty() {
+        if reloaded.is_empty() && failed.is_empty() {
             return Err("nothing to reload".to_string());
         }
-        Ok(format!("reloaded {}", reloaded.join(", ")))
+        if failed.is_empty() {
+            Ok(format!("reloaded {}", reloaded.join(", ")))
+        } else {
+            Err(format!("reload failed — {}", failed.join("; ")))
+        }
     }
 
     fn show_reload_modal(&mut self, ctx: &egui::Context) {
@@ -2176,7 +2191,6 @@ impl App {
                             continue;
                         }
                         self.refresh.empty_settled(&path);
-                        self.refresh.reload_succeeded(&path);
                         reloaded.push(doc_label(doc));
                     }
                     Err(error) => match self.refresh.reload_failed(&path) {
