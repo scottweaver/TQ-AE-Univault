@@ -5,87 +5,54 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-30 (PR #81 open — blanket cooldown tune, bundles installed)
+Last updated: 2026-08-31 (PR #84 merged — reload-failure grace per-spell)
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** PR #79 **merged to main (83771fb) on the user's
-`/wrap-up`**, branch pruned local and remote, all five CI checks
-green. **Third user report in the same area: "there was a change
-on disk and a successful reload, but Character Bank and Shared are
-showing [no] items."**
-Cause found: **a stash save caught mid-write parses as a perfectly
-valid *empty* stash.** Nothing fails, so `RELOAD_PATIENCE` (which only
-counts reads that error) never fires — the app truthfully reports a
-successful reload and truthfully shows an empty bank. The fix uses the
-`.dxg` twin as evidence: the game keeps it as the last good write, so
-a `.dxb` reading empty while its twin still parses with items is a
-save in flight (`mid_save()`), and the pane is held. Bounded by
-`EMPTY_PATIENCE` (5 attempts ≈ 20 s) so a twin that never catches up
-cannot pin stale items on screen. Verified live: empty `.dxb` + intact
-twin held the pane 15 s; once the budget ran out the pane cleared.
-A genuine emptying (twin empty too) clears with no delay. 271 tests,
-clippy clean. **Honest limit: the user's exact trigger was never
-reproduced** — this fixes the most plausible mechanism, not a proven
-one. If it recurs, the toolbar's watcher line is the first thing to
-read.
-**No data was ever lost.** Verified against their real files: Shared
-bank 3 items, Character bank 2, `.dxb` and `.dxg` in agreement.
-**Two of this session's own scans were wrong** and nearly sent it
-chasing phantom corruption — both read files mid-rewrite while the
-user was live. Snapshot to scratch before analysing; recorded in
-WORKING_NOTES.md "Reading a save the game is still writing".
-Earlier in the session PR #75 (socket affordances) and PR #77
-(auto-refresh stalls) both merged and pruned.
-
-Previously: PR #75 **merged to main (477cd0e) on the user's
+**Resume here:** PR #84 **merged to main (f4fad91) on the user's
 "merge it"**, branch pruned local and remote, all five CI checks
-green. The socket-discoverability round — **the user asked to "add
-the ability to slot/unslot charms and relics from gear" and the
-answer was that it already shipped** (drag a piece onto gear to
-socket; Alt+Click gear to extract, PRs #25/#26), invisibly. Their
-call after seeing that: keep every gesture exactly as it is, make it
-announce itself. So: a tooltip footer listing every relic/charm
-gesture the hovered item accepts, and one relic-orange pip per
-filled socket at a tile's lower-left. Core gained `Affordance` +
-`affordances()` and a typed `BonusPick` (which also de-duplicates
-the double-click gate that `request_bonus_edit` had inlined). 268
-tests, clippy clean; the footer and pips were **seen live** under a
-scratch `HOME` — the tooltip by temporarily forcing `hovered`
-(synthetic input stays banned), a scratch patch reverted before
-commit. Merged **unclicked**, like #69 before it: what the user's
-own pass from `main` decides is whether the pip is findable without
-being loud, and whether the footer earns its two lines on partial
-pieces. Regressions are fixed forward.
-**Deliberately not built, and worth a decision:** the second
-(Atlantis) socket can still only be *emptied*, never filled —
-`can_socket` refuses any target whose first socket is full. A scan
-of both characters and all banks found 15 socketed items and **zero**
-using `relicName2`, so nothing in the user's save exercises it and
-the game's acceptance of an app-made two-relic item is unverified.
-Also unbuilt by their choice: any right-click/menu affordance.
-**1MAX ACCEPTED in game 2026-08-30** ("1Max seems to working
-great!"): `LootPlus1MAXTuned` (PR #65) — vanilla density, XP ×3 —
-plays at the pace it was built for, so the XP factor is settled.
-**Do not re-tune the `* 3`** in `mods/1max.json` without a fresh
-complaint; the feared hero-pack hot spot (×3 spawns × ×3 XP = nine
-times vanilla hero XP) did not bite. Three mod
-tunes are still live and **unplayed**: the blanket cooldown tune
-(PR #81, 2026-08-30 — every investable skill's cooldown now falls
-per point, >10s baselines cut 20%, >60s halved; all three bundles
-rebuilt + installed), Phantom Strike `characterRunSpeedModifier`
-0→500 (PR #58), and Psionic Burn `skillTargetRadius` 3.5→6.0
-(PR #61). All need only an in-game pass after a session restart. If the blink still
-feels slow, the next suspect is `playerRunSpeedCapMax` (166) clamping
-the 500 — a global affecting all player run speed, so **ask before
-changing it**. Otherwise the interactive acceptance pass over the
-store is still the first real task: drag/drop into a bucket, bulk
-sends, ⌘F search, an export opened in TQVaultAE, the ▲/▼
-sort-direction toggle (PR #52) and the Skip duplicates box (PR #54).
-None have been clicked (synthetic input is banned here). PR #50's
-risk note stands: merged without that pass; regressions are fixed
-forward or reverted (`git revert da227aa`), not re-branched.
+green. **Fourth user report in the reload area: "byte read errors
+again when refreshing the relic bank"** — the `unexpected end of
+data … wanted N more bytes` toast recurring during play. **The
+files were verified intact first** (snapshotted to scratch per
+WORKING_NOTES before analysing: 173 items, CRC valid, `.dxg` twin
+in agreement — nothing lost). Cause: the `RELOAD_PATIENCE` failure
+counter was cleared only by a successful *auto*-reload; a
+successful **manual Reload — the action the toast itself
+recommends — kept the count**, so one bad spell spent the ~12 s
+grace for the life of the app and every later read racing a game
+save toasted immediately. Fix: `reload_succeeded` now sits at the
+parse-success point of all three opens (character, stash, store),
+covering every route; manual Reload also continues past a
+failed bank instead of aborting the rest. 271 tests, clippy clean.
+**Honest limits:** the racy trigger is not reproducible on demand,
+and the wiring has no unit test (needs a full `App`; none is
+constructible in tests). If toasts still recur, the counter is no
+longer the suspect — an SMB stale-read window genuinely exceeding
+~12 s is, and `RELOAD_PATIENCE` is the next knob; the toolbar's
+watcher line is the first thing to read.
+
+Previously: PR #79 (a mid-save read no longer empties a bank — the
+`.dxg`-twin `mid_save()` hold) and PR #77 (auto-refresh stall fixes
++ the toolbar watcher line) landed in the same area; the three-fix
+arc is summarized in the progress entries. **1MAX ACCEPTED in game
+2026-08-30** ("1Max seems to working great!") — the XP ×3 factor is
+settled; **do not re-tune the `* 3`** in `mods/1max.json` without a
+fresh complaint. Three mod tunes are still live and **unplayed**:
+the blanket cooldown tune (PR #81), Phantom Strike
+`characterRunSpeedModifier` 0→500 (PR #58), and Psionic Burn
+`skillTargetRadius` 3.5→6.0 (PR #61) — all need only an in-game
+pass after a session restart. If the blink still feels slow, the
+next suspect is `playerRunSpeedCapMax` (166) clamping the 500 — a
+global affecting all player run speed, so **ask before changing
+it**. The store's interactive acceptance pass is still the first
+real task (see "Next up" item 0); nothing there has been clicked
+(synthetic input is banned here). From the socket round (PR #75):
+the second (Atlantis) socket can still only be *emptied*, never
+filled — nothing in the user's save uses `relicName2`, and filling
+it stays deliberately unbuilt pending a decision; no right-click
+menus, by their choice.
 
 - **Standing instruction from 2026-08-29, learned the hard way:**
   when the exact change the user asked for looks impossible, **stop
@@ -111,9 +78,13 @@ forward or reverted (`git revert da227aa`), not re-branched.
   since deleted. Flagged as superseded; the user did not confirm
   either way. **Re-ask before acting** — the complaint may still
   apply to the current gilded border + `TabbedPanel`.
-- **A parallel session is active on this repo** — it merged PR #62
-  and owns `worktree-fix+projectile-speeds-ae` (cast-speed / DPS
-  docs, pushed, no PR). Not this session's to touch.
+- **Parallel sessions are active on this repo** — one owns
+  `mod-pet-normal-durability` (**PR #83 open**: Normal-difficulty
+  pets carry half of Epic's defenses) in a worktree under
+  `.claude/worktrees/`; another owns
+  `worktree-mcp-overlay-and-coverage`;
+  `worktree-fix+projectile-speeds-ae` survives remote-only (its
+  local worktree is gone). None are this session's to touch.
 - **Skill/binding conflict worth fixing:** `wrap-up` and `checkpoint`
   both defer to `bootstrap-project` when PROJECT.md is missing, which
   contradicts the standing deferral. Both were run this session with
@@ -170,13 +141,14 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs #1–#80 all merged; all gates green |
-| `worktree-fix+projectile-speeds-ae` | a parallel session's cast-speed / DPS docs work | pushed, no PR; locked worktree under `.claude/worktrees/` — not the main session's to touch |
+| `main` | trunk | PRs through #84 merged (#83 still open); all gates green |
+| `mod-pet-normal-durability` | a parallel session's Normal-difficulty pet-defense mod | **PR #83 open**; checked out in a worktree under `.claude/worktrees/` — not this session's to touch |
 | `worktree-mcp-overlay-and-coverage` | a parallel session's MCP mod-overlay / coverage work | pushed, no PR; checked out in its own worktree — not this session's to touch |
+| `worktree-fix+projectile-speeds-ae` | a parallel session's cast-speed / DPS docs work | remote-only now (local worktree gone); not this session's to touch |
 
-Everything merged through #80 has been pruned local and remote
-(2026-08-30). The two `worktree-*` branches belong to parallel
-sessions; leave them alone.
+Everything merged through #84 has been pruned local and remote
+(2026-08-31). The three parallel-session branches above belong to
+other sessions; leave them alone.
 
 ## Next up
 
@@ -236,6 +208,24 @@ buttons shipped in PR #44):
    the whole store loads and filters in memory.
 
 ## Most recent meaningful progress
+
+- **2026-08-31 — Fix: reload-failure grace is per-spell (PR #84,
+  merged).** User report: "byte read errors again when refreshing
+  the relic bank" — the byte-error toast recurring during play. The
+  files were intact (verified on scratch copies before anything
+  else: 173 items, CRCs valid, twin agreement); the toast was the
+  defect. The `RELOAD_PATIENCE` counter was cleared only on
+  auto-reload success, so a spell ended by the manual Reload the
+  toast itself recommends left the grace spent for the app's
+  lifetime — the first transient race on any later game save
+  reported instantly. `reload_succeeded` moved to the parse-success
+  point of all three opens (every open route clears it; failed
+  attempts still accumulate), and manual Reload keeps going past a
+  failed bank. 271 tests, clippy clean. Risk: the wiring has no
+  unit test (needs a full `App`; none constructible in tests) and
+  the racy trigger was not reproduced — if toasts recur, the
+  suspect is an SMB stale-read window >12 s and `RELOAD_PATIENCE`
+  the next knob.
 
 - **2026-08-30 — Mod: blanket cooldown tune, all bundles (PR #81).**
   User ask, three rules: every invested point shortens a skill's
@@ -432,22 +422,6 @@ buttons shipped in PR #44):
   installed bundles make `mod`-less record calls error). Risk: none,
   nothing changed.
 
-- **2026-08-29 — Skip duplicates: a bulk-send filter on the item
-  seed (PR #54, merged).** User ask: a checkbox that keeps a
-  move/copy from landing an item already stored — explicitly *not* a
-  uniqueness rule on the store, which may still hold duplicates that
-  arrived by other routes. Design-dialogued: "item ID" means the
-  **item seed** (the user's own clarification), matched within the
-  item's type bucket, and the box gates **bulk sends only** (the
-  user's pick) — single sends, right-click sends, and drops always
-  land. Core gains `ItemIdentity` + `DuplicateGuard`, an accumulator
-  so one batch can neither re-add what is stored nor duplicate
-  within itself; the guard admits *before* `drain_or_clone` takes
-  anything, so a skipped duplicate is never drained out of its sack
-  and its save-file bytes stay untouched. An all-skipped send
-  returns early without dirtying the source. 255 tests. Risk: the
-  box sits in the store pane while the buttons it governs are on
-  the left pane's headers, and nothing has been clicked yet.
 ## Blocked / waiting
 
 - *(nothing)*
