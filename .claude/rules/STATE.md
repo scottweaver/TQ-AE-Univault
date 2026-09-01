@@ -5,46 +5,44 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-31 (PR #86 merged — SMB stale-cache fix; root
-cause of the five-report reload arc)
+Last updated: 2026-08-31 (PR #88 merged — chevron-scrolled tab
+strips, accepted in-app; #86 SMB stale-cache fix earlier today)
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** PR #86 **merged to main (efdf3da) on the user's
-"Merge it"**, branch pruned local and remote, five CI checks green,
-release binary rebuilt from merged main — **the user must relaunch
-it to pick the fix up**. **The reload arc (five user reports across
-PRs #69/#77/#79/#84) has its root cause:** the game runs on a
-**separate PC (Steam on Bazzite Linux)** writing the NAS through
-its own SMB client, and macOS smbfs served **stale data pages under
-a fresh stamp** for minutes — caught live when a freshly launched
-app displayed an old shared bank while disk held 50 intact items
-and the watcher polled "checked 1s ago". Stamp logic is
-structurally blind to that combo, and it equally poisoned the
-external-change save guard (an edit would have spliced stale bytes
-over the game's quit-save; nothing was lost — the user Reloaded
-first, on instruction). Fix: `safe_write.rs` → `safe_io.rs`; every
-game-file read/write is uncached (`F_NOCACHE`) and reads are
-length-checked against the file's own metadata — a lying read is
-now a *retryable error* into the existing `RELOAD_PATIENCE` grace,
-and backup copies read-verify so a stale baseline can never be
-captured as the "original". `RELOAD_PATIENCE` itself is exonerated;
-the durable mechanism now lives in WORKING_NOTES ("Reading a save
-the game is still writing"). **Honest limits:** verified by
-mechanism plus a live `F_NOCACHE` probe on the mount, not by
-replaying the window; an equal-size stale rewrite could slip the
-length tripwire; foreign processes' cached pages aren't evicted;
-`univault-mcp` still reads cached (now in Next up). If a stale pane
-recurs *silently* — no "stale or mid-write network read" toast —
-that is a genuinely new mechanism.
+**Resume here:** PR #88 **merged to main (36e7774) via the user's
+`/wrap-up` after in-app acceptance** ("Oh yeah! Exactly what I had
+in mind!"), branch pruned local and remote, five CI checks green,
+release binary rebuilt from merged main. The sub-tab report ("can't
+access vault sub tabs without enlarging the window") is closed:
+`TabbedPanel` laid plates with no awareness of pane width, and both
+painting and hit-testing clip to the pane. **Design note with
+teeth:** the first cut wrapped plates into rows and the user
+rejected it on sight ("the tabs just hovering looks really odd") —
+the shipped design keeps one row and scrolls it behind gold
+chevrons, pointer-position-keyed so a drag reaches off-screen
+buckets. Chrome overflow in this app **scrolls in place, never
+reflows** — carry that into future UI work.
 
-**New user report 2026-08-31, arrived at wrap-up, unaddressed:**
-"unless you enlarge the window you cannot access vault sub tabs —
-most noticeable with Weapons due to the larger number of sub
-categories." Likely the WORKING_NOTES egui landmine #3 shape (a
-long horizontal row that overflows its pane instead of wrapping).
-Reproduce at a small window, then fix.
+Earlier today, **PR #86 closed the five-report reload arc** (PRs
+#69/#77/#79/#84): the game runs on a **separate PC (Steam on
+Bazzite Linux)** writing the NAS through its own SMB client, and
+macOS smbfs served **stale data pages under a fresh stamp** for
+minutes — caught live with the watcher polling "checked 1s ago"
+over a stale pane. That combo also poisoned the external-change
+save guard (nothing was lost; the user Reloaded on instruction).
+Fix: `safe_write.rs` → `safe_io.rs`; every game-file read/write is
+uncached (`F_NOCACHE`) and reads are length-checked against the
+file's own metadata, so a lying read is a *retryable error* into
+the `RELOAD_PATIENCE` grace, and backup copies read-verify first.
+Durable mechanism in WORKING_NOTES ("Reading a save the game is
+still writing"). **Honest limits:** verified by mechanism plus a
+live `F_NOCACHE` probe, not by replaying the window; an equal-size
+stale rewrite could slip the length tripwire; `univault-mcp` still
+reads cached (Next up item 4). The real-world verdict is the next
+game session: if a stale pane recurs *silently* — no "stale or
+mid-write network read" toast — that is a genuinely new mechanism.
 
 **1MAX ACCEPTED in game
 2026-08-30** ("1Max seems to working great!") — the XP ×3 factor is
@@ -151,12 +149,12 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs through #86 merged (#83 still open); all gates green |
+| `main` | trunk | PRs through #88 merged (#83 still open); all gates green |
 | `mod-pet-normal-durability` | a parallel session's Normal-difficulty pet-defense mod | **PR #83 open**; checked out in a worktree under `.claude/worktrees/` — not this session's to touch |
 | `worktree-mcp-overlay-and-coverage` | a parallel session's MCP mod-overlay / coverage work | pushed, no PR; checked out in its own worktree — not this session's to touch |
 | `worktree-fix+projectile-speeds-ae` | a parallel session's cast-speed / DPS docs work | remote-only now (local worktree gone); not this session's to touch |
 
-Everything merged through #86 has been pruned local and remote
+Everything merged through #88 has been pruned local and remote
 (2026-08-31). The three parallel-session branches above belong to
 other sessions; leave them alone.
 
@@ -225,6 +223,26 @@ buttons shipped in PR #44):
    the whole store loads and filters in memory.
 
 ## Most recent meaningful progress
+
+- **2026-08-31 — Fix: overflowing tab strips scroll behind chevrons
+  (PR #88, merged).** User report: sub-tabs unreachable without
+  enlarging the window, worst under Weapons (eight sub-buckets with
+  counts). `TabbedPanel` laid plates with no awareness of pane
+  width; painting and hit-testing both clip to the pane. The first
+  cut wrapped plates into rows — rejected by the user on sight
+  ("the tabs just hovering looks really odd") — and the shipped
+  design is what they asked for instead: a single row that scrolls
+  behind gold triangular chevrons while the pointer rests on them,
+  keyed on pointer *position* so an item mid-drag scrolls too and
+  can reach an off-screen bucket. Selection scrolls itself into
+  view (`reveal_offset`, unit-tested); the offset lives in egui
+  temp memory under the panel id, so no caller changed and all
+  five strips are covered; a non-overflowing strip renders as
+  before. Preview harness gained the Weapons tab set and `--size
+  WxH`. ACCEPTED in-app ("Exactly what I had in mind!"). 274
+  tests, clippy clean. Risk: scroll speed (280 px/s) and zone
+  width are first-cut values; a single plate wider than the whole
+  strip still clips.
 
 - **2026-08-31 — Fix: game-file IO bypasses the page cache and
   verifies length (PR #86, merged).** Fifth reload report ("no
@@ -416,27 +434,6 @@ buttons shipped in PR #44):
   has no `skillTargetNumber` at all (single-target blink; Dream
   Stealer supplies the 360° multi-hit). User's call after seeing the
   numbers: leave both alone.
-
-- **2026-08-29 — Mod: Phantom Strike blinks at speed (PR #58,
-  merged).**
-  User ask: make the blink substantially faster, "feels like a
-  teleport". The knob is `characterRunSpeedModifier` on
-  `records\xpack\skills\dream\phantomstrike.dbr`, shipped at `0.0`;
-  set to `500.0` (the user's pick — `absoluteRunSpeedCapMax`),
-  per-skill only, no globals touched. Method and the caps/profile
-  numbers are now in WORKING_NOTES.md ("Reading the game's record
-  semantics") — the short version: a `.tpl` is the editor's schema,
-  the engine reads variables by name, and the monster twin
-  `HERO_PHANTOMSTRIKE.DBR` ships the same class at `300.0`. Both
-  bundles rebuilt + installed, dump-verified. Awaiting the user's
-  in-game pass. Risk: `500` exceeds
-  `playerRunSpeedCapMax` (166), so the engine may clamp it — if the
-  blink still feels slow in game, that global is the next suspect
-  (raising it affects all player run speed, so it needs its own
-  decision). **Process note:** an earlier attempt this session shipped
-  `distanceProfile`/cooldown changes the user had not asked for; they
-  were rejected, reverted, and PR #57 closed. Ask before substituting
-  scope — especially when the artifact lands in `CustomMaps/`.
 
 ## Blocked / waiting
 
