@@ -3597,6 +3597,7 @@ dependencies = [
  "eframe",
  "egui_extras",
  "image",
+ "libc",
  "rfd",
  "serde",
  "serde_json",

@@ -26,7 +26,7 @@
 //! Drag-and-drop routes files by extension.
 
 mod chrome;
-mod safe_write;
+mod safe_io;
 mod search;
 mod sort;
 mod theme;
@@ -1025,7 +1025,7 @@ impl App {
     /// open — they are reported in the status line.
     fn open_character_file(&mut self, path: &Path) -> Result<String, String> {
         let disk_stamp = stamp_of(path);
-        let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+        let bytes = safe_io::read_verified(path).map_err(|error| error.to_string())?;
         let character = Box::new(chr::parse_player(&bytes).map_err(|error| error.to_string())?);
         self.backed_up.remove(path);
         self.refresh.forget(path);
@@ -1110,7 +1110,7 @@ impl App {
             return Ok(StashOpened::KeptDirty);
         }
         let disk_stamp = stamp_of(path);
-        let direct = std::fs::read(path)
+        let direct = safe_io::read_verified(path)
             .map_err(|error| error.to_string())
             .and_then(|bytes| {
                 let stash = stash::parse_stash(&bytes).map_err(|error| error.to_string())?;
@@ -1119,7 +1119,7 @@ impl App {
         let (original, stash, opened) = match direct {
             Ok((bytes, stash)) => (bytes, stash, StashOpened::Loaded),
             Err(error) => {
-                let recovered = std::fs::read(path.with_extension("dxg"))
+                let recovered = safe_io::read_verified(&path.with_extension("dxg"))
                     .ok()
                     .and_then(|twin| stash::restore_from_twin(&twin).ok())
                     .and_then(|restored| {
@@ -1280,7 +1280,7 @@ impl App {
         let count = items.len();
         let vault = univault_core::store::export_to_vault(items, db);
         let json = vault.to_json().map_err(|error| error.to_string())?;
-        safe_write::backup_first_write(path, json.as_bytes()).map_err(|error| error.to_string())?;
+        safe_io::backup_first_write(path, json.as_bytes()).map_err(|error| error.to_string())?;
         Ok(format!(
             "exported {} to {}",
             count_items(count),
@@ -2480,7 +2480,7 @@ fn shift_after_take(target: ItemAddr, source: ItemAddr) -> ItemAddr {
 /// asking for one confirming read.
 fn mid_save(doc: DocId, path: &Path) -> bool {
     match doc {
-        DocId::Stash(_) => std::fs::read(path.with_extension("dxg"))
+        DocId::Stash(_) => safe_io::read_verified(&path.with_extension("dxg"))
             .ok()
             .and_then(|twin| stash::restore_from_twin(&twin).ok())
             .and_then(|bytes| stash::parse_stash(&bytes).ok())
@@ -2588,9 +2588,9 @@ fn write_through(
     bytes: &[u8],
 ) -> Result<(), String> {
     if backed_up.contains(path) {
-        safe_write::write_synced(path, bytes).map_err(|error| error.to_string())
+        safe_io::write_synced(path, bytes).map_err(|error| error.to_string())
     } else {
-        safe_write::backup_first_write(path, bytes).map_err(|error| error.to_string())?;
+        safe_io::backup_first_write(path, bytes).map_err(|error| error.to_string())?;
         backed_up.insert(path.to_path_buf());
         Ok(())
     }
@@ -2648,7 +2648,8 @@ fn load_cached_game_data() -> Option<GameCache> {
 }
 
 fn read_stamped(path: &Path) -> Result<(Vec<u8>, SourceStamp), String> {
-    let bytes = std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let bytes =
+        safe_io::read_verified(path).map_err(|error| format!("{}: {error}", path.display()))?;
     Ok((
         bytes,
         stamp_of(path).unwrap_or(SourceStamp {
@@ -3506,7 +3507,7 @@ impl App {
             return;
         };
         let path = dir.join("Game.dll");
-        let outcome = std::fs::read(&path)
+        let outcome = safe_io::read_verified(&path)
             .map_err(|error| format!("read {}: {error}", path.display()))
             .map(|bytes| {
                 let state = univault_core::dllpatch::inspect(&bytes);
@@ -3526,7 +3527,7 @@ impl App {
         let mut working = bytes.clone();
         let backup = path.with_extension("dll.univault-original");
         if matches!(state, PatchState::Vanilla { .. }) && !backup.exists() {
-            std::fs::write(&backup, &working)
+            safe_io::write_uncached(&backup, &working)
                 .map_err(|error| format!("backup {}: {error}", backup.display()))?;
         }
         let changed = if enable {
@@ -3539,12 +3540,12 @@ impl App {
             return Ok("nothing to change".to_string());
         }
         let staging = path.with_extension("dll.univault-tmp");
-        std::fs::write(&staging, &working)
+        safe_io::write_uncached(&staging, &working)
             .map_err(|error| format!("write {}: {error}", staging.display()))?;
         std::fs::rename(&staging, &path)
             .map_err(|error| format!("replace {}: {error}", path.display()))?;
-        let verified =
-            std::fs::read(&path).map_err(|error| format!("verify {}: {error}", path.display()))?;
+        let verified = safe_io::read_verified(&path)
+            .map_err(|error| format!("verify {}: {error}", path.display()))?;
         let state = dllpatch::inspect(&verified);
         self.dll_patch = None;
         match (enable, state) {

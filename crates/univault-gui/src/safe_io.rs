@@ -1,11 +1,22 @@
-//! The shell's file-writing path, implementing ARCHITECTURE.md's
-//! backup-first rule: the backup exists (and is synced) on disk
-//! before the original is touched. v1 backups are timestamped
+//! The shell's file IO path for game-owned files: backup-first
+//! writes (ARCHITECTURE.md — the backup exists and is synced on disk
+//! before the original is touched; v1 backups are timestamped
 //! siblings, e.g. `Player.chr.univault-bak-1756070000`, rotated to
-//! the [`MAX_BACKUPS`] newest per file.
+//! the [`MAX_BACKUPS`] newest per file) and cache-bypassing verified
+//! reads.
+//!
+//! Reads and writes here stay out of the local page cache. The save
+//! tree lives on an SMB mount that other machines write — the game
+//! runs elsewhere — and macOS has served *stale cached pages under a
+//! fresh stamp* for such a file, minutes after another client rewrote
+//! it. Bytes this app itself cached while writing were exactly what a
+//! later launch was fed back, so both directions bypass the cache,
+//! and every read is length-checked against the file's own metadata
+//! to turn the surviving stale-read shapes into retryable errors
+//! instead of clean parses of the wrong bytes.
 
 use std::fs::{self, File};
-use std::io;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -13,21 +24,43 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// after each successful backup.
 pub const MAX_BACKUPS: usize = 5;
 
+/// Reads the whole file, bypassing the local page cache and verifying
+/// the byte count against the file's own metadata. A count that
+/// disagrees is returned as an error — the cache or the mount served
+/// bytes that are not the file — so callers' existing retry machinery
+/// treats it as the failed read it is, rather than parsing stale
+/// bytes that look right.
+pub fn read_verified(path: &Path) -> io::Result<Vec<u8>> {
+    let mut file = File::open(path)?;
+    set_nocache(&file);
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    let on_disk = file.metadata()?.len();
+    match length_mismatch(bytes.len(), on_disk) {
+        None => Ok(bytes),
+        Some(mismatch) => Err(io::Error::new(io::ErrorKind::InvalidData, mismatch)),
+    }
+}
+
 /// Backs `path` up beside itself, syncs the backup, prunes backups
 /// beyond [`MAX_BACKUPS`], then overwrites `path` with `bytes` and
 /// syncs. Returns the backup's path. When `path` does not exist yet
-/// (a new vault), it is simply created.
+/// (a new vault), it is simply created. The backup is taken through
+/// [`read_verified`] — a save whose baseline cannot be faithfully
+/// backed up must fail before the original is touched.
 pub fn backup_first_write(path: &Path, bytes: &[u8]) -> io::Result<Option<PathBuf>> {
     let backup = if path.exists() {
+        let current = read_verified(path).map_err(|error| step("reading for backup", &error))?;
         let backup = fresh_backup_path(path);
-        fs::copy(path, &backup).map_err(|error| step("copying backup", &error))?;
+        write_uncached(&backup, &current).map_err(|error| step("copying backup", &error))?;
+        copy_permissions(path, &backup);
         best_effort_sync(&backup).map_err(|error| step("syncing backup", &error))?;
         prune_backups(path);
         Some(backup)
     } else {
         None
     };
-    fs::write(path, bytes).map_err(|error| step("writing file", &error))?;
+    write_uncached(path, bytes).map_err(|error| step("writing file", &error))?;
     best_effort_sync(path).map_err(|error| step("syncing file", &error))?;
     Ok(backup)
 }
@@ -36,8 +69,51 @@ pub fn backup_first_write(path: &Path, bytes: &[u8]) -> io::Result<Option<PathBu
 /// the autosave path for files already backed up since they were
 /// last loaded.
 pub fn write_synced(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    fs::write(path, bytes).map_err(|error| step("writing file", &error))?;
+    write_uncached(path, bytes).map_err(|error| step("writing file", &error))?;
     best_effort_sync(path)
+}
+
+/// Creates or truncates `path` and writes `bytes` without leaving the
+/// pages in the local cache — pages cached by our own writes are what
+/// a stale-cache read serves back later.
+pub fn write_uncached(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut file = File::create(path)?;
+    set_nocache(&file);
+    file.write_all(bytes)
+}
+
+/// `None` when the bytes read match the file's metadata, otherwise
+/// the error text naming both counts.
+fn length_mismatch(bytes_read: usize, on_disk: u64) -> Option<String> {
+    (u64::try_from(bytes_read) != Ok(on_disk)).then(|| {
+        format!(
+            "read {bytes_read} bytes of a file whose metadata says {on_disk} — \
+             a stale or mid-write network read; retrying usually sees the real file"
+        )
+    })
+}
+
+/// Asks the OS to keep this file's bytes out of the page cache.
+/// Best-effort: a file that refuses the flag still reads and writes
+/// correctly, merely through the cache again.
+#[cfg(target_os = "macos")]
+fn set_nocache(file: &File) {
+    use std::os::fd::AsRawFd;
+    // SAFETY: fcntl on a File's own fd, which is open for its
+    // lifetime; F_NOCACHE takes a plain integer argument.
+    let _ = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_NOCACHE, 1) };
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_nocache(_file: &File) {}
+
+/// Best-effort permission mirroring onto a fresh backup, matching
+/// what `fs::copy` used to preserve; a failure never fails the save
+/// the backup protects.
+fn copy_permissions(from: &Path, to: &Path) {
+    if let Ok(metadata) = fs::metadata(from) {
+        let _ = fs::set_permissions(to, metadata.permissions());
+    }
 }
 
 /// Deletes the oldest backups of `path` beyond [`MAX_BACKUPS`].
@@ -218,6 +294,26 @@ mod tests {
         assert!(backup_age("101") > backup_age("100-9"));
         assert_eq!(backup_age("not-a-stamp"), None);
         assert_eq!(backup_age(""), None);
+    }
+
+    #[test]
+    fn read_verified_returns_the_file_and_errors_on_a_missing_one() {
+        let dir = std::env::temp_dir().join(format!("univault-readv-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("winsys.dxb");
+        fs::write(&target, b"stash bytes").unwrap();
+        assert_eq!(read_verified(&target).unwrap(), b"stash bytes");
+        assert!(read_verified(&dir.join("absent.dxb")).is_err());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn length_mismatch_names_both_counts_and_passes_agreement() {
+        assert_eq!(length_mismatch(19468, 19468), None);
+        assert_eq!(length_mismatch(0, 0), None);
+        let mismatch = length_mismatch(15234, 19468).unwrap();
+        assert!(mismatch.contains("15234"), "{mismatch}");
+        assert!(mismatch.contains("19468"), "{mismatch}");
     }
 
     #[test]
