@@ -4,6 +4,13 @@
 //! are 3-sliced so any label width fits. The active plate's slice
 //! carries wings into the rail band, reproducing the art's gold
 //! curl where the open tab merges through the rail.
+//!
+//! When the strip outgrows the pane it scrolls instead of clipping
+//! tabs away: triangular chevrons appear at either end and slide
+//! the plates while the pointer rests on them — position-based, so
+//! an item dragged onto a chevron scrolls too and can reach an
+//! off-screen tab. The scroll offset lives in egui temp memory
+//! under the panel's id; selecting a tab scrolls it into view.
 
 use eframe::egui::{self, Color32, CursorIcon, Rect, Sense, TextureHandle, pos2, vec2};
 
@@ -37,6 +44,14 @@ const INACTIVE_CAPS: f32 = 14.0;
 const ACTIVE: Src = Src::new(218.0, 0.0, 238.0, 48.0);
 const ACTIVE_CAPS: f32 = 26.0;
 const ACTIVE_WING: f32 = 10.0;
+
+/// Hover zone reserved at each end of a scrolling strip, the
+/// triangle drawn inside it, and how fast a hovered chevron slides
+/// the plates.
+const CHEVRON_ZONE: f32 = 22.0;
+const CHEVRON_W: f32 = 9.0;
+const CHEVRON_H: f32 = 14.0;
+const SCROLL_SPEED: f32 = 280.0;
 
 /// Clean rail strips (the top one sampled right of the last tab,
 /// clear of any plate merge) and the master corner.
@@ -77,6 +92,13 @@ enum Flip {
     H,
     V,
     Hv,
+}
+
+/// Which end of the strip a chevron scrolls toward.
+#[derive(Clone, Copy)]
+enum Side {
+    Left,
+    Right,
 }
 
 /// A pixel rectangle inside the source art.
@@ -166,9 +188,10 @@ impl TabbedPanel {
 
     /// Lays `content` out inside [`MARGIN`], then dresses the
     /// allocated rect: black interior, rail frame, one plate per
-    /// tab with `selected` drawn open through the rail. Reports
-    /// clicks and hover on enabled plates; the caller applies the
-    /// selection change.
+    /// tab with `selected` drawn open through the rail. A strip
+    /// wider than the pane scrolls behind end chevrons rather than
+    /// clipping tabs out of reach. Reports clicks and hover on
+    /// enabled plates; the caller applies the selection change.
     pub fn show<R>(
         &self,
         ui: &mut egui::Ui,
@@ -183,9 +206,28 @@ impl TabbedPanel {
         ui.painter()
             .set(fill_slot, egui::Shape::rect_filled(frame, 0.0, INTERIOR));
 
-        let strip = ui.painter().with_clip_rect(outer.intersect(ui.clip_rect()));
+        let geo = strip_geometry(ui, tabs, outer);
         let pointer = ui.ctx().pointer_latest_pos();
-        let tab_rects = tab_rects(ui, tabs, outer);
+        let zones = geo.scrolling.then_some((geo.left_zone, geo.right_zone));
+        let offset = strip_offset(
+            ui,
+            inner.response.id,
+            selected,
+            &geo.plates,
+            zones,
+            geo.span,
+            geo.max_offset,
+        );
+
+        let visible = geo.visible;
+        let clip = if geo.scrolling { visible } else { outer };
+        let strip = ui.painter().with_clip_rect(clip.intersect(ui.clip_rect()));
+        let tab_rects: Vec<Rect> = geo
+            .plates
+            .rects
+            .iter()
+            .map(|rect| rect.translate(vec2(geo.strip_left - offset, outer.min.y)))
+            .collect();
         for (index, rect) in tab_rects.iter().enumerate() {
             if index != selected {
                 self.three_slice(&strip, INACTIVE, INACTIVE_CAPS, *rect);
@@ -216,8 +258,12 @@ impl TabbedPanel {
                 egui::TextStyle::Button.resolve(ui.style()),
                 ink,
             );
+            let hit = rect.intersect(visible);
+            if hit.width() <= 0.0 {
+                continue;
+            }
             let response = ui.interact(
-                *rect,
+                hit,
                 inner.response.id.with(("tabbed-panel", index)),
                 Sense::click(),
             );
@@ -226,11 +272,20 @@ impl TabbedPanel {
                 if response.clicked() {
                     clicked = Some(index);
                 }
-                if pointer.is_some_and(|pos| rect.contains(pos)) {
+                if pointer.is_some_and(|pos| hit.contains(pos)) {
                     hovered = Some(index);
                 }
             } else if let Some(hint) = &tab.disabled_hint {
                 response.on_hover_text(hint.clone());
+            }
+        }
+        if geo.scrolling {
+            let over = |zone: Rect| pointer.is_some_and(|pos| zone.contains(pos));
+            if offset > 0.5 {
+                chevron(ui, geo.left_zone, Side::Left, over(geo.left_zone));
+            }
+            if offset < geo.max_offset - 0.5 {
+                chevron(ui, geo.right_zone, Side::Right, over(geo.right_zone));
             }
         }
         TabbedPanelResponse {
@@ -353,24 +408,172 @@ impl TabbedPanel {
     }
 }
 
-/// One plate rect per tab, laid left-to-right along the strip
-/// above the rail, each sized to its label. The strip starts past
-/// the corner block so an open plate's wings only ever land on
-/// rail-run — inside the corner, the rail's inner gold line stops
-/// short of the edge, and a wing fragment crossing that quiet zone
-/// reads as a stray horizontal line.
-fn tab_rects(ui: &egui::Ui, tabs: &[Tab], outer: Rect) -> Vec<Rect> {
+/// The strip's plate rects, relative to its own left edge, and the
+/// total width they occupy.
+struct PlateLayout {
+    rects: Vec<Rect>,
+    total_width: f32,
+}
+
+/// One plate rect per tab, laid left-to-right in a single row, each
+/// sized to its label. Positions are relative — the caller places
+/// the strip past the corner block (inside a corner, the rail's
+/// inner gold line stops short of the edge, and an open plate's
+/// wing crossing that quiet zone reads as a stray horizontal line)
+/// and applies the scroll offset.
+fn plate_layout(ui: &egui::Ui, tabs: &[Tab]) -> PlateLayout {
     let font = egui::TextStyle::Button.resolve(ui.style());
-    let mut x = outer.min.x + CORNER;
-    tabs.iter()
+    let mut x = 0.0;
+    let rects: Vec<Rect> = tabs
+        .iter()
         .map(|tab| {
             let label =
                 ui.painter()
                     .layout_no_wrap(tab.title.clone(), font.clone(), Color32::WHITE);
             let width = (label.rect.width() + 2.0 * TAB_PAD).max(TAB_MIN_W);
-            let rect = Rect::from_min_size(pos2(x, outer.min.y), vec2(width, TAB_H));
+            let rect = Rect::from_min_size(pos2(x, 0.0), vec2(width, TAB_H));
             x += width + TAB_GAP;
             rect
         })
-        .collect()
+        .collect();
+    PlateLayout {
+        rects,
+        total_width: (x - TAB_GAP).max(0.0),
+    }
+}
+
+/// The dressed strip's working measurements: the plates, whether
+/// they outgrow the pane, the visible span between the corner
+/// blocks (shrunk behind chevron zones when they do), where that
+/// span starts, and the chevron hover zones at either end.
+struct StripGeometry {
+    plates: PlateLayout,
+    scrolling: bool,
+    span: f32,
+    max_offset: f32,
+    strip_left: f32,
+    visible: Rect,
+    left_zone: Rect,
+    right_zone: Rect,
+}
+
+fn strip_geometry(ui: &egui::Ui, tabs: &[Tab], outer: Rect) -> StripGeometry {
+    let plates = plate_layout(ui, tabs);
+    let full_span = outer.width() - 2.0 * CORNER;
+    let scrolling = plates.total_width > full_span;
+    let reserve = if scrolling { CHEVRON_ZONE } else { 0.0 };
+    let span = (full_span - 2.0 * reserve).max(TAB_MIN_W);
+    let max_offset = (plates.total_width - span).max(0.0);
+    let band =
+        |min_x: f32| Rect::from_min_size(pos2(min_x, outer.min.y), vec2(CHEVRON_ZONE, TAB_H));
+    let strip_left = outer.min.x + CORNER + reserve;
+    StripGeometry {
+        scrolling,
+        span,
+        max_offset,
+        strip_left,
+        visible: Rect::from_min_max(
+            pos2(strip_left, outer.min.y),
+            pos2(strip_left + span, outer.max.y),
+        ),
+        left_zone: band(outer.min.x + CORNER),
+        right_zone: band(outer.max.x - CORNER - CHEVRON_ZONE),
+        plates,
+    }
+}
+
+/// The strip's scroll offset for this frame: persisted in temp
+/// memory under the panel's id, scrolled to reveal a newly selected
+/// plate, nudged while the pointer rests on a chevron zone (passed
+/// only when the strip overflows), and clamped to the scrollable
+/// range.
+fn strip_offset(
+    ui: &egui::Ui,
+    base: egui::Id,
+    selected: usize,
+    plates: &PlateLayout,
+    zones: Option<(Rect, Rect)>,
+    span: f32,
+    max_offset: f32,
+) -> f32 {
+    let state_id = base.with("tab-strip-scroll");
+    let (stored, last_selected) = ui
+        .ctx()
+        .data(|data| data.get_temp::<(f32, usize)>(state_id))
+        .unwrap_or((0.0, selected));
+    let mut offset = stored;
+    if selected != last_selected
+        && let Some(plate) = plates.rects.get(selected)
+    {
+        offset = reveal_offset(offset, plate.min.x, plate.max.x, span);
+    }
+    if let Some((left_zone, right_zone)) = zones {
+        let pointer = ui.ctx().pointer_latest_pos();
+        let step = SCROLL_SPEED * ui.input(|input| input.stable_dt).min(0.1);
+        let over = |zone: Rect| pointer.is_some_and(|pos| zone.contains(pos));
+        if over(left_zone) && offset > 0.0 {
+            offset -= step;
+            ui.ctx().request_repaint();
+        }
+        if over(right_zone) && offset < max_offset {
+            offset += step;
+            ui.ctx().request_repaint();
+        }
+    }
+    let offset = offset.clamp(0.0, max_offset);
+    ui.ctx()
+        .data_mut(|data| data.insert_temp(state_id, (offset, selected)));
+    offset
+}
+
+/// One scroll chevron: a triangle pointing off-strip, lit while the
+/// pointer rests on its zone. Scrolling keys on pointer position
+/// rather than widget hover so a drag in progress scrolls too.
+fn chevron(ui: &egui::Ui, zone: Rect, side: Side, lit: bool) {
+    let center = zone.center();
+    let (near, far) = match side {
+        Side::Left => (center.x + CHEVRON_W / 2.0, center.x - CHEVRON_W / 2.0),
+        Side::Right => (center.x - CHEVRON_W / 2.0, center.x + CHEVRON_W / 2.0),
+    };
+    let ink = if lit { LABEL_ACTIVE } else { LABEL_INACTIVE };
+    ui.painter().add(egui::Shape::convex_polygon(
+        vec![
+            pos2(near, center.y - CHEVRON_H / 2.0),
+            pos2(far, center.y),
+            pos2(near, center.y + CHEVRON_H / 2.0),
+        ],
+        ink,
+        egui::Stroke::NONE,
+    ));
+}
+
+/// The smallest scroll adjustment that brings a newly selected
+/// plate — spanning `min..max` in strip coordinates — fully into a
+/// window `span` wide starting at `offset`.
+fn reveal_offset(offset: f32, min: f32, max: f32, span: f32) -> f32 {
+    if min < offset {
+        min
+    } else if max > offset + span {
+        max - span
+    } else {
+        offset
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reveal_offset;
+
+    #[test]
+    #[allow(clippy::float_cmp)] // reveal_offset returns its inputs unchanged — no arithmetic drift
+    fn reveal_scrolls_only_far_enough_to_show_the_plate() {
+        // Already visible: untouched.
+        assert_eq!(reveal_offset(100.0, 120.0, 200.0, 300.0), 100.0);
+        // Off the left edge: scroll back to its leading edge.
+        assert_eq!(reveal_offset(150.0, 120.0, 200.0, 300.0), 120.0);
+        // Off the right edge: scroll just enough to fit it.
+        assert_eq!(reveal_offset(0.0, 500.0, 620.0, 300.0), 320.0);
+        // Exactly at the edges counts as visible.
+        assert_eq!(reveal_offset(120.0, 120.0, 420.0, 300.0), 120.0);
+    }
 }

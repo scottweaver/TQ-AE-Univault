@@ -42,6 +42,17 @@ fn main() -> eframe::Result {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let review_mode = args.iter().any(|arg| arg == "--review");
     args.retain(|arg| arg != "--review");
+    let size = args
+        .iter()
+        .position(|arg| arg == "--size")
+        .map(|at| args.drain(at..(at + 2).min(args.len())).nth(1));
+    let size = match size {
+        None => [900.0, 700.0],
+        Some(spec) => spec.as_deref().and_then(parse_size).unwrap_or_else(|| {
+            eprintln!("--size expects WxH, e.g. --size 520x700");
+            std::process::exit(2);
+        }),
+    };
     let subject = args.first().and_then(|name| {
         let found = Subject::from_name(name);
         if found.is_none() {
@@ -50,7 +61,9 @@ fn main() -> eframe::Result {
         found
     });
     let Some(subject) = subject else {
-        eprintln!("usage: cargo run -p univault-gui --bin preview -- <component> [--review]");
+        eprintln!(
+            "usage: cargo run -p univault-gui --bin preview -- <component> [--review] [--size WxH]"
+        );
         eprintln!("components:");
         for (name, _) in Subject::ALL {
             eprintln!("  {name}");
@@ -58,7 +71,7 @@ fn main() -> eframe::Result {
         std::process::exit(2);
     };
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([900.0, 700.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size(size),
         ..Default::default()
     };
     eframe::run_native(
@@ -137,7 +150,16 @@ impl eframe::App for PreviewApp {
                     }
                     Subject::TabbedPanel => {
                         let region = canvas.shrink(24.0);
-                        let titles = ["Inventory", "Vault", "Relics"];
+                        let titles = [
+                            "Sword (152)",
+                            "Axe (98)",
+                            "Mace (74)",
+                            "Spear (61)",
+                            "Bow (88)",
+                            "Thrown (37)",
+                            "Staff (120)",
+                            "Shield (143)",
+                        ];
                         let tabs: Vec<tabbed_panel::Tab> = titles
                             .iter()
                             .map(|title| tabbed_panel::Tab::new(*title))
@@ -161,6 +183,11 @@ impl eframe::App for PreviewApp {
                 }
             });
     }
+}
+
+fn parse_size(spec: &str) -> Option<[f32; 2]> {
+    let (w, h) = spec.split_once('x')?;
+    Some([w.parse().ok()?, h.parse().ok()?])
 }
 
 fn checkerboard(painter: &egui::Painter, rect: Rect) {
