@@ -78,6 +78,27 @@ annotated.
 
 ## Reading a save the game is still writing
 
+- **The game writes from another machine.** Steam on a Bazzite Linux
+  PC runs the game and writes the save tree straight to the NAS
+  (192.168.1.177); the Mac only ever sees those bytes through its own
+  smbfs client, so cache coherence is whatever macOS revalidation
+  provides — which failed for **minutes** on 2026-08-31: four minutes
+  after the game's quit-save, a *freshly launched* app read its own
+  last-written pages while `stat` already showed the game's new
+  mtime. Stale data under a fresh stamp is invisible to every stamp
+  comparison — the watcher said "checked 1s ago" over a stale pane,
+  and the overwrite guard was equally blind. Defense since PR #86:
+  all game-file IO goes through `safe_io.rs` — `F_NOCACHE` reads
+  length-checked against the file's own metadata (a lying read
+  surfaces as a "stale or mid-write network read" error that the
+  reload grace retries), uncached writes, and backup copies that
+  read-verify first. `univault-mcp` still reads through the page
+  cache; its answers can be minutes stale during and just after
+  play.
+- **A scratch copy that disagrees with a live pane is the
+  stale-window signature,** not app corruption — copying revalidates
+  the cache, the poisoned pane cannot. (Pre-#86 behaviour; post-#86
+  the pane should never disagree with a fresh copy.)
 - **A stash save caught mid-write parses as a valid *empty* stash.**
   Nothing errors, so `RELOAD_PATIENCE` (which only counts reads that
   fail) never fires: the app reports a successful reload and shows an

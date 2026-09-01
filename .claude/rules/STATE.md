@@ -5,38 +5,48 @@ first to learn where the project stands right now. It answers "where
 are we" — never "how does this work" (that's ARCHITECTURE.md and the
 code) and never "how should we work" (that's METHODOLOGIES.md).
 
-Last updated: 2026-08-31 (PR #84 merged — reload-failure grace per-spell)
+Last updated: 2026-08-31 (PR #86 merged — SMB stale-cache fix; root
+cause of the five-report reload arc)
 
 ## Session handoff
 <!-- transient; owned by the checkpoint skill -->
 
-**Resume here:** PR #84 **merged to main (f4fad91) on the user's
-"merge it"**, branch pruned local and remote, all five CI checks
-green. **Fourth user report in the reload area: "byte read errors
-again when refreshing the relic bank"** — the `unexpected end of
-data … wanted N more bytes` toast recurring during play. **The
-files were verified intact first** (snapshotted to scratch per
-WORKING_NOTES before analysing: 173 items, CRC valid, `.dxg` twin
-in agreement — nothing lost). Cause: the `RELOAD_PATIENCE` failure
-counter was cleared only by a successful *auto*-reload; a
-successful **manual Reload — the action the toast itself
-recommends — kept the count**, so one bad spell spent the ~12 s
-grace for the life of the app and every later read racing a game
-save toasted immediately. Fix: `reload_succeeded` now sits at the
-parse-success point of all three opens (character, stash, store),
-covering every route; manual Reload also continues past a
-failed bank instead of aborting the rest. 271 tests, clippy clean.
-**Honest limits:** the racy trigger is not reproducible on demand,
-and the wiring has no unit test (needs a full `App`; none is
-constructible in tests). If toasts still recur, the counter is no
-longer the suspect — an SMB stale-read window genuinely exceeding
-~12 s is, and `RELOAD_PATIENCE` is the next knob; the toolbar's
-watcher line is the first thing to read.
+**Resume here:** PR #86 **merged to main (efdf3da) on the user's
+"Merge it"**, branch pruned local and remote, five CI checks green,
+release binary rebuilt from merged main — **the user must relaunch
+it to pick the fix up**. **The reload arc (five user reports across
+PRs #69/#77/#79/#84) has its root cause:** the game runs on a
+**separate PC (Steam on Bazzite Linux)** writing the NAS through
+its own SMB client, and macOS smbfs served **stale data pages under
+a fresh stamp** for minutes — caught live when a freshly launched
+app displayed an old shared bank while disk held 50 intact items
+and the watcher polled "checked 1s ago". Stamp logic is
+structurally blind to that combo, and it equally poisoned the
+external-change save guard (an edit would have spliced stale bytes
+over the game's quit-save; nothing was lost — the user Reloaded
+first, on instruction). Fix: `safe_write.rs` → `safe_io.rs`; every
+game-file read/write is uncached (`F_NOCACHE`) and reads are
+length-checked against the file's own metadata — a lying read is
+now a *retryable error* into the existing `RELOAD_PATIENCE` grace,
+and backup copies read-verify so a stale baseline can never be
+captured as the "original". `RELOAD_PATIENCE` itself is exonerated;
+the durable mechanism now lives in WORKING_NOTES ("Reading a save
+the game is still writing"). **Honest limits:** verified by
+mechanism plus a live `F_NOCACHE` probe on the mount, not by
+replaying the window; an equal-size stale rewrite could slip the
+length tripwire; foreign processes' cached pages aren't evicted;
+`univault-mcp` still reads cached (now in Next up). If a stale pane
+recurs *silently* — no "stale or mid-write network read" toast —
+that is a genuinely new mechanism.
 
-Previously: PR #79 (a mid-save read no longer empties a bank — the
-`.dxg`-twin `mid_save()` hold) and PR #77 (auto-refresh stall fixes
-+ the toolbar watcher line) landed in the same area; the three-fix
-arc is summarized in the progress entries. **1MAX ACCEPTED in game
+**New user report 2026-08-31, arrived at wrap-up, unaddressed:**
+"unless you enlarge the window you cannot access vault sub tabs —
+most noticeable with Weapons due to the larger number of sub
+categories." Likely the WORKING_NOTES egui landmine #3 shape (a
+long horizontal row that overflows its pane instead of wrapping).
+Reproduce at a small window, then fix.
+
+**1MAX ACCEPTED in game
 2026-08-30** ("1Max seems to working great!") — the XP ×3 factor is
 settled; **do not re-tune the `* 3`** in `mods/1max.json` without a
 fresh complaint. Three mod tunes are still live and **unplayed**:
@@ -141,12 +151,12 @@ only). No issue tracker is bound yet (deliberately deferred).
 
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | trunk | PRs through #84 merged (#83 still open); all gates green |
+| `main` | trunk | PRs through #86 merged (#83 still open); all gates green |
 | `mod-pet-normal-durability` | a parallel session's Normal-difficulty pet-defense mod | **PR #83 open**; checked out in a worktree under `.claude/worktrees/` — not this session's to touch |
 | `worktree-mcp-overlay-and-coverage` | a parallel session's MCP mod-overlay / coverage work | pushed, no PR; checked out in its own worktree — not this session's to touch |
 | `worktree-fix+projectile-speeds-ae` | a parallel session's cast-speed / DPS docs work | remote-only now (local worktree gone); not this session's to touch |
 
-Everything merged through #84 has been pruned local and remote
+Everything merged through #86 has been pruned local and remote
 (2026-08-31). The three parallel-session branches above belong to
 other sessions; leave them alone.
 
@@ -202,12 +212,38 @@ buttons shipped in PR #44):
    trees are always vanilla while the record tools overlay the
    installed bundle. Either route them through `resolve_mod` or say
    plainly in the tool descriptions that mastery output is vanilla.
-4. Stretch (unscheduled): an on-disk index over the store for
+4. MCP reads still go through the page cache (`world.rs` uses plain
+   `std::fs::read`), so its answers can be minutes stale during and
+   just after play (see WORKING_NOTES on the SMB stale window).
+   Core is IO-free by design, so the fix is either a small duplicate
+   of `safe_io::read_verified` in the MCP shell or a deliberate
+   design dialog about a shared IO seam — not a move of `safe_io`
+   into core on the quiet.
+5. Stretch (unscheduled): an on-disk index over the store for
    search, if a linear scan ever stops being instant. The 2026-08-29
    dialog declined SQLite/redb for the store itself — at ~10⁴ items
    the whole store loads and filters in memory.
 
 ## Most recent meaningful progress
+
+- **2026-08-31 — Fix: game-file IO bypasses the page cache and
+  verifies length (PR #86, merged).** Fifth reload report ("no
+  update to transfer storage after quitting the game") exposed the
+  arc's real mechanism: the game writes the NAS from a separate PC
+  (Steam on Bazzite), and macOS smbfs served stale data pages under
+  a fresh stamp for ~4 minutes — a freshly launched app parsed an
+  old stash, recorded the current stamp, and both the watcher and
+  the overwrite guard went structurally blind. Caught live
+  (window screenshot vs a parsed scratch snapshot, watcher reading
+  "checked 1s ago"). `safe_write.rs` became `safe_io.rs`:
+  `F_NOCACHE` reads length-checked against the file's own metadata
+  (mismatch = retryable error into the reload grace), uncached
+  writes, and backup copies that read-verify — a save that cannot
+  faithfully read its baseline fails before touching the original.
+  `F_NOCACHE` proven against the live mount; 273 tests, clippy
+  clean, CI green on all three OSes. Risk: mechanism-verified, not
+  incident-replayed; the length tripwire misses equal-size stale
+  rewrites; the MCP server still reads cached (Next up item 4).
 
 - **2026-08-31 — Fix: reload-failure grace is per-spell (PR #84,
   merged).** User report: "byte read errors again when refreshing
@@ -401,26 +437,6 @@ buttons shipped in PR #44):
   `distanceProfile`/cooldown changes the user had not asked for; they
   were rejected, reverted, and PR #57 closed. Ask before substituting
   scope — especially when the artifact lands in `CustomMaps/`.
-
-- **2026-08-29 — `unlocks_at_mastery_level` reviewed; correct as
-  built (no PR).** User report: the field looked missing for a
-  number of skills. Audited against the real install — it is absent
-  exactly where the game data carries no `skillTier`, and every
-  record that has one resolves onto the vanilla ladder
-  (1/4/10/16/24/32/40). All 37 absences out of 372 skills are
-  legitimate: 11 `Skill_Mastery` records, 11 `SkillTree` index
-  records, 12 internal pet sub-skills absent from any SkillTree, and
-  the 3 Neidan `DEATHBOMB_{COLD,FIRE,LIGHTNING}` payloads (listed in
-  the tree record but `forceHideIconFromQuickSlot`, and their
-  `x4tagDeathBomb` name tag does not exist in `Text_EN.arc`). Odd
-  names such as `SUNDER.DBR` → "Storm Nimbus" are the game's own
-  stale `tagSkillName027`, not our delegation chain. The user's
-  LootPlus overlay was cleared too: both bundles keep
-  `skillMasteryTierLevel` and all 89 tiered skill records they
-  override. PR #40's derivation stands — do not re-audit. Two side
-  findings recorded (mastery tools bypass the mod overlay; two
-  installed bundles make `mod`-less record calls error). Risk: none,
-  nothing changed.
 
 ## Blocked / waiting
 
