@@ -4,6 +4,12 @@
 //! are 3-sliced so any label width fits. The active plate's slice
 //! carries wings into the rail band, reproducing the art's gold
 //! curl where the open tab merges through the rail.
+//!
+//! Plates wrap into rows when the strip outgrows the pane — every
+//! tab stays reachable at any window size. Only a bottom-row active
+//! plate merges through the rail; an active plate in an upper row
+//! wears the lit slice without the merge, since there is no rail
+//! under it to merge into.
 
 use eframe::egui::{self, Color32, CursorIcon, Rect, Sense, TextureHandle, pos2, vec2};
 
@@ -37,6 +43,11 @@ const INACTIVE_CAPS: f32 = 14.0;
 const ACTIVE: Src = Src::new(218.0, 0.0, 238.0, 48.0);
 const ACTIVE_CAPS: f32 = 26.0;
 const ACTIVE_WING: f32 = 10.0;
+
+/// The active plate above the rail band alone — what an active
+/// plate in a non-bottom row wears, where there is no rail to merge
+/// through.
+const ACTIVE_PLATE: Src = Src::new(ACTIVE.x, ACTIVE.y, ACTIVE.w, TAB_H);
 
 /// Clean rail strips (the top one sampled right of the last tab,
 /// clear of any plate merge) and the master corner.
@@ -164,11 +175,13 @@ impl TabbedPanel {
         }
     }
 
-    /// Lays `content` out inside [`MARGIN`], then dresses the
-    /// allocated rect: black interior, rail frame, one plate per
-    /// tab with `selected` drawn open through the rail. Reports
-    /// clicks and hover on enabled plates; the caller applies the
-    /// selection change.
+    /// Lays `content` out inside [`MARGIN`] — after reserving room
+    /// above it for any plate rows past the first, so a strip that
+    /// wraps never covers content — then dresses the allocated
+    /// rect: black interior, rail frame, one plate per tab with
+    /// `selected` drawn open through the rail (bottom row) or lit in
+    /// place (upper rows). Reports clicks and hover on enabled
+    /// plates; the caller applies the selection change.
     pub fn show<R>(
         &self,
         ui: &mut egui::Ui,
@@ -176,16 +189,26 @@ impl TabbedPanel {
         selected: usize,
         content: impl FnOnce(&mut egui::Ui) -> R,
     ) -> TabbedPanelResponse<R> {
+        let plates = plate_layout(ui, tabs, ui.available_width());
+        let extra = plates.strip_height - TAB_H;
+        if extra > 0.0 {
+            ui.add_space(extra);
+        }
         let fill_slot = ui.painter().add(egui::Shape::Noop);
         let inner = egui::Frame::new().inner_margin(MARGIN).show(ui, content);
-        let outer = inner.response.rect;
-        let frame = Rect::from_min_max(pos2(outer.min.x, outer.min.y + TAB_H), outer.max);
+        let framed = inner.response.rect;
+        let outer = Rect::from_min_max(pos2(framed.min.x, framed.min.y - extra), framed.max);
+        let frame = Rect::from_min_max(pos2(framed.min.x, framed.min.y + TAB_H), framed.max);
         ui.painter()
             .set(fill_slot, egui::Shape::rect_filled(frame, 0.0, INTERIOR));
 
         let strip = ui.painter().with_clip_rect(outer.intersect(ui.clip_rect()));
         let pointer = ui.ctx().pointer_latest_pos();
-        let tab_rects = tab_rects(ui, tabs, outer);
+        let tab_rects: Vec<Rect> = plates
+            .rects
+            .iter()
+            .map(|rect| rect.translate(outer.min.to_vec2()))
+            .collect();
         for (index, rect) in tab_rects.iter().enumerate() {
             if index != selected {
                 self.three_slice(&strip, INACTIVE, INACTIVE_CAPS, *rect);
@@ -196,11 +219,15 @@ impl TabbedPanel {
         let mut hovered = None;
         for ((index, rect), tab) in tab_rects.iter().enumerate().zip(tabs) {
             if index == selected {
-                let open = Rect::from_min_max(
-                    pos2(rect.min.x - ACTIVE_WING, rect.min.y),
-                    pos2(rect.max.x + ACTIVE_WING, rect.max.y + RAIL_TOP),
-                );
-                self.three_slice(&strip, ACTIVE, ACTIVE_CAPS, open);
+                if rect.max.y >= frame.min.y - 0.5 {
+                    let open = Rect::from_min_max(
+                        pos2(rect.min.x - ACTIVE_WING, rect.min.y),
+                        pos2(rect.max.x + ACTIVE_WING, rect.max.y + RAIL_TOP),
+                    );
+                    self.three_slice(&strip, ACTIVE, ACTIVE_CAPS, open);
+                } else {
+                    self.three_slice(&strip, ACTIVE_PLATE, ACTIVE_CAPS, *rect);
+                }
             }
             let ink = if !tab.enabled {
                 LABEL_DISABLED
@@ -353,24 +380,45 @@ impl TabbedPanel {
     }
 }
 
-/// One plate rect per tab, laid left-to-right along the strip
-/// above the rail, each sized to its label. The strip starts past
-/// the corner block so an open plate's wings only ever land on
-/// rail-run — inside the corner, the rail's inner gold line stops
-/// short of the edge, and a wing fragment crossing that quiet zone
-/// reads as a stray horizontal line.
-fn tab_rects(ui: &egui::Ui, tabs: &[Tab], outer: Rect) -> Vec<Rect> {
+/// The strip's plate rects, relative to its own top-left, and the
+/// total height they occupy.
+struct PlateLayout {
+    rects: Vec<Rect>,
+    strip_height: f32,
+}
+
+/// One plate rect per tab, laid left-to-right, each sized to its
+/// label, wrapping into a new row before the right corner block so
+/// every tab stays reachable at any pane width (a plate wider than
+/// the whole strip keeps a row to itself and clips, as any label
+/// always could). Rows fill top-down; the last row sits on the
+/// rail. The strip is inset past the corner blocks on both sides —
+/// inside a corner, the rail's inner gold line stops short of the
+/// edge, and an open plate's wing crossing that quiet zone reads as
+/// a stray horizontal line.
+fn plate_layout(ui: &egui::Ui, tabs: &[Tab], available: f32) -> PlateLayout {
     let font = egui::TextStyle::Button.resolve(ui.style());
-    let mut x = outer.min.x + CORNER;
-    tabs.iter()
+    let right_edge = available - CORNER;
+    let mut x = CORNER;
+    let mut y = 0.0;
+    let rects = tabs
+        .iter()
         .map(|tab| {
             let label =
                 ui.painter()
                     .layout_no_wrap(tab.title.clone(), font.clone(), Color32::WHITE);
             let width = (label.rect.width() + 2.0 * TAB_PAD).max(TAB_MIN_W);
-            let rect = Rect::from_min_size(pos2(x, outer.min.y), vec2(width, TAB_H));
+            if x + width > right_edge && x > CORNER {
+                x = CORNER;
+                y += TAB_H;
+            }
+            let rect = Rect::from_min_size(pos2(x, y), vec2(width, TAB_H));
             x += width + TAB_GAP;
             rect
         })
-        .collect()
+        .collect();
+    PlateLayout {
+        rects,
+        strip_height: y + TAB_H,
+    }
 }
